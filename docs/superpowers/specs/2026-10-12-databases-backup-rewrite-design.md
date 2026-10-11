@@ -1,6 +1,6 @@
 # Làm lại: chỉ sao lưu `Documents/jya2/databases` + tab phân tích `gamwing_keymap_cache.xml`
 
-Ngày: 2026-10-12. Trạng thái: thiết kế đã được người dùng duyệt trong hội thoại (phương án A: cắt bớt tại chỗ).
+Ngày: 2026-10-12. Trạng thái: thiết kế đã được duyệt (phương án A: cắt bớt tại chỗ) và **đã triển khai**; xem mục "Khác với thiết kế ban đầu" cuối file.
 
 ## Mục tiêu
 
@@ -98,3 +98,15 @@ Module UMD (chạy trong trình duyệt và trong Node, giống `recoil.js`), kh
   đè trong thư mục ngày. Chấp nhận được; nếu quá tải thì giảm tần suất tự đẩy sau.
 - `ADBKey.xml` có thể là khóa riêng và vẫn được sao lưu (như hiện nay); README giữ cảnh báo "chỉ dùng trong mạng tin cậy".
 - Tab Phân tích phụ thuộc vào suy luận về cách app Gamwing dùng dữ liệu (đã ghi chú "suy ra" trong `recoil.js`/`layout.js`).
+
+## Khác với thiết kế ban đầu (ghi lại sau khi làm)
+
+- `cachexml.analyze` parse JSON của **mọi** `map|` ngay khi phân tích (6 MB mất khoảng 150–220 ms) thay vì từng mục khi cần, vì cần tên trong dữ liệu để phát hiện tên lệch.
+  Kết quả có thêm `docs` (Map id → object | null), `maps` và `problems`; không có `mapJson`.
+- Body của trang quản trị tối thiểu **64 MB** (không phải 32 MB): file 24 MB sau khi escape vào JSON có thể gần gấp đôi.
+- Trang web tách thành `ui.js` (hàm dùng chung), `analysis.js` (tab Phân tích cache), `app.js` (điều hướng và 4 tab còn lại).
+- `sync/info` trả `files` (và `docs` bằng giá trị đó); danh sách ngày sao lưu trả `databases`, `bytes`, `updated_at`, `last_actor` (không còn `files`/`docs`).
+- Devices: `last_push` là `{at, saved, unchanged, skipped}`; `last_pull` ghi lần app đọc bộ file của một ngày.
+- `docker-compose.yml` ghim `name: ft-keymap-server` để luôn dùng volume dữ liệu `ft-keymap-server_ftdata` dù thư mục đổi tên.
+- Tab "Tệp cài đặt" của file cache có nút "Phân tích" thay cho nút "Sửa".
+- App Android lên 2.0.0 (versionCode 2); đẩy file lớn hơn một lô thì đi riêng một request.
