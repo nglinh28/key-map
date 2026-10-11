@@ -92,9 +92,6 @@
     const h = num(comp['base:height']);
     return origin === 'center' ? { x: x - w / 2, y: y - h / 2, w, h } : { x, y, w, h };
   }
-  function positionFromRect(r, origin = 'topleft') {
-    return origin === 'center' ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : { x: r.x, y: r.y };
-  }
   function canvasSize(components, screen, origin = 'topleft') {
     let w = screen.w;
     let h = screen.h;
@@ -113,36 +110,6 @@
     { id: '3048x2032', label: '3048×2032', w: 3048, h: 2032 },
     { id: '3096x2064', label: '3096×2064', w: 3096, h: 2064 },
   ];
-
-  // ---------------------------------------------------------------- editing positions
-  // changes: { [componentIndex]: { x?, y?, w?, h? } } with absolute values; returns a modified copy
-  function applyChanges(keymap, changes) {
-    const next = JSON.parse(JSON.stringify(keymap));
-    const fields = [['x', 'base:x'], ['y', 'base:y'], ['w', 'base:width'], ['h', 'base:height']];
-    for (const [k, ch] of Object.entries(changes)) {
-      const c = next.components && next.components[Number(k)];
-      if (!c) throw new Error(`Thành phần #${k} không tồn tại`);
-      for (const [f, key] of fields) {
-        if (ch[f] === undefined) continue;
-        const v = ch[f];
-        if (!Number.isFinite(v) || ((f === 'w' || f === 'h') && v <= 0)) throw new Error(`Giá trị ${f} không hợp lệ: ${v}`);
-        c[key] = Math.round(v);
-      }
-    }
-    return next;
-  }
-
-  // before/after: { x, y, w, h }
-  function describeChange(name, before, after) {
-    const r = (v) => Math.round(v);
-    const moved = r(before.x) !== r(after.x) || r(before.y) !== r(after.y);
-    const sized = r(before.w) !== r(after.w) || r(before.h) !== r(after.h);
-    if (!moved && !sized) return null;
-    const parts = [];
-    if (moved) parts.push(`đã đổi vị trí: (${r(before.x)}, ${r(before.y)}) → (${r(after.x)}, ${r(after.y)})`);
-    if (sized) parts.push(`${moved ? 'và ' : 'đã đổi '}kích thước: ${r(before.w)}×${r(before.h)} → ${r(after.w)}×${r(after.h)}`);
-    return `Phím «${name}» ${parts.join(' ')} — chưa lưu`;
-  }
 
   // ---------------------------------------------------------------- component details
   const ROW_LABELS = {
@@ -204,5 +171,5 @@
     return out;
   }
 
-  return { keyLabel, componentInfo, COMPONENTS, RECOGNITION_TYPES, recognitionType, rectOf, positionFromRect, canvasSize, SCREEN_PRESETS, applyChanges, describeChange, describe, overlays };
+  return { keyLabel, componentInfo, COMPONENTS, RECOGNITION_TYPES, recognitionType, rectOf, canvasSize, SCREEN_PRESETS, describe, overlays };
 });

@@ -213,3 +213,6 @@ select { max-width: 100%; }
   input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
   label.row { min-height: 44px; }
 }
+/* the layout view is read-only now: no dragging */
+.screen .comp { cursor: pointer; }
+.bad { color: var(--danger); }

@@ -51,14 +51,10 @@ test('recognition box types 0-23 all have a unique Vietnamese name and a group',
   assert.equal(L.recognitionType(99).name, 'Ô loại 99');
 });
 
-test('geometry: top-left and centre origin round-trip', () => {
+test('geometry: top-left and centre origin', () => {
   const c = { 'base:x': 100, 'base:y': 200, 'base:width': 40, 'base:height': 20 };
   assert.deepEqual(L.rectOf(c, 'topleft'), { x: 100, y: 200, w: 40, h: 20 });
   assert.deepEqual(L.rectOf(c, 'center'), { x: 80, y: 190, w: 40, h: 20 });
-  for (const origin of ['topleft', 'center']) {
-    const r = L.rectOf(c, origin);
-    assert.deepEqual(L.positionFromRect(r, origin), { x: 100, y: 200 });
-  }
 });
 
 test('canvas is at least the screen and never clips the content', () => {
@@ -66,34 +62,6 @@ test('canvas is at least the screen and never clips the content', () => {
   assert.deepEqual(L.canvasSize(comps, { w: 2960, h: 1848 }, 'topleft'), { w: 3000, h: 1890 });
   assert.deepEqual(L.canvasSize([], { w: 2960, h: 1848 }, 'topleft'), { w: 2960, h: 1848 });
   assert.deepEqual(L.canvasSize([{ 'base:x': 10, 'base:y': 10, 'base:width': 5, 'base:height': 5 }], { w: 2960, h: 1848 }, 'topleft'), { w: 2960, h: 1848 });
-});
-
-test('applyChanges edits only the four base numbers of the listed components and does not mutate the input', () => {
-  const km = { version: '1', components: [
-    { 'base:x': 10, 'base:y': 20, 'base:width': 48, 'base:height': 48, 'base:uniqueIdentifier': 'a', 'ntp:ClickDuration': 50 },
-    { 'base:x': 30, 'base:y': 40, 'base:width': 48, 'base:height': 48, 'base:uniqueIdentifier': 'b' },
-  ] };
-  const snapshot = JSON.stringify(km);
-  const next = L.applyChanges(km, { 0: { x: 15.4, y: 99.6 } });
-  assert.equal(JSON.stringify(km), snapshot, 'input untouched');
-  assert.equal(next.components[0]['base:x'], 15, 'rounded to whole pixels');
-  assert.equal(next.components[0]['base:y'], 100);
-  assert.equal(next.components[0]['ntp:ClickDuration'], 50);
-  assert.deepEqual(next.components[1], km.components[1]);
-  const sized = L.applyChanges(km, { 1: { w: 60, h: 70 } });
-  assert.equal(sized.components[1]['base:width'], 60);
-  assert.equal(sized.components[1]['base:height'], 70);
-  assert.throws(() => L.applyChanges(km, { 5: { x: 1 } }), /không tồn tại/);
-  assert.throws(() => L.applyChanges(km, { 0: { x: NaN } }), /không hợp lệ/);
-  assert.throws(() => L.applyChanges(km, { 0: { w: -5 } }), /không hợp lệ/);
-});
-
-test('change notifications say what moved and what is still unsaved', () => {
-  const before = { x: 469, y: 1376, w: 224, h: 224 };
-  assert.equal(L.describeChange('Joystick di chuyển', before, { ...before, x: 520, y: 1400 }), 'Phím «Joystick di chuyển» đã đổi vị trí: (469, 1376) → (520, 1400) — chưa lưu');
-  assert.equal(L.describeChange('A', before, { ...before, w: 100 }), 'Phím «A» đã đổi kích thước: 224×224 → 100×224 — chưa lưu');
-  assert.equal(L.describeChange('A', before, { x: 1, y: 2, w: 3, h: 4 }), 'Phím «A» đã đổi vị trí: (469, 1376) → (1, 2) và kích thước: 224×224 → 3×4 — chưa lưu');
-  assert.equal(L.describeChange('A', before, before), null);
 });
 
 test('describe lists the key bindings and the parameters of a component', () => {

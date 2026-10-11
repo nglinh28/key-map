@@ -24,6 +24,8 @@ const PAGES = {
   '/admin/edit.js': ['edit.js', 'text/javascript; charset=utf-8'],
   '/admin/layout.js': ['layout.js', 'text/javascript; charset=utf-8'],
   '/admin/cachexml.js': ['cachexml.js', 'text/javascript; charset=utf-8'],
+  '/admin/ui.js': ['ui.js', 'text/javascript; charset=utf-8'],
+  '/admin/analysis.js': ['analysis.js', 'text/javascript; charset=utf-8'],
   '/admin/app.css': ['app.css', 'text/css; charset=utf-8'],
 };
 const SECURITY_HEADERS = {
