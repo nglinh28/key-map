@@ -124,6 +124,9 @@
 
   // ---------------------------------------------------------------- the preference files
   const isSecret = (name) => /adbkey/i.test(name);
+  // where the file lives on the tablet; older copies were pushed before the app told the folder
+  const folderText = (f) => f.folder || '—';
+  const folderCell = (f) => el('td', { class: 'mono', title: f.folder ? `Thư mục trên máy tính bảng${f.device ? ` (gửi từ ${f.device})` : ''}` : 'Chưa rõ: app KeyMap Sync 2.0 sẽ báo thư mục ở lần đẩy kế tiếp' }, folderText(f));
 
   async function showFile(name, day) {
     const f = day ? await api('GET', `/sync/backups/${day}/databases/${enc(name)}`) : await api('GET', `/sync/databases/${enc(name)}`);
@@ -131,6 +134,7 @@
     const id = await showModal({
       title: `${name}${day ? ` — ngày ${day}` : ''}`, tone: isSecret(name) ? 'warn' : 'info',
       body: [isSecret(name) ? el('p', { class: 'warnbox' }, 'File này nhiều khả năng chứa khóa riêng của app (ADB). Server không có đăng nhập: ai trong mạng nội bộ cũng xem được trang này.') : null,
+        el('p', {}, el('span', { class: 'muted' }, 'Thư mục trên máy: '), el('span', { class: 'mono' }, folderText(f))),
         el('p', { class: 'muted' }, `${fmtBytes(textBytes(f.text))}${cut ? ` · chỉ hiện ${fmtBytes(PREVIEW_CHARS)} đầu, hãy tải về để xem đủ` : ''}`),
         el('pre', { class: 'mono tree xmlview' }, cut ? f.text.slice(0, PREVIEW_CHARS) : f.text)],
       actions: [{ id: 'close', label: 'Đóng' }, { id: 'download', label: 'Tải về', primary: true }],
@@ -214,7 +218,7 @@
   async function openDbEditor(name) {
     const f = await api('GET', `/sync/databases/${enc(name)}`);
     if (textBytes(f.text) > EDIT_MAX_BYTES) { toast(`File lớn (${fmtBytes(textBytes(f.text))}) chỉ để xem và tải về, không sửa trên web.`, true); return; }
-    state.dbEdit = { name, original: f.text, text: f.text, etag: f.etag };
+    state.dbEdit = { name, original: f.text, text: f.text, etag: f.etag, folder: f.folder || '' };
     await render();
   }
 
@@ -271,6 +275,7 @@
     area.value = e.text;
     showStatus();
     return el('div', { class: 'card' }, el('h2', {}, `Sửa ${e.name}`),
+      el('p', {}, el('span', { class: 'muted' }, 'Thư mục trên máy: '), el('span', { class: 'mono' }, folderText(e))),
       el('p', { class: 'warnbox' }, 'Bạn đang sửa bản lưu trên server, không phải file trên máy tính bảng. Máy chỉ đổi khi bạn khôi phục từ app KeyMap Sync. '
         + 'Server chặn lưu khi XML sai cú pháp và giữ 10 bản cũ để quay lại.'),
       e.stale ? el('p', { class: 'warnbox strong' }, 'File đã đổi trên server từ lúc bạn mở.', ' ', el('button', { class: 'btn small', onclick: guard(() => openDbEditor(e.name)) }, 'Tải lại bản mới (bỏ thay đổi hiện tại)')) : null,
@@ -287,18 +292,18 @@
     if (state.dbEdit) return viewDbEditor();
     const { files } = await api('GET', '/sync/databases');
     const rows = files.length ? files.map((f) => el('tr', {},
-      el('td', { class: 'mono' }, f.name), el('td', { class: 'num' }, fmtBytes(f.bytes)), el('td', { class: 'mono' }, clockDateTime(f.updated_at)),
+      el('td', { class: 'mono' }, f.name), folderCell(f), el('td', { class: 'num' }, fmtBytes(f.bytes)), el('td', { class: 'mono' }, clockDateTime(f.updated_at)),
       el('td', { class: 'act' },
         el('button', { class: 'btn small', onclick: guard(() => showFile(f.name)) }, 'Xem'), ' ',
         f.name === CACHE_FILE
           ? el('button', { class: 'btn small', onclick: () => { state.view = 'analysis'; render(); } }, 'Phân tích')
           : el('button', { class: 'btn small', disabled: f.bytes > EDIT_MAX_BYTES, title: f.bytes > EDIT_MAX_BYTES ? 'File lớn: chỉ xem và tải về' : '', onclick: guard(() => openDbEditor(f.name)) }, 'Sửa'), ' ',
         el('button', { class: 'btn small', onclick: guard(async () => { downloadText(f.name, (await api('GET', `/sync/databases/${enc(f.name)}`)).text); }) }, 'Tải về'))))
-      : el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Chưa có file nào. Mở app KeyMap Sync, đặt thư mục (mặc định Documents/jya2/databases) rồi bấm "Đẩy lên server".'));
+      : el('tr', {}, el('td', { colspan: 5, class: 'muted' }, 'Chưa có file nào. Mở app KeyMap Sync, đặt thư mục (mặc định Documents/jya2/databases) rồi bấm "Đẩy lên server".'));
     return el('div', { class: 'card' }, el('h2', {}, 'Tệp cài đặt của Gamwing (Documents/jya2/databases)'),
-      el('p', { class: 'muted' }, 'Các file XML mà app Gamwing lưu trên máy. App KeyMap Sync gửi lên; server giữ bản mới nhất, 10 bản cũ của mỗi file, và chép cả bộ vào thư mục của ngày sao lưu. '
+      el('p', { class: 'muted' }, 'Các file XML mà app Gamwing lưu trên máy (cột "Thư mục trên máy" cho biết chúng nằm ở đâu trên máy tính bảng). App KeyMap Sync gửi lên; server giữ bản mới nhất, 10 bản cũ của mỗi file, và chép cả bộ vào thư mục của ngày sao lưu. '
         + 'File giấy phép/phiên đăng nhập bị từ chối. Sửa chỉ áp dụng cho bản trên server (file nhỏ); đưa về máy làm từ app Android: "Khôi phục theo ngày…".'),
-      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['File', 'Dung lượng', 'Cập nhật lúc', ''].map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
+      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['File', 'Thư mục trên máy', 'Dung lượng', 'Cập nhật lúc', ''].map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
   }
 
   // ---------------------------------------------------------------- compare two days (or a day and the latest copy)
@@ -349,8 +354,8 @@
 
   async function showDay(day) {
     const { files } = await api('GET', `/sync/backups/${day}/databases`);
-    const view = el('table', {}, el('thead', {}, el('tr', {}, ['File', 'Dung lượng', ''].map((h) => el('th', {}, h)))),
-      el('tbody', {}, files.map((f) => el('tr', {}, el('td', { class: 'mono' }, f.name), el('td', { class: 'num' }, fmtBytes(textBytes(f.text))),
+    const view = el('table', {}, el('thead', {}, el('tr', {}, ['File', 'Thư mục trên máy', 'Dung lượng', ''].map((h) => el('th', {}, h)))),
+      el('tbody', {}, files.map((f) => el('tr', {}, el('td', { class: 'mono' }, f.name), folderCell(f), el('td', { class: 'num' }, fmtBytes(textBytes(f.text))),
         el('td', { class: 'act' }, el('button', { class: 'btn small', onclick: guard(() => showFile(f.name, day)) }, 'Xem'), ' ',
           el('button', { class: 'btn small', onclick: () => downloadText(f.name, f.text) }, 'Tải về'))))));
     await showModal({ title: `Sao lưu ngày ${day} (${files.length} file)`, tone: 'info', body: view, actions: [{ id: 'close', label: 'Đóng' }] });

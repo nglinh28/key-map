@@ -49,9 +49,18 @@ class DailyBackups {
       bytes: files.reduce((n, f) => n + Buffer.byteLength(f.text), 0),
       last_actor: this.actor || null,
     };
+    const sources = Object.fromEntries(files.filter((f) => f.folder).map((f) => [f.name.normalize('NFC'), { folder: f.folder, device: f.device || '' }]));
+    if (Object.keys(sources).length) manifest.sources = sources;
     this.write(day, files, manifest);
     this.prune();
     return { day, databases: files };
+  }
+
+  // the folder (on the phone) of a file of a day, from the manifest; '' for days written before folders were recorded
+  folderOf(day, name) {
+    const m = this.readManifest(day);
+    const s = m && m.sources && Object.hasOwn(m.sources, name.normalize('NFC')) ? m.sources[name.normalize('NFC')] : null;
+    return (s && s.folder) || '';
   }
 
   // the preference files of a day, with their real (decoded) names
@@ -61,13 +70,13 @@ class DailyBackups {
     try { stored = fs.readdirSync(dir); } catch { return []; }
     return stored.map((n) => ({ name: decode(n), stored: n })).filter((f) => f.name && nameProblem(f.name) === null)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((f) => ({ name: f.name, text: fs.readFileSync(path.join(dir, f.stored), 'utf8') }));
+      .map((f) => ({ name: f.name, text: fs.readFileSync(path.join(dir, f.stored), 'utf8'), folder: this.folderOf(day, f.name) }));
   }
 
   // one file of a day, or null (unknown day, unknown file, unsafe name)
   readDatabase(day, name) {
     if (!DAY_RE.test(day) || nameProblem(name) !== null) return null;
-    try { return { name, text: fs.readFileSync(path.join(this.folder(day), DB_DIR, encode(name)), 'utf8') }; } catch { return null; }
+    try { return { name, text: fs.readFileSync(path.join(this.folder(day), DB_DIR, encode(name)), 'utf8'), folder: this.folderOf(day, name) }; } catch { return null; }
   }
 
   // The first activity of a new day creates that day's folder (a copy of the current state) even when nothing changed.

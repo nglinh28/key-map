@@ -53,6 +53,21 @@ class DatabaseEngineTest : SyncTestBase() {
         assertEquals(listOf(0, 3), listOf(second.saved, second.unchanged))
     }
 
+    @Test fun `every push says which folder of the phone the files come from`() {
+        put("a.xml", xml(1)); put("b.xml", xml(2))
+        engine.push()
+        engine.push(listOf("b.xml"))
+        assertEquals(listOf(dir.path, dir.path), server.pushFolders)
+        assertTrue(dir.path.endsWith("databases"))
+    }
+
+    @Test fun `the watcher also tells the folder`() {
+        put("a.xml", xml(1))
+        val w = Watcher(folder, engine, MemoryDbState())
+        w.tick(); w.tick()
+        assertEquals(listOf(dir.path), server.pushFolders)
+    }
+
     @Test fun `push sends only the named files and ignores a license file even when named`() {
         put("a.xml", xml(1)); put("b.xml", xml(2)); put("gamwing_entitlement.xml", xml(3))
         engine.push(listOf("b.xml", "gamwing_entitlement.xml", "missing.xml"))

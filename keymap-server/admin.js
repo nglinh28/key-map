@@ -163,7 +163,7 @@ function createAdmin({ cfg, devices, backups, databases, readBody }) {
       const files = body && body.files;
       if (!validFiles(files)) return err(res, 400, 'Body must be {"files":[{"name":"…","text":"…"}]}');
       backups.actor = who ? (who.name || who.id) : 'Ứng dụng đồng bộ'; // recorded in the manifest of today's backup
-      const result = databases.put(files);
+      const result = databases.put(files, { folder: body.folder, device: backups.actor });
       if (who) devices.recordPush(who.id, result);
       if (result.saved > 0) snapshotNow(); else backups.ensureToday();
       return json(res, 200, { saved: result.saved, unchanged: result.unchanged, skipped: result.skipped, changed: result.changed });

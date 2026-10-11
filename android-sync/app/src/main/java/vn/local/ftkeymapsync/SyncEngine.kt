@@ -58,14 +58,14 @@ class SyncEngine(
         for (name in want) {
             val t = NamedText(name, folder.read(name))
             if (batch.isNotEmpty() && size + t.text.length > maxBatchBytes) {
-                total += client.pushDatabases(batch)
+                total += client.pushDatabases(batch, folder.dir.path)
                 batch = mutableListOf()
                 size = 0
             }
             batch += t
             size += t.text.length
         }
-        if (batch.isNotEmpty()) total += client.pushDatabases(batch)
+        if (batch.isNotEmpty()) total += client.pushDatabases(batch, folder.dir.path)
         return total
     }
 

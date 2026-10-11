@@ -62,10 +62,12 @@ class ServerClient(
         return (0 until arr.length()).map { val o = arr.getJSONObject(it); NamedText(o.getString("name"), o.getString("text")) }
     }
 
-    fun pushDatabases(files: List<NamedText>): DatabasePushSummary {
+    /** [folder] is where the files live on this phone (shown on the web page next to each file). */
+    fun pushDatabases(files: List<NamedText>, folder: String = ""): DatabasePushSummary {
         val arr = JSONArray()
         for (f in files) arr.put(JSONObject().put("name", f.name).put("text", f.text))
-        return DatabasePushSummary.fromJson(request("POST", "/admin/api/sync/databases/push", JSONObject().put("files", arr).toString()))
+        val body = JSONObject().put("folder", folder).put("files", arr)
+        return DatabasePushSummary.fromJson(request("POST", "/admin/api/sync/databases/push", body.toString()))
     }
 
     /** Deletes everything the server keeps. The server only does it for this exact confirmation text. */

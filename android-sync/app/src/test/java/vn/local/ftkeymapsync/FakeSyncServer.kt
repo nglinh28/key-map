@@ -22,6 +22,7 @@ class FakeSyncServer {
     @Volatile var wipes = 0                                                  // how many times "delete everything" was confirmed
     val databases = LinkedHashMap<String, String>()                         // preference files the "server" holds, by real name
     val databasePushes = mutableListOf<List<String>>()                      // file names of every databases push request
+    val pushFolders = mutableListOf<String>()                               // the phone folder named in every databases push request
     val backupDatabases = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> preference files (a day exists once it has an entry)
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val pool = Executors.newCachedThreadPool()
@@ -128,7 +129,9 @@ class FakeSyncServer {
     }
 
     private fun pushDatabases(body: String): Pair<Int, String> {
-        val arr = JSONObject(body).getJSONArray("files")
+        val json = JSONObject(body)
+        pushFolders += json.optString("folder")
+        val arr = json.getJSONArray("files")
         val names = mutableListOf<String>()
         var saved = 0
         var unchanged = 0

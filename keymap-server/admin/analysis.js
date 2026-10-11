@@ -52,6 +52,7 @@
     return el('div', { class: 'card' }, el('h2', {}, `Phân tích ${CACHE_FILE}`), row,
       el('dl', { class: 'kv' },
         el('dt', {}, 'Dung lượng'), el('dd', {}, `${fmtBytes(d.file.bytes ?? textBytes(d.file.text))} · ${d.parsed.entries.length} mục XML · phân tích xong trong ${d.ms} ms`),
+        el('dt', {}, 'Thư mục trên máy'), el('dd', { class: 'mono' }, d.file.folder || '— (chưa rõ: sẽ có sau lần đẩy kế tiếp của app 2.0)'),
         d.file.updated_at ? [el('dt', {}, 'Cập nhật lúc'), el('dd', {}, clockDateTime(d.file.updated_at))] : null,
         el('dt', {}, 'Nội dung'), el('dd', {}, `${a.namespaces.reduce((n, x) => n + x.items.length, 0)} mục trong danh sách · ${a.orphans.length} mục mồ côi`)),
       warns.length ? el('div', { class: 'warnbox' }, warns.map((w) => el('div', {}, `⚠ ${w}`))) : el('p', { class: 'ok-text' }, 'Không thấy bất thường giữa danh sách và nội dung.'));

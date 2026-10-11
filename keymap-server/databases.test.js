@@ -198,3 +198,72 @@ test('wipe: needs the typed confirmation, empties everything, keeps only the las
     assert.equal((await raw(port, 'POST', '/admin/api/sync/wipe', { headers: W, body: { confirm: 'XOA TAT CA' } })).status, 200);
   }, { clock: () => T0 });
 });
+
+// ---- where each file lives on the tablet
+const FOLDER = '/storage/emulated/0/Documents/jya2/databases';
+const pushFrom = (port, files, folder, headers = {}) => raw(port, 'POST', '/admin/api/sync/databases/push', { headers: { ...W, ...headers }, body: { folder, files } });
+
+test('store: remembers the tablet folder of every file it was given, also for unchanged files', () => {
+  const dir = tmp();
+  const s = new D.DatabasesStore({ dir, clock: () => T0 });
+  s.put([file('a.xml', 1), file('b.xml', 1)], { folder: FOLDER, device: 'Galaxy Tab' });
+  assert.deepEqual(s.list().map((f) => [f.name, f.folder, f.device]), [['a.xml', FOLDER, 'Galaxy Tab'], ['b.xml', FOLDER, 'Galaxy Tab']]);
+  assert.equal(s.read('a.xml').folder, FOLDER);
+  // the same text pushed from another folder (unchanged content) still updates where it lives
+  const r = s.put([file('a.xml', 1)], { folder: '/sdcard/other', device: 'Phone' });
+  assert.deepEqual([r.saved, r.unchanged], [0, 1]);
+  assert.deepEqual([s.read('a.xml').folder, s.read('a.xml').device, s.read('b.xml').folder], ['/sdcard/other', 'Phone', FOLDER]);
+  // no source given (older app): nothing is forgotten
+  s.put([file('a.xml', 2)]);
+  assert.equal(s.read('a.xml').folder, '/sdcard/other');
+  // the bookkeeping file is never listed as a preference file and files that were never given a folder say so
+  assert.deepEqual(s.names(), ['a.xml', 'b.xml']);
+  s.put([file('c.xml', 1)]);
+  assert.equal(s.read('c.xml').folder, '');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('store: a folder from the network is cleaned and capped, anything that is not text is ignored', () => {
+  const dir = tmp();
+  const s = new D.DatabasesStore({ dir });
+  s.put([file('a.xml')], { folder: `  /sdcard/x\u0000y\u0007z${'q'.repeat(400)}  `, device: 5 });
+  const f = s.read('a.xml');
+  assert.equal(f.folder.startsWith('/sdcard/xyz'), true);
+  assert.equal(f.folder.length, 300);
+  assert.equal(f.device, '');
+  s.put([file('b.xml')], { folder: { evil: 1 } });
+  assert.equal(s.read('b.xml').folder, '');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('endpoint: the folder travels with the push and comes back in the list, the file and the device name', async () => {
+  await withServer({}, async ({ port }) => {
+    await pushFrom(port, [file('PubgSettings.xml', 1), file('Cài đặt cơ bản.xml', 2)], FOLDER, { 'X-Device-Id': 'tablet-0001', 'X-Device-Name': encodeURIComponent('Galaxy Tab S8') });
+    const list = (await raw(port, 'GET', '/admin/api/sync/databases')).json.files;
+    assert.deepEqual(list.map((f) => [f.name, f.folder, f.device]), [['Cài đặt cơ bản.xml', FOLDER, 'Galaxy Tab S8'], ['PubgSettings.xml', FOLDER, 'Galaxy Tab S8']]);
+    const one = (await getDb(port, 'PubgSettings.xml')).json;
+    assert.deepEqual([one.folder, one.device], [FOLDER, 'Galaxy Tab S8']);
+    // a web edit does not move the file to another folder
+    await putDb(port, 'PubgSettings.xml', { text: xml(9), etag: one.etag });
+    assert.equal((await getDb(port, 'PubgSettings.xml')).json.folder, FOLDER);
+    // an older app (no folder in the body) keeps working and does not erase the folder
+    await pushFrom(port, [file('PubgSettings.xml', 3)], undefined);
+    assert.equal((await getDb(port, 'PubgSettings.xml')).json.folder, FOLDER);
+  });
+});
+
+test('daily backup: the manifest remembers the folder of every file and the day lists give it back', async () => {
+  const c = { now: T0 };
+  await withServer({}, async ({ port, dir }) => {
+    await pushFrom(port, [file('a.xml', 1), file('Cài đặt cơ bản.xml', 1)], FOLDER, { 'X-Device-Id': 'tablet-0001', 'X-Device-Name': 'Tab' });
+    const m = JSON.parse(fs.readFileSync(path.join(dir, 'backups', '2026-10-11', '_manifest.json'), 'utf8'));
+    assert.deepEqual(m.sources, { 'a.xml': { folder: FOLDER, device: 'Tab' }, 'Cài đặt cơ bản.xml': { folder: FOLDER, device: 'Tab' } });
+    const day = (await raw(port, 'GET', '/admin/api/sync/backups/2026-10-11/databases')).json.files;
+    assert.deepEqual(day.map((f) => [f.name, f.folder]), [['a.xml', FOLDER], ['Cài đặt cơ bản.xml', FOLDER]]);
+    const one = (await raw(port, 'GET', `/admin/api/sync/backups/2026-10-11/databases/${encodeURIComponent('Cài đặt cơ bản.xml')}`)).json;
+    assert.deepEqual([one.folder, one.text], [FOLDER, xml(1)]);
+    // a day written before folders were recorded has none, and says so with an empty value
+    fs.writeFileSync(path.join(dir, 'backups', '2026-10-11', '_manifest.json'), JSON.stringify({ date: '2026-10-11', databases: 2 }));
+    assert.equal((await raw(port, 'GET', '/admin/api/sync/backups/2026-10-11/databases/a.xml')).json.folder, '');
+  }, { clock: () => c.now });
+});
