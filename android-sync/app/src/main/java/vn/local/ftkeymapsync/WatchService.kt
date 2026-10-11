@@ -15,8 +15,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Foreground service that watches the cache folder and pushes changes to the server.
- * It polls every few seconds (cheap: about a dozen files) because change notifications for files that another
+ * Foreground service that watches the preference folder and pushes changes to the server.
+ * It polls every few seconds (cheap: about two dozen files) because change notifications for files that another
  * app writes on shared storage are not reliable on recent Android versions.
  * It also sends the heartbeat every 15 s, which is how the web page knows this phone is connected.
  */
@@ -70,25 +70,25 @@ class WatchService : Service() {
                     url == null -> { update("Chưa nhập địa chỉ server"); pause = 10_000 }
                     !Environment.isExternalStorageManager() -> { update("Chưa cấp quyền truy cập mọi file"); pause = 10_000 }
                     else -> {
-                        val folder = LocalFolder(resolveFolder(prefs.folderPath))
-                        val dbFolder = if (prefs.databasesOn) LocalFolder(resolveFolder(prefs.databasesPath, DEFAULT_DATABASES)) else null
-                        val newKey = "$url|${folder.dir.path}|${prefs.deviceName}|${dbFolder?.dir?.path}"
+                        val folder = LocalFolder(resolveFolder(prefs.databasesPath))
+                        val newKey = "$url|${folder.dir.path}|${prefs.deviceName}"
                         if (newKey != key) {
                             key = newKey
                             client = ServerClient(url, identity = identityOf(this, prefs))
                             lastClient = client
-                            lastFolder = prefs.folderPath
-                            watcher = Watcher(folder, SyncEngine(folder, client, backupRoot(), dbFolder = dbFolder), prefs, dbFolder, prefs)
-                            update("Đang theo dõi ${folder.dir.path}" + (dbFolder?.let { " và ${it.dir.path}" } ?: "") + " → $url")
+                            lastFolder = prefs.databasesPath
+                            watcher = Watcher(folder, SyncEngine(folder, client, backupRoot()), prefs)
+                            update("Đang theo dõi ${folder.dir.path} → $url")
                         }
                         if (beat.due()) {
-                            runCatching { client!!.hello(Heartbeat(true, prefs.folderPath, if (lastError.isEmpty()) "watching" else "error", lastError)) }
+                            runCatching { client!!.hello(Heartbeat(true, prefs.databasesPath, if (lastError.isEmpty()) "watching" else "error", lastError)) }
                         }
                         when (val ev = watcher!!.tick()) {
                             is WatchEvent.Pushed -> {
                                 backoff = 0
                                 lastError = ""
                                 StatusBus.log("Tự đẩy lên server: ${ev.names.size} file đã đổi — ${ev.summary.describe()}")
+                                ev.summary.skipped.forEach { StatusBus.log("  bỏ qua $it") }
                                 update("Đã đẩy lúc ${now()} (${ev.names.size} file) → $url")
                             }
                             is WatchEvent.Failed -> {
@@ -97,21 +97,6 @@ class WatchService : Service() {
                                 StatusBus.log("Tự đẩy thất bại, thử lại sau ${backoff / 1000}s: ${ev.message}")
                                 update("Lỗi: ${ev.message}")
                                 pause = backoff
-                            }
-                            else -> Unit
-                        }
-                        when (val ev = watcher!!.tickDatabases()) {
-                            is DbWatchEvent.Pushed -> {
-                                backoff = 0
-                                lastError = ""
-                                StatusBus.log("Tự đẩy cài đặt Gamwing: ${ev.names.size} file đã đổi — ${ev.summary.describe()}")
-                                ev.summary.skipped.forEach { StatusBus.log("  bỏ qua $it") }
-                            }
-                            is DbWatchEvent.Failed -> {
-                                backoff = (if (backoff == 0L) 5_000L else backoff * 2).coerceAtMost(60_000L)
-                                lastError = ev.message
-                                StatusBus.log("Tự đẩy cài đặt thất bại, thử lại sau ${backoff / 1000}s: ${ev.message}")
-                                pause = maxOf(pause, backoff)
                             }
                             else -> Unit
                         }
@@ -136,7 +121,7 @@ class WatchService : Service() {
     private fun createChannel() {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Đồng bộ keymap", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Đồng bộ cài đặt Gamwing", NotificationManager.IMPORTANCE_LOW))
         }
     }
 

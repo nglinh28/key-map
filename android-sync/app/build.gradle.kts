@@ -11,8 +11,8 @@ android {
         applicationId = "vn.local.ftkeymapsync"
         minSdk = 30 // Android 11+: one storage model (all-files access), no legacy permissions
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
     }
 
     buildTypes {

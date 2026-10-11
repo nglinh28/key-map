@@ -14,19 +14,15 @@ import java.util.concurrent.Executors
  * Plain sockets on purpose: the Android unit-test classpath does not include com.sun.net.httpserver.
  */
 class FakeSyncServer {
-    val files = LinkedHashMap<String, String>()      // what the "server" holds, by cache file name
-    val pushes = mutableListOf<List<String>>()        // file names of every push request
     @Volatile var failNext = false
-    @Volatile var accounts = 2
     @Volatile var webSessions = 0
     val requestHeaders = mutableListOf<Map<String, String>>()   // headers of every request, in order
     val hellos = mutableListOf<JSONObject>()                    // bodies of the heartbeat requests
     var nullActorDay = "" // this backup day is reported with last_actor: null, like the real server does before anyone wrote to it
-    val backupDays = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> files
     @Volatile var wipes = 0                                                  // how many times "delete everything" was confirmed
     val databases = LinkedHashMap<String, String>()                         // preference files the "server" holds, by real name
     val databasePushes = mutableListOf<List<String>>()                      // file names of every databases push request
-    val backupDatabases = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> preference files
+    val backupDatabases = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> preference files (a day exists once it has an entry)
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val pool = Executors.newCachedThreadPool()
     @Volatile private var open = true
@@ -96,75 +92,39 @@ class FakeSyncServer {
         if (path.startsWith("/admin/api/other")) return 200 to "<html>not a keymap server</html>"
         if (failNext) { failNext = false; return 500 to """{"error":"Internal error"}""" }
         if (method != "GET" && headers["x-admin-request"] != "1") return 403 to """{"error":"Cross-site or missing X-Admin-Request"}"""
-        val dayMatch = Regex("""/sync/backups/(\d{4}-\d{2}-\d{2})\z""").find(path)
         val dbDayMatch = Regex("""/sync/backups/(\d{4}-\d{2}-\d{2})/databases\z""").find(path)
         return when {
-            path.endsWith("/sync/info") -> 200 to JSONObject().put("ok", true).put("server", "ft-keymap-server").put("version", "1.1.0")
-                .put("account", "c_" + "0".repeat(32)).put("accounts", accounts).put("docs", files.count { it.key.startsWith("map") })
-                .put("web", JSONObject().put("sessions", webSessions)).put("devices_online", 1).put("backup_days", backupDays.size).toString()
+            path.endsWith("/sync/info") -> 200 to JSONObject().put("ok", true).put("server", "ft-keymap-server").put("version", "2.0.0")
+                .put("files", databases.size).put("docs", databases.size)
+                .put("web", JSONObject().put("sessions", webSessions)).put("devices_online", 1).put("backup_days", backupDatabases.size).toString()
             path.endsWith("/sync/hello") -> { hellos += JSONObject(body); 200 to JSONObject().put("ok", true).put("online", 1).put("web", JSONObject().put("sessions", webSessions)).toString() }
             path.endsWith("/sync/backups") -> {
                 val arr = JSONArray()
-                for ((d, f) in backupDays.entries.sortedByDescending { it.key }) {
-                    arr.put(JSONObject().put("date", d).put("files", f.size).put("databases", backupDatabases[d]?.size ?: 0).put("docs", f.count { it.key.startsWith("map") })
-                        .put("bytes", f.values.sumOf { it.length }).put("updated_at", "${d}T07:32:00.000Z").put("last_actor", if (d == nullActorDay) JSONObject.NULL else "Galaxy Tab"))
+                for ((d, f) in backupDatabases.entries.sortedByDescending { it.key }) {
+                    arr.put(JSONObject().put("date", d).put("databases", f.size).put("bytes", f.values.sumOf { it.length })
+                        .put("updated_at", "${d}T07:32:00.000Z").put("last_actor", if (d == nullActorDay) JSONObject.NULL else "Galaxy Tab"))
                 }
                 200 to JSONObject().put("days", arr).toString()
             }
             dbDayMatch != null -> {
                 val day = dbDayMatch.groupValues[1]
                 val f = backupDatabases[day]
-                if (f == null && !backupDays.containsKey(day)) 404 to """{"error":"Backup not found"}""" else {
-                    val arr = JSONArray()
-                    for ((n, t) in f ?: emptyMap()) arr.put(JSONObject().put("name", n).put("text", t))
-                    200 to JSONObject().put("date", day).put("files", arr).toString()
-                }
-            }
-            path.endsWith("/sync/databases/push") -> pushDatabases(body)
-            dayMatch != null -> {
-                val day = dayMatch.groupValues[1]
-                val f = backupDays[day]
                 if (f == null) 404 to """{"error":"Backup not found"}""" else {
                     val arr = JSONArray()
                     for ((n, t) in f) arr.put(JSONObject().put("name", n).put("text", t))
                     200 to JSONObject().put("date", day).put("files", arr).toString()
                 }
             }
+            path.endsWith("/sync/databases/push") -> pushDatabases(body)
             path.endsWith("/sync/wipe") -> {
                 if (JSONObject(body).optString("confirm") != "XOA TAT CA") 400 to """{"error":"Confirmation required"}""" else {
                     wipes++
-                    files.clear(); databases.clear(); backupDays.clear(); backupDatabases.clear()
-                    200 to JSONObject().put("ok", true).put("moved", JSONArray(listOf("accounts", "backups"))).put("kept_in", "_wiped/2026-10-11T00-00-00-000Z").toString()
+                    databases.clear(); backupDatabases.clear()
+                    200 to JSONObject().put("ok", true).put("moved", JSONArray(listOf("backups", "databases"))).put("kept_in", "_wiped/2026-10-11T00-00-00-000Z").toString()
                 }
             }
-            path.endsWith("/sync/push") -> push(body)
-            path.endsWith("/sync/pull") -> pull()
             else -> 404 to """{"error":"Not found"}"""
         }
-    }
-
-    private fun push(body: String): Pair<Int, String> {
-        val arr = JSONObject(body).getJSONArray("files")
-        val names = mutableListOf<String>()
-        var imported = 0
-        var updated = 0
-        var unchanged = 0
-        for (i in 0 until arr.length()) {
-            val f = arr.getJSONObject(i)
-            val name = f.getString("name")
-            val text = f.getString("text")
-            names += name
-            when {
-                !files.containsKey(name) -> { files[name] = text; imported++ }
-                files[name] != text -> { files[name] = text; updated++ }
-                else -> unchanged++
-            }
-        }
-        pushes += names
-        val importedArr = JSONArray().also { a -> repeat(imported) { a.put(JSONObject().put("id", "x")) } }
-        val updatedArr = JSONArray().also { a -> repeat(updated) { a.put(JSONObject().put("id", "y")) } }
-        return 200 to JSONObject().put("imported", importedArr).put("updated", updatedArr).put("unchanged", unchanged)
-            .put("skipped", JSONArray()).put("snapshots", updated).toString()
     }
 
     private fun pushDatabases(body: String): Pair<Int, String> {
@@ -181,11 +141,5 @@ class FakeSyncServer {
         }
         databasePushes += names
         return 200 to JSONObject().put("saved", saved).put("unchanged", unchanged).put("skipped", JSONArray()).toString()
-    }
-
-    private fun pull(): Pair<Int, String> {
-        val arr = JSONArray()
-        for ((n, t) in files) arr.put(JSONObject().put("name", n).put("text", t))
-        return 200 to JSONObject().put("account", "c_" + "0".repeat(32)).put("files", arr).toString()
     }
 }

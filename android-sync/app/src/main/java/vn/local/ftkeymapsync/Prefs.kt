@@ -14,33 +14,24 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-const val DEFAULT_FOLDER = "Documents/Gamwing/keymap_cache"
 const val DEFAULT_DATABASES = "Documents/jya2/databases"
 
 /** Settings, plus the "what was last pushed" memory the watcher needs (so a restart does not push everything again). */
-class Prefs(context: Context) : StateStore, DbStateStore {
+class Prefs(context: Context) : DbStateStore {
     private val sp = context.applicationContext.getSharedPreferences("ftkeymapsync", Context.MODE_PRIVATE)
 
     var serverUrl: String
         get() = sp.getString("server", "") ?: ""
         set(v) { sp.edit().putString("server", v).apply() }
 
-    var folderPath: String
-        get() = sp.getString("folder", DEFAULT_FOLDER) ?: DEFAULT_FOLDER
-        set(v) { sp.edit().putString("folder", v).apply() }
-
     var autoPush: Boolean
         get() = sp.getBoolean("auto", false)
         set(v) { sp.edit().putBoolean("auto", v).apply() }
 
-    /** Documents/jya2/databases: the Gamwing app's own preference files, backed up next to the keymap cache. */
+    /** Documents/jya2/databases: the Gamwing app's own preference files (the only thing this app backs up). */
     var databasesPath: String
         get() = sp.getString("databases", DEFAULT_DATABASES) ?: DEFAULT_DATABASES
         set(v) { sp.edit().putString("databases", v).apply() }
-
-    var databasesOn: Boolean
-        get() = sp.getBoolean("databasesOn", true)
-        set(v) { sp.edit().putBoolean("databasesOn", v).apply() }
 
     override var lastPushedDb: Map<String, String>
         get() = runCatching {
@@ -62,17 +53,10 @@ class Prefs(context: Context) : StateStore, DbStateStore {
     var deviceName: String
         get() = sp.getString("deviceName", "")?.takeIf { it.isNotBlank() } ?: defaultDeviceName()
         set(v) { sp.edit().putString("deviceName", v.trim()).apply() }
-
-    override var lastPushed: Map<String, String>
-        get() = runCatching {
-            val j = JSONObject(sp.getString("lastPushed", "{}") ?: "{}")
-            j.keys().asSequence().associateWith { j.getString(it) }
-        }.getOrDefault(emptyMap())
-        set(v) { sp.edit().putString("lastPushed", JSONObject(v).toString()).apply() }
 }
 
-/** "Documents/Gamwing/keymap_cache" is relative to the internal storage; a path starting with "/" is used as it is. */
-fun resolveFolder(path: String, default: String = DEFAULT_FOLDER): File {
+/** "Documents/jya2/databases" is relative to the internal storage; a path starting with "/" is used as it is. */
+fun resolveFolder(path: String, default: String = DEFAULT_DATABASES): File {
     val p = path.trim().ifEmpty { default }
     return if (p.startsWith("/")) File(p) else File(Environment.getExternalStorageDirectory(), p)
 }

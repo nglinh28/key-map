@@ -14,7 +14,7 @@ private val DAY = Regex("""\d{4}-\d{2}-\d{2}""")
 private fun JSONObject.textOrNull(key: String): String? = if (isNull(key)) null else optString(key).ifBlank { null }
 
 /**
- * Talks to the keymap server's sync endpoints. The server has no login (it is meant for a trusted LAN);
+ * Talks to the backup server's sync endpoints. The server has no login (it is meant for a trusted LAN);
  * the X-Admin-Request header is what its browser-protection expects on writes.
  */
 class ServerClient(
@@ -28,11 +28,10 @@ class ServerClient(
     fun info(): ServerInfo {
         val j = request("GET", "/admin/api/sync/info", null)
         if (!j.optBoolean("ok") || j.optString("server") != "ft-keymap-server") {
-            throw SyncException("Địa chỉ này không phải server keymap (ft-keymap-server).")
+            throw SyncException("Địa chỉ này không phải server sao lưu (ft-keymap-server).")
         }
         return ServerInfo(
-            server = j.optString("server"), version = j.optString("version"), account = j.optString("account"),
-            accounts = j.optInt("accounts"), docs = j.optInt("docs"),
+            server = j.optString("server"), version = j.optString("version"), files = j.optInt("files", j.optInt("docs")),
             webSessions = j.optJSONObject("web")?.optInt("sessions") ?: 0,
             devicesOnline = j.optInt("devices_online"), backupDays = j.optInt("backup_days"),
         )
@@ -52,18 +51,11 @@ class ServerClient(
         val arr = request("GET", "/admin/api/sync/backups", null).optJSONArray("days") ?: return emptyList()
         return (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
-            BackupDay(o.getString("date"), o.optInt("files"), o.optInt("docs"), o.optLong("bytes"), o.textOrNull("updated_at"), o.textOrNull("last_actor"), o.optInt("databases"))
+            BackupDay(o.getString("date"), o.optInt("databases"), o.optLong("bytes"), o.textOrNull("updated_at"), o.textOrNull("last_actor"))
         }
     }
 
-    /** The files of one backup day, in the phone's cache format. */
-    fun backup(day: String): List<NamedText> {
-        if (!DAY.matches(day)) throw SyncException("Ngày không hợp lệ: $day")
-        val arr = request("GET", "/admin/api/sync/backups/$day", null).optJSONArray("files") ?: return emptyList()
-        return (0 until arr.length()).map { val o = arr.getJSONObject(it); NamedText(o.getString("name"), o.getString("text")) }
-    }
-
-    /** The preference files (Documents/jya2/databases) of one backup day. */
+    /** The preference files of one backup day. */
     fun databasesOfDay(day: String): List<NamedText> {
         if (!DAY.matches(day)) throw SyncException("Ngày không hợp lệ: $day")
         val arr = request("GET", "/admin/api/sync/backups/$day/databases", null).optJSONArray("files") ?: return emptyList()
@@ -81,17 +73,6 @@ class ServerClient(
         val j = request("POST", "/admin/api/sync/wipe", JSONObject().put("confirm", "XOA TAT CA").toString())
         val moved = j.optJSONArray("moved")
         return WipeResult((0 until (moved?.length() ?: 0)).map { moved!!.getString(it) }, j.optString("kept_in"))
-    }
-
-    fun push(files: List<NamedText>): PushSummary {
-        val arr = JSONArray()
-        for (f in files) arr.put(JSONObject().put("name", f.name).put("text", f.text))
-        return PushSummary.fromJson(request("POST", "/admin/api/sync/push", JSONObject().put("files", arr).toString()))
-    }
-
-    fun pull(): List<NamedText> {
-        val arr = request("GET", "/admin/api/sync/pull", null).optJSONArray("files") ?: return emptyList()
-        return (0 until arr.length()).map { val o = arr.getJSONObject(it); NamedText(o.getString("name"), o.getString("text")) }
     }
 
     private fun request(method: String, path: String, body: String?): JSONObject {
@@ -125,7 +106,7 @@ class ServerClient(
                 val why = json?.optString("error")?.takeIf { it.isNotBlank() } ?: text.take(120)
                 throw SyncException("Server trả lỗi $code: $why")
             }
-            return json ?: throw SyncException("Phản hồi không phải JSON: địa chỉ này không phải server keymap.")
+            return json ?: throw SyncException("Phản hồi không phải JSON: địa chỉ này không phải server sao lưu.")
         } catch (e: SyncException) {
             throw e
         } catch (e: IOException) {

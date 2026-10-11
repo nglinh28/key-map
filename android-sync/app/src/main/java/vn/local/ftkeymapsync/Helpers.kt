@@ -1,23 +1,6 @@
 package vn.local.ftkeymapsync
 
-import org.json.JSONArray
-import org.json.JSONObject
-import org.json.JSONTokener
 import java.net.URI
-
-/** The phone stores "list|<ns>" and "map|<id>" with the bar percent-encoded in the file name. */
-object CacheNames {
-    private val CACHE = Regex("^(list|map)%7C[A-Za-z0-9._-]+\\.json$")
-
-    fun kind(name: String): FileKind = when {
-        !CACHE.matches(name) -> FileKind.OTHER
-        name.startsWith("list%7C") -> FileKind.LIST
-        else -> FileKind.MAP
-    }
-
-    /** A name received from the server is only used if it is a plain cache file name (no path, nothing surprising). */
-    fun isSafeServerName(name: String) = CACHE.matches(name)
-}
 
 /**
  * The preference files of the Gamwing app (the .xml files in Documents/jya2/databases). Same rules as the server's: only plain .xml
@@ -57,31 +40,4 @@ fun normalizeServerUrl(input: String): String? {
     } catch (e: Exception) {
         null
     }
-}
-
-/** Equality of two JSON values: key order and number spelling (100 vs 100.0) do not matter. */
-fun jsonEquals(a: Any?, b: Any?): Boolean = when {
-    a is JSONObject && b is JSONObject -> {
-        val ka = a.keys().asSequence().toSet()
-        val kb = b.keys().asSequence().toSet()
-        ka == kb && ka.all { jsonEquals(a.get(it), b.get(it)) }
-    }
-    a is JSONArray && b is JSONArray -> a.length() == b.length() && (0 until a.length()).all { jsonEquals(a.get(it), b.get(it)) }
-    a is Number && b is Number -> a.toDouble() == b.toDouble()
-    else -> a == b
-}
-
-private fun parseStrict(text: String): Any? {
-    val t = JSONTokener(text)
-    val v = t.nextValue()
-    if (t.nextClean() != 0.toChar()) throw IllegalArgumentException("trailing data")
-    return v
-}
-
-/** Same JSON content? Text that is not valid JSON is compared exactly. */
-fun sameJson(a: String, b: String): Boolean {
-    val pa = runCatching { parseStrict(a) }.getOrNull()
-    val pb = runCatching { parseStrict(b) }.getOrNull()
-    if ((pa is JSONObject || pa is JSONArray) && (pb is JSONObject || pb is JSONArray)) return jsonEquals(pa, pb)
-    return a == b
 }

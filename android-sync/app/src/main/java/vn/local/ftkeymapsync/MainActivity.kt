@@ -44,10 +44,8 @@ class MainActivity : Activity() {
     private lateinit var logScroll: ScrollView
     private lateinit var permBox: LinearLayout
     private lateinit var serverInput: EditText
-    private lateinit var folderInput: EditText
     private lateinit var nameInput: EditText
-    private lateinit var databasesInput: EditText
-    private lateinit var databasesSwitch: Switch
+    private lateinit var folderInput: EditText
     private lateinit var autoSwitch: Switch
 
     private enum class Level { INFO, OK, WARN, ERR }
@@ -154,42 +152,24 @@ class MainActivity : Activity() {
             field("Tên thiết bị (hiện trên trang web)", nameInput)
         }
 
-        // ---- folders
+        // ---- folder
         folderInput = EditText(this).apply {
-            setText(prefs.folderPath)
-            hint = DEFAULT_FOLDER
-            isSingleLine = true
-            addTextChangedListener(watcher { prefs.folderPath = it })
-        }
-        databasesInput = EditText(this).apply {
             setText(prefs.databasesPath)
             hint = DEFAULT_DATABASES
             isSingleLine = true
-            isEnabled = prefs.databasesOn
             addTextChangedListener(watcher { prefs.databasesPath = it })
         }
-        databasesSwitch = switchRow("Sao lưu cả cài đặt của Gamwing (file .xml)", prefs.databasesOn) { on ->
-            prefs.databasesOn = on
-            databasesInput.isEnabled = on
-            databasesInput.alpha = if (on) 1f else 0.5f
-            if (prefs.autoPush) { stopWatch(); startWatch() }
-        }
-        databasesInput.alpha = if (prefs.databasesOn) 1f else 0.5f
         val folderCard = card("Thư mục") {
-            field("Keymap của Gamwing (tính từ bộ nhớ trong; bắt đầu bằng / là đường dẫn đầy đủ)", folderInput)
-            addView(databasesSwitch, matchWrap().apply { topMargin = dp(12) })
-            field("Thư mục cài đặt Gamwing", databasesInput)
+            field("Thư mục cài đặt Gamwing (tính từ bộ nhớ trong; bắt đầu bằng / là đường dẫn đầy đủ)", folderInput)
         }
 
         // ---- actions: the one that matters most is filled, the rest are outlined
         val actionCard = card("Thao tác") {
             addView(actionButton("Đẩy lên server", true) { pushAll() }, matchWrap())
             actions(
-                actionButton("Nhập từ server về", false) { pull() },
+                actionButton("Khôi phục theo ngày…", false) { restoreByDay() },
                 actionButton("Kiểm tra kết nối", false) { checkConnection() },
                 actionButton("Quét file", false) { scanFolder() },
-                actionButton("Khôi phục theo ngày…", false) { restoreByDay() },
-                actionButton("Khôi phục cài đặt theo ngày…", false) { restoreDatabasesByDay() },
             )
         }
 
@@ -209,7 +189,7 @@ class MainActivity : Activity() {
         // ---- danger zone
         val dangerCard = card("Vùng nguy hiểm") {
             addView(TextView(context).apply {
-                text = "Xóa toàn bộ keymap, lịch sử, sao lưu theo ngày và file cài đặt đang lưu trên server. File trên máy tính bảng không bị đụng tới."
+                text = "Xóa toàn bộ file cài đặt, lịch sử từng file và sao lưu theo ngày đang lưu trên server. File trên máy tính bảng không bị đụng tới."
                 textSize = 13f; setTextColor(pal.muted)
             })
             addView(actionButton("Xóa toàn bộ trên server…", false, danger = true) { confirmWipe() }, matchWrap().apply { topMargin = dp(10) })
@@ -237,7 +217,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(gutter, dp(20), gutter, dp(28)) }
         col.addView(TextView(this).apply { text = "KeyMap Sync"; textSize = 24f; setTypeface(null, Typeface.BOLD); setTextColor(pal.text); isAccessibilityHeading = true })
         col.addView(TextView(this).apply {
-            text = "Đồng bộ keymap và cài đặt Gamwing với server"
+            text = "Sao lưu cài đặt Gamwing (jya2/databases) lên server"
             textSize = 14f; setTextColor(pal.muted); setPadding(0, dp(2), 0, dp(14))
         })
         col.addView(permBox)
@@ -293,10 +273,8 @@ class MainActivity : Activity() {
             setPadding(dp(24), dp(8), dp(24), 0)
             addView(TextView(context).apply {
                 text = "Sẽ xóa TOÀN BỘ trên server $url:\n" +
-                    "• tất cả keymap, độ giật, nhận diện AI và lịch sử từng bản\n" +
-                    "• mọi bản sao lưu theo ngày\n" +
-                    "• các file cài đặt Gamwing đã sao lưu (kể cả ADBKey.xml)\n" +
-                    "• mã chia sẻ\n\n" +
+                    "• các file cài đặt Gamwing đã sao lưu (kể cả ADBKey.xml, gamwing_keymap_cache.xml) và lịch sử từng file\n" +
+                    "• mọi bản sao lưu theo ngày\n\n" +
                     "File trên máy tính bảng không bị đụng tới. Server giữ lại đúng một bản sao của lần xóa này trong thư mục data/_wiped cho tới lần xóa kế tiếp; muốn xóa hẳn phải xóa tay thư mục đó.\n\n" +
                     "Tự đẩy sẽ không đẩy lại các file chưa thay đổi, nên server sẽ trống cho tới khi có file đổi hoặc bạn bấm \"Đẩy lên server\"."
                 textSize = 14f
@@ -503,12 +481,11 @@ class MainActivity : Activity() {
         val url = serverUrlOrNull() ?: return
         if (!hasAllFiles()) { StatusBus.log("Chưa cấp quyền \"Truy cập mọi file\"."); refreshPermission(); return }
         val folder = LocalFolder(resolveFolder(folderInput.text.toString()))
-        val dbFolder = if (prefs.databasesOn) LocalFolder(resolveFolder(databasesInput.text.toString(), DEFAULT_DATABASES)) else null
         val me = identity()
         setBusy(true)
         io.execute {
             try {
-                work(folder, SyncEngine(folder, ServerClient(url, identity = me), backupRoot(), dbFolder = dbFolder))
+                work(folder, SyncEngine(folder, ServerClient(url, identity = me), backupRoot()))
             } catch (e: Exception) {
                 StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
             } finally {
@@ -526,7 +503,7 @@ class MainActivity : Activity() {
             try {
                 val info = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).info()
                 runOnUiThread { setStatus(info.describe(url), Level.OK); setWeb(info.webLine(), info.webSessions > 0) }
-                StatusBus.log("${info.describe(url)} · ${info.docs} keymap · ${info.backupDays} ngày sao lưu · tài khoản đồng bộ ${info.account}")
+                StatusBus.log("${info.describe(url)} · ${info.backupDays} ngày sao lưu · phiên bản server ${info.version}")
             } catch (e: SyncException) {
                 runOnUiThread { setStatus(e.message ?: "Không kết nối được", Level.ERR); setWeb("Giao diện web: chưa rõ (chưa kết nối server)", false) }
             }
@@ -538,7 +515,7 @@ class MainActivity : Activity() {
         val url = normalizeServerUrl(serverInput.text.toString()) ?: return
         val me = identity()
         val auto = prefs.autoPush
-        val folder = prefs.folderPath
+        val folder = prefs.databasesPath
         io.execute {
             try {
                 val r = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).hello(Heartbeat(auto, folder, if (auto) "watching" else "idle", ""))
@@ -551,88 +528,21 @@ class MainActivity : Activity() {
 
     private fun scanFolder() = withEngine { _, engine ->
         StatusBus.log(engine.scan().describe())
-        if (prefs.databasesOn) StatusBus.log(engine.scanDatabases().describe())
     }
 
     private fun pushAll() = withEngine { folder, engine ->
-        StatusBus.log("Đang đẩy lên server…")
-        val s = engine.pushAll()
-        prefs.lastPushed = cacheFingerprints(folder) // the watcher must not push the same files again
+        val scan = engine.scan()
+        if (!scan.exists) { StatusBus.log(scan.describe()); return@withEngine }
+        StatusBus.log("Đang đẩy ${scan.files} file lên server…")
+        val s = engine.push()
+        prefs.lastPushedDb = databaseFingerprints(folder) // the watcher must not push the same files again
         StatusBus.log("Đã đẩy lên: ${s.describe()}")
         s.skipped.forEach { StatusBus.log("  bỏ qua $it") }
-        if (prefs.databasesOn) {
-            val scan = engine.scanDatabases()
-            if (!scan.exists) {
-                StatusBus.log(scan.describe())
-            } else {
-                val d = engine.pushDatabases()
-                prefs.lastPushedDb = databaseFingerprints(LocalFolder(resolveFolder(databasesInput.text.toString(), DEFAULT_DATABASES)))
-                StatusBus.log("Đã đẩy cài đặt Gamwing: ${d.describe()}")
-                d.skipped.forEach { StatusBus.log("  bỏ qua $it") }
-            }
-        }
-    }
-
-    private fun restoreDatabasesByDay() {
-        if (!prefs.databasesOn) { StatusBus.log("Hãy bật \"Sao lưu cả cài đặt của Gamwing\" trước."); return }
-        withEngine { _, engine ->
-            val days = engine.listBackupDays().filter { it.databases > 0 }
-            if (days.isEmpty()) { StatusBus.log("Server chưa có bản sao lưu cài đặt nào."); return@withEngine }
-            runOnUiThread {
-                AlertDialog.Builder(this)
-                    .setTitle("Chọn ngày để khôi phục cài đặt")
-                    .setItems(days.map { it.describe() }.toTypedArray()) { _, i ->
-                        val day = days[i]
-                        io.execute {
-                            try {
-                                StatusBus.log("Đang lấy cài đặt ngày ${day.date}…")
-                                confirmAndApplyDatabases(engine, engine.planRestoreDatabases(day.date), day.date)
-                            } catch (e: Exception) {
-                                StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
-                            }
-                        }
-                    }
-                    .setNegativeButton("Hủy", null)
-                    .show()
-            }
-        }
-    }
-
-    /** Same safety as the keymap restore: show what changes, warn, and only after the user agrees write (old files copied first). */
-    private fun confirmAndApplyDatabases(engine: SyncEngine, plan: PullPlan, day: String) {
-        plan.rejected.forEach { StatusBus.log("  bỏ qua tên file không được phép: $it") }
-        StatusBus.log("Cài đặt ngày $day: ${plan.items.size} file — ${plan.newCount} mới, ${plan.changedCount} khác, ${plan.sameCount} giống")
-        if (plan.newCount + plan.changedCount == 0) { StatusBus.log("Không có gì để ghi."); return }
-        val names = plan.items.filter { it.state != PullState.SAME }.joinToString("\n") { "• ${it.name} (${if (it.state == PullState.NEW) "mới" else "sẽ bị ghi đè"})" }
-        runOnUiThread {
-            AlertDialog.Builder(this)
-                .setTitle("Ghi ${plan.newCount + plan.changedCount} file cài đặt của ngày $day?")
-                .setMessage(
-                    "$names\n\n⚠ Đây là file cài đặt của chính app Gamwing. Hãy ĐÓNG HẲN Gamwing trước khi ghi; nếu app đang chạy nó có thể ghi đè lại " +
-                        "hoặc không đọc lại các file này. Tôi chưa kiểm chứng app có đọc lại hay không.\n\n" +
-                        "File cũ bị ghi đè được sao lưu vào ${backupRoot().path}/<thời gian>/databases/.",
-                )
-                .setNegativeButton("Hủy") { _, _ -> StatusBus.log("Đã hủy.") }
-                .setPositiveButton("Ghi vào thư mục") { _, _ ->
-                    io.execute {
-                        val r = engine.applyRestoreDatabases(plan)
-                        prefs.lastPushedDb = databaseFingerprints(LocalFolder(resolveFolder(databasesInput.text.toString(), DEFAULT_DATABASES)))
-                        StatusBus.log("Đã ghi ${r.written.size} file cài đặt." + (r.backupDir?.let { " File cũ đã sao lưu vào ${it.path}" } ?: ""))
-                        r.failed.forEach { StatusBus.log("  lỗi: $it") }
-                    }
-                }
-                .show()
-        }
-    }
-
-    private fun pull() = withEngine { folder, engine ->
-        StatusBus.log("Đang lấy danh sách từ server…")
-        confirmAndApply(folder, engine, engine.planPull(), "bản mới nhất trên server")
     }
 
     private fun restoreByDay() = withEngine { folder, engine ->
-        val days = engine.listBackupDays()
-        if (days.isEmpty()) { StatusBus.log("Server chưa có bản sao lưu theo ngày nào."); return@withEngine }
+        val days = engine.listBackupDays().filter { it.databases > 0 }
+        if (days.isEmpty()) { StatusBus.log("Server chưa có bản sao lưu nào."); return@withEngine }
         runOnUiThread {
             AlertDialog.Builder(this)
                 .setTitle("Chọn ngày để khôi phục")
@@ -641,7 +551,7 @@ class MainActivity : Activity() {
                     io.execute {
                         try {
                             StatusBus.log("Đang lấy bản sao lưu ngày ${day.date}…")
-                            confirmAndApply(folder, engine, engine.planPullDay(day.date), "bản sao lưu ngày ${day.date}")
+                            confirmAndApply(folder, engine, engine.planRestore(day.date), day.date)
                         } catch (e: Exception) {
                             StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
                         }
@@ -652,25 +562,25 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Shows what would change, warns, and only after the user agrees writes the files (old ones are backed up first). */
-    private fun confirmAndApply(folder: LocalFolder, engine: SyncEngine, plan: PullPlan, source: String) {
-        plan.rejected.forEach { StatusBus.log("  bỏ qua tên file không an toàn từ server: $it") }
-        StatusBus.log("Từ $source: ${plan.items.size} file — ${plan.newCount} mới, ${plan.changedCount} khác, ${plan.sameCount} giống")
+    /** Shows what would change, warns, and only after the user agrees writes the files (old ones are copied first). */
+    private fun confirmAndApply(folder: LocalFolder, engine: SyncEngine, plan: PullPlan, day: String) {
+        plan.rejected.forEach { StatusBus.log("  bỏ qua tên file không được phép: $it") }
+        StatusBus.log("Ngày $day: ${plan.items.size} file — ${plan.newCount} mới, ${plan.changedCount} khác, ${plan.sameCount} giống")
         if (plan.newCount + plan.changedCount == 0) { StatusBus.log("Không có gì để ghi."); return }
+        val names = plan.items.filter { it.state != PullState.SAME }.joinToString("\n") { "• ${it.name} (${if (it.state == PullState.NEW) "mới" else "sẽ bị ghi đè"})" }
         runOnUiThread {
             AlertDialog.Builder(this)
-                .setTitle("Ghi ${plan.newCount + plan.changedCount} file vào ${folder.dir.path}?")
+                .setTitle("Ghi ${plan.newCount + plan.changedCount} file của ngày $day vào ${folder.dir.path}?")
                 .setMessage(
-                    "Nguồn: $source.\n${plan.newCount} file mới, ${plan.changedCount} file khác (sẽ bị ghi đè), ${plan.sameCount} file giống (bỏ qua).\n\n" +
-                        "⚠ Cảnh báo: app Gamwing đọc dữ liệu riêng của nó TRƯỚC và tải lại từ server của nó khi có mạng, " +
-                        "nên các file này thường không làm app đổi theo; chúng chủ yếu là bản lưu dự phòng.\n\n" +
-                        "File cũ bị ghi đè sẽ được sao lưu vào ${backupRoot().path}/<thời gian>/. Nên đóng app Gamwing trước khi ghi.",
+                    "$names\n\n⚠ Đây là file cài đặt của chính app Gamwing. Hãy ĐÓNG HẲN Gamwing trước khi ghi; nếu app đang chạy nó có thể ghi đè lại " +
+                        "hoặc không đọc lại các file này. Tôi chưa kiểm chứng app có đọc lại hay không.\n\n" +
+                        "File cũ bị ghi đè được sao lưu vào ${backupRoot().path}/<thời gian>/databases/.",
                 )
                 .setNegativeButton("Hủy") { _, _ -> StatusBus.log("Đã hủy.") }
                 .setPositiveButton("Ghi vào thư mục") { _, _ ->
                     io.execute {
-                        val r = engine.applyPull(plan)
-                        prefs.lastPushed = prefs.lastPushed + cacheFingerprints(folder).filterKeys { it in r.written }
+                        val r = engine.applyRestore(plan)
+                        prefs.lastPushedDb = databaseFingerprints(folder)
                         StatusBus.log("Đã ghi ${r.written.size} file." + (r.backupDir?.let { " File cũ đã sao lưu vào ${it.path}" } ?: ""))
                         r.failed.forEach { StatusBus.log("  lỗi: $it") }
                     }
