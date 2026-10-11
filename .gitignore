@@ -1,0 +1,12 @@
+# dữ liệu thật lấy từ điện thoại (có thể chứa khóa riêng như ADBKey.xml): không bao giờ commit
+/databases/
+/databases_new/
+/keymap_cache/
+# dữ liệu chạy của server
+**/data/
+node_modules/
+# sản phẩm build của Android
+android-sync/.gradle/
+android-sync/**/build/
+android-sync/local.properties
+*.log
