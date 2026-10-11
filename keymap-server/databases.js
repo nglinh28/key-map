@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_FILE_BYTES = 24 * 1024 * 1024;
 const MAX_FILES = 200;
 const MAX_NAME_CHARS = 120;
 const EXCLUDED = /entitlement|ipc[-_ ]?session|licen[cs]e/i;
@@ -99,7 +99,7 @@ class DatabasesStore {
       const name = f && f.name;
       const why = nameProblem(name) || (typeof f.text !== 'string' ? 'nội dung không phải chuỗi' : null);
       if (why) { result.skipped.push({ name: typeof name === 'string' ? name : String(name), reason: why }); continue; }
-      if (Buffer.byteLength(f.text) > MAX_FILE_BYTES) { result.skipped.push({ name, reason: 'file quá lớn (tối đa 8 MB)' }); continue; }
+      if (Buffer.byteLength(f.text) > MAX_FILE_BYTES) { result.skipped.push({ name, reason: 'file quá lớn (tối đa 24 MB)' }); continue; }
       if (!known.has(name.normalize('NFC')) && known.size >= MAX_FILES) { result.skipped.push({ name, reason: `đã đủ ${MAX_FILES} file` }); continue; }
       const target = this.file(name);
       let current = null;

@@ -9,17 +9,11 @@ const D = require('./databases');
 const { withServer, raw } = require('./harness');
 
 const W = { 'X-Admin-Request': '1' };
-const NS = 'com.vng.pubgmobile';
-const A = 'a'.repeat(32);
 const T0 = Date.UTC(2026, 9, 10, 20, 30); // 03:30 on 2026-10-11 in Vietnam
 const DAY = 24 * 3600 * 1000;
 const xml = (v) => `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name="x" value="${v}" />\n</map>\n`;
 const file = (name, v = 1) => ({ name, text: xml(v) });
 const pushDb = (port, files, headers = {}) => raw(port, 'POST', '/admin/api/sync/databases/push', { headers: { ...W, ...headers }, body: { files } });
-const pushCache = (port) => raw(port, 'POST', '/admin/api/sync/push', {
-  headers: W,
-  body: { files: [{ name: `list%7C${NS}.json`, text: JSON.stringify({ items: [{ id: A, name: 'n', game: NS, public: false }] }) }, { name: `map%7C${A}.json`, text: '{"components":[]}' }] },
-});
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ftdb-'));
 
 test('names: only safe .xml names are accepted, license and session files are refused', () => {
@@ -91,68 +85,35 @@ test('endpoint: push, list and read a file, with the same write guard as the oth
 test('daily backup: preference files go into the day\'s databases folder, overwritten within the day', async () => {
   const c = { now: T0 };
   await withServer({}, async ({ port, dir }) => {
-    await pushCache(port);
     await pushDb(port, [file('ADBKey.xml', 1), file('Cài đặt cơ bản.xml', 1)], { 'X-Device-Id': 'tablet-0001', 'X-Device-Name': encodeURIComponent('Galaxy Tab S8') });
     const day = path.join(dir, 'backups', '2026-10-11');
     assert.deepEqual(fs.readdirSync(path.join(day, 'databases')).map(decodeURIComponent).sort(), ['ADBKey.xml', 'Cài đặt cơ bản.xml']);
     const m = JSON.parse(fs.readFileSync(path.join(day, '_manifest.json'), 'utf8'));
-    assert.deepEqual([m.databases, m.files, m.last_actor], [2, 2, 'Galaxy Tab S8']);
+    assert.deepEqual([m.databases, m.last_actor], [2, 'Galaxy Tab S8']);
     await pushDb(port, [file('ADBKey.xml', 7)]);
     const names = fs.readdirSync(path.join(day, 'databases'));
     assert.equal(names.length, 2);
     assert.equal(fs.readFileSync(path.join(day, 'databases', 'ADBKey.xml'), 'utf8'), xml(7));
     const list = await raw(port, 'GET', '/admin/api/sync/backups');
-    assert.deepEqual([list.json.days[0].databases, list.json.days[0].files], [2, 2]);
+    assert.equal(list.json.days[0].databases, 2);
     const read = await raw(port, 'GET', '/admin/api/sync/backups/2026-10-11/databases');
     assert.deepEqual(read.json.files.map((f) => f.name), ['ADBKey.xml', 'Cài đặt cơ bản.xml']);
     assert.equal(read.json.files[0].text, xml(7));
     assert.equal((await raw(port, 'GET', '/admin/api/sync/backups/2026-01-01/databases')).status, 404);
     assert.equal((await raw(port, 'GET', '/admin/api/sync/backups/..%2f..%2fx/databases')).status, 400);
-    // the cache half of the day is untouched by a preference-file push
-    const pull = await raw(port, 'GET', '/admin/api/sync/backups/2026-10-11');
-    assert.equal(pull.json.files.length, 2);
   }, { clock: () => c.now });
 });
 
 test('daily backup: a new day gets its own folder, the old day keeps its files', async () => {
   const c = { now: T0 };
   await withServer({}, async ({ port, dir }) => {
-    await pushCache(port);
     await pushDb(port, [file('a.xml', 1)]);
     c.now += DAY;
     await pushDb(port, [file('a.xml', 2)]);
     const read = (day) => fs.readFileSync(path.join(dir, 'backups', day, 'databases', 'a.xml'), 'utf8');
     assert.equal(read('2026-10-11'), xml(1));
     assert.equal(read('2026-10-12'), xml(2));
-    // the new day also carries the cache files (they did not change but belong to every day)
-    assert.ok(fs.existsSync(path.join(dir, 'backups', '2026-10-12', `map%7C${A}.json`)));
   }, { clock: () => c.now });
-});
-
-test('daily backup: preference files alone make a day; later empty halves never wipe what the day holds', async () => {
-  const c = { now: T0 };
-  await withServer({}, async ({ port, dir }) => {
-    await pushDb(port, [file('only.xml', 1)]);
-    const day = path.join(dir, 'backups', '2026-10-11');
-    assert.deepEqual(fs.readdirSync(day).filter((n) => n.startsWith('map') || n.startsWith('list')), []);
-    assert.equal(fs.readdirSync(path.join(day, 'databases')).length, 1);
-    await pushCache(port); // the keymaps arrive later the same day: the day now holds both
-    assert.equal(fs.readdirSync(day).filter((n) => n.startsWith('map')).length, 1);
-    assert.equal(fs.readdirSync(path.join(day, 'databases')).length, 1);
-  }, { clock: () => c.now });
-});
-
-test('an old backup day without a databases folder still lists and reads (older servers)', async () => {
-  await withServer({}, async ({ port, dir }) => {
-    const day = path.join(dir, 'backups', '2026-01-02');
-    fs.mkdirSync(day, { recursive: true });
-    fs.writeFileSync(path.join(day, `map%7C${A}.json`), '{}');
-    const list = await raw(port, 'GET', '/admin/api/sync/backups');
-    const d = list.json.days.find((x) => x.date === '2026-01-02');
-    assert.deepEqual([d.files, d.databases], [1, 0]);
-    const read = await raw(port, 'GET', '/admin/api/sync/backups/2026-01-02/databases');
-    assert.deepEqual([read.status, read.json.files], [200, []]);
-  });
 });
 
 const putDb = (port, name, body) => raw(port, 'PUT', `/admin/api/sync/databases/${encodeURIComponent(name)}`, { headers: W, body });
@@ -208,28 +169,25 @@ test('web edit: only the newest versions are kept', async () => {
 
 test('wipe: needs the typed confirmation, empties everything, keeps only the last wipe aside', async () => {
   await withServer({}, async ({ port, dir }) => {
-    await pushCache(port);
     await pushDb(port, [file('a.xml', 1)], { 'X-Device-Id': 'tablet-0001', 'X-Device-Name': 'Tab' });
     assert.equal((await raw(port, 'POST', '/admin/api/sync/wipe', { headers: W, body: {} })).status, 400);
     assert.equal((await raw(port, 'POST', '/admin/api/sync/wipe', { headers: W, body: { confirm: 'xoa' } })).status, 400);
     assert.equal((await raw(port, 'POST', '/admin/api/sync/wipe', { body: { confirm: 'XOA TAT CA' } })).status, 403, 'the write guard applies');
-    assert.equal(JSON.parse((await raw(port, 'GET', '/admin/api/sync/info')).text).docs, 1, 'nothing was deleted by the refused calls');
+    assert.equal(JSON.parse((await raw(port, 'GET', '/admin/api/sync/info')).text).files, 1, 'nothing was deleted by the refused calls');
 
     const r = await raw(port, 'POST', '/admin/api/sync/wipe', { headers: W, body: { confirm: 'XOA TAT CA' } });
     assert.equal(r.status, 200);
-    assert.ok(r.json.moved.includes('accounts') && r.json.moved.includes('databases') && r.json.moved.includes('backups'));
+    assert.deepEqual(r.json.moved.sort(), ['backups', 'databases']);
     const info = JSON.parse((await raw(port, 'GET', '/admin/api/sync/info')).text);
-    assert.deepEqual([info.docs, info.accounts, info.backup_days], [0, 0, 0]);
+    assert.deepEqual([info.files, info.backup_days], [0, 0]);
     assert.deepEqual((await raw(port, 'GET', '/admin/api/sync/databases')).json.files, []);
-    assert.deepEqual((await raw(port, 'GET', '/admin/api/sync/pull')).json.files, []);
     assert.equal((await raw(port, 'GET', '/admin/api/sync/devices')).json.devices.length, 1, 'the list of devices is not data to wipe');
     const kept = fs.readdirSync(path.join(dir, '_wiped'));
     assert.equal(kept.length, 1);
-    assert.ok(fs.existsSync(path.join(dir, '_wiped', kept[0], 'accounts')));
+    assert.ok(fs.existsSync(path.join(dir, '_wiped', kept[0], 'backups')));
     assert.ok(fs.existsSync(path.join(dir, '_wiped', kept[0], 'databases')));
 
     // the server works again right away, and a second wipe replaces the first one in _wiped
-    assert.equal((await pushCache(port)).status, 200);
     await pushDb(port, [file('b.xml', 2)]);
     assert.equal((await raw(port, 'POST', '/admin/api/sync/wipe', { headers: W, body: { confirm: 'XOA TAT CA' } })).status, 200);
     const again = fs.readdirSync(path.join(dir, '_wiped'));

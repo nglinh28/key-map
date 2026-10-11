@@ -75,7 +75,7 @@ class Devices {
   recordPush(id, summary) {
     const d = this.devices.get(id);
     if (!d) return;
-    d.last_push = { at: this.iso(), imported: summary.imported.length, updated: summary.updated.length, unchanged: summary.unchanged, skipped: summary.skipped.length };
+    d.last_push = { at: this.iso(), saved: summary.saved, unchanged: summary.unchanged, skipped: summary.skipped.length };
     this.save(true);
   }
 

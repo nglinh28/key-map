@@ -14,7 +14,7 @@ const SEC = 1000;
 const hello = (port, body, headers = W) => raw(port, 'POST', '/admin/api/sync/hello', { headers, body });
 const devices = (port) => raw(port, 'GET', '/admin/api/sync/devices');
 const presence = (port, session) => raw(port, 'POST', '/admin/api/presence', { headers: W, body: { session } });
-const tablet = { id: 'tablet-0001', name: 'Galaxy Tab S8 Ultra', model: 'SM-X906B', android: '15', app_version: '1.0.0', auto_push: true, folder: 'Documents/Gamwing/keymap_cache', state: 'watching', ip: '192.168.4.21' };
+const tablet = { id: 'tablet-0001', name: 'Galaxy Tab S8 Ultra', model: 'SM-X906B', android: '15', app_version: '1.0.0', auto_push: true, folder: 'Documents/jya2/databases', state: 'watching', ip: '192.168.4.21' };
 
 function clock(start = T0) {
   const c = { now: start, fn: () => c.now };
@@ -55,7 +55,7 @@ test('the sync endpoints also count as a sign of life when the app sends its ide
     assert.deepEqual([d.length, d[0].id, d[0].name, d[0].online], [1, 'tablet-0002', 'Máy tính bảng của tôi', true]);
     c.now += 60 * SEC;
     assert.equal((await devices(port)).json.devices[0].online, false);
-    await raw(port, 'GET', '/admin/api/sync/pull', { headers: ident });
+    await raw(port, 'GET', '/admin/api/sync/databases', { headers: ident });
     assert.equal((await devices(port)).json.devices[0].online, true);
     // no or bad identity: nothing is registered
     await raw(port, 'GET', '/admin/api/sync/info');
@@ -65,18 +65,27 @@ test('the sync endpoints also count as a sign of life when the app sends its ide
   }, { clock: c.fn });
 });
 
-test('the last push and pull of a device are remembered', async () => {
+test('the last push and the last read of a backup day by a device are remembered', async () => {
   const c = clock();
   await withServer({}, async ({ port }) => {
     const ident = { ...W, 'X-Device-Id': 'tablet-0003', 'X-Device-Name': 'Tab' };
-    const files = [{ name: 'list%7Ccom.a.b.json', text: JSON.stringify({ items: [{ id: 'a'.repeat(32), name: '2026-01-01 00:00:00', game: 'com.a.b', public: false }] }) }, { name: `map%7C${'a'.repeat(32)}.json`, text: '{"x":1}' }];
-    await raw(port, 'POST', '/admin/api/sync/push', { headers: ident, body: { files } });
+    const xml = '<map><int name="x" value="1" /></map>';
+    await raw(port, 'POST', '/admin/api/sync/databases/push', { headers: ident, body: { files: [{ name: 'a.xml', text: xml }, { name: 'b.xml', text: xml }, { name: 'license.xml', text: xml }] } });
     c.now += 5 * SEC;
-    await raw(port, 'GET', '/admin/api/sync/pull', { headers: ident });
-    const d = (await devices(port)).json.devices[0];
-    assert.deepEqual([d.last_push.imported, d.last_push.updated, d.last_push.unchanged, d.last_push.skipped], [1, 0, 0, 0]);
-    assert.equal(d.last_push.at, new Date(T0).toISOString());
-    assert.deepEqual([d.last_pull.files, d.last_pull.at], [2, new Date(T0 + 5 * SEC).toISOString()]);
+    await raw(port, 'POST', '/admin/api/sync/databases/push', { headers: ident, body: { files: [{ name: 'a.xml', text: xml }] } });
+    let d = (await devices(port)).json.devices[0];
+    assert.deepEqual([d.last_push.saved, d.last_push.unchanged, d.last_push.skipped], [0, 1, 0], 'the latest push is the one remembered');
+    c.now += 5 * SEC;
+    await raw(port, 'POST', '/admin/api/sync/databases/push', { headers: ident, body: { files: [{ name: 'a.xml', text: xml.replace('1', '2') }, { name: 'license.xml', text: xml }] } });
+    d = (await devices(port)).json.devices[0];
+    assert.deepEqual([d.last_push.saved, d.last_push.unchanged, d.last_push.skipped], [1, 0, 1]);
+    assert.equal(d.last_push.at, new Date(T0 + 10 * SEC).toISOString());
+    assert.equal(d.last_pull, null);
+    c.now += 5 * SEC;
+    const today = (await raw(port, 'GET', '/admin/api/sync/backups')).json.days[0].date;
+    await raw(port, 'GET', `/admin/api/sync/backups/${today}/databases`, { headers: ident });
+    d = (await devices(port)).json.devices[0];
+    assert.deepEqual([d.last_pull.files, d.last_pull.at], [2, new Date(T0 + 15 * SEC).toISOString()]);
   }, { clock: c.fn });
 });
 

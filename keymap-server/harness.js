@@ -6,26 +6,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { createServer, loadConfig } = require('./server');
 
-const CLIENT_A = 'a'.repeat(32);
-const TOKEN = 'login-token-1234';
-
 // extra: config overrides for the test (for example a fake clock: { clock: () => now })
 async function withServer(env, fn, extra = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ftks-'));
   const server = createServer({ ...loadConfig({ DATA_DIR: dir, ...env }), ...extra });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  const base = `http://127.0.0.1:${port}`;
-  const call = async (method, p, { body, client = CLIENT_A, token = TOKEN, headers = {} } = {}) => {
-    const sep = p.includes('?') ? '&' : '?';
-    const url = `${base}${p}${client ? `${sep}ft_client=${client}` : ''}`;
-    const h = { 'Content-Type': 'application/json; charset=utf-8', ...headers };
-    if (token) h['Login-Token'] = token;
-    const res = await fetch(url, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
-    return { status: res.status, json: await res.json() };
-  };
   try {
-    await fn({ call, dir, base, port });
+    await fn({ dir, port, base: `http://127.0.0.1:${port}` });
   } finally {
     await new Promise((r) => server.close(r));
     fs.rmSync(dir, { recursive: true, force: true });
@@ -52,4 +40,4 @@ function raw(port, method, path, { headers = {}, body } = {}) {
   });
 }
 
-module.exports = { withServer, raw, CLIENT_A, TOKEN };
+module.exports = { withServer, raw };
