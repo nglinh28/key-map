@@ -5,7 +5,11 @@ Gamwing lên server tự host (`../keymap-server`) và khôi phục lại theo n
 license hay chứng chỉ của nó.
 
 ## Chức năng
-- **Địa chỉ server** (ví dụ `http://192.168.1.15:8787`) và **thư mục** (mặc định `Documents/jya2/databases`).
+- **Cài đặt server** (mục riêng ở đầu màn hình): nhập địa chỉ (ví dụ `192.168.4.17:8787`, tự thêm `http://`) rồi bấm **Lưu địa chỉ** hoặc phím Xong
+  trên bàn phím. App kiểm tra trước khi lưu và nói rõ sai ở đâu (ví dụ IP phải có đủ 4 số, cổng 1–65535); địa chỉ sai **không bị lưu**, địa chỉ
+  cũ được giữ. Địa chỉ lưu trong bộ nhớ riêng của app (SharedPreferences) và mọi thao tác (đẩy, khôi phục, tự đẩy, nhịp tim) đều dùng địa chỉ đã lưu.
+  Dòng bên dưới nút luôn cho biết địa chỉ đang dùng hoặc lý do địa chỉ đã lưu không dùng được.
+- **Thư mục** (mặc định `Documents/jya2/databases`).
 - **Khi mở app** tự kiểm tra và hiện: `✔ Đã kết nối tới http://… (server sao lưu, N file đang lưu)` (hoặc lỗi bằng tiếng Việt).
 - **Quét file**: đếm file `.xml` sẽ sao lưu và nêu tên file bị bỏ qua.
 - **Đẩy lên server**: gửi mọi file `.xml` (kể cả `gamwing_keymap_cache.xml` và `ADBKey.xml`), trừ file có tên giấy phép/phiên đăng nhập

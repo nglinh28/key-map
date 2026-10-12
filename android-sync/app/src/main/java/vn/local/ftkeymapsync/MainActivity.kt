@@ -25,6 +25,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -44,6 +45,8 @@ class MainActivity : Activity() {
     private lateinit var logScroll: ScrollView
     private lateinit var permBox: LinearLayout
     private lateinit var serverInput: EditText
+    private lateinit var savedView: TextView
+    private lateinit var savedDot: View
     private lateinit var nameInput: EditText
     private lateinit var folderInput: EditText
     private lateinit var autoSwitch: Switch
@@ -134,22 +137,28 @@ class MainActivity : Activity() {
         webDot = dot(pal.muted)
         serverInput = EditText(this).apply {
             setText(prefs.serverUrl)
-            hint = "http://192.168.4.17:8787"
+            hint = "192.168.4.17:8787"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_DONE
             isSingleLine = true
-            addTextChangedListener(watcher { prefs.serverUrl = it })
-            setOnFocusChangeListener { _, has -> if (!has) checkConnection() }
+            setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_DONE) { saveServer(); true } else false }
         }
+        savedView = TextView(this).apply { textSize = 14f; setTextColor(pal.text); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        savedDot = dot(pal.muted)
         nameInput = EditText(this).apply {
             setText(prefs.deviceName)
             isSingleLine = true
             addTextChangedListener(watcher { prefs.deviceName = it })
         }
+        val settingsCard = card("Cài đặt server") {
+            field("Địa chỉ server (ví dụ 192.168.4.17:8787, lưu trong máy)", serverInput)
+            addView(actionButton("Lưu địa chỉ", true) { saveServer() }, matchWrap().apply { topMargin = dp(10) })
+            addView(statusLine(savedDot, savedView), matchWrap().apply { topMargin = dp(10) })
+            field("Tên thiết bị (hiện trên trang web)", nameInput)
+        }
         val connectCard = card("Kết nối") {
             addView(statusLine(statusDot, statusView))
             addView(statusLine(webDot, webView), matchWrap().apply { topMargin = dp(6) })
-            field("Địa chỉ server", serverInput)
-            field("Tên thiết bị (hiện trên trang web)", nameInput)
         }
 
         // ---- folder
@@ -230,11 +239,11 @@ class MainActivity : Activity() {
             }
             col.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(column(connectCard, folderCard, dangerCard, endGap = true))
+                addView(column(settingsCard, connectCard, folderCard, dangerCard, endGap = true))
                 addView(column(actionCard, autoCard, logCard, endGap = false))
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         } else {
-            listOf(connectCard, folderCard, actionCard, autoCard, logCard, dangerCard).forEach { col.addView(it) }
+            listOf(settingsCard, connectCard, folderCard, actionCard, autoCard, logCard, dangerCard).forEach { col.addView(it) }
         }
 
         // Content is centred and at most 640dp (one column) or 1200dp (two) wide, so a big screen is not stretched edge to edge.
@@ -470,10 +479,46 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ actions
     private fun identity() = identityOf(this, prefs)
 
+    /** The saved address (normalized), or null with the reason in the log and under the field. */
     private fun serverUrlOrNull(): String? {
-        val url = normalizeServerUrl(serverInput.text.toString())
-        if (url == null) StatusBus.log("Chưa nhập địa chỉ server hợp lệ (ví dụ http://192.168.4.17:8787).")
+        val url = normalizeServerUrl(prefs.serverUrl)
+        if (url == null) {
+            val why = savedServerState().first
+            StatusBus.log(why)
+            setSaved(why, savedServerState().second)
+        }
         return url
+    }
+
+    /** what to say about the address stored in the phone, and in which colour */
+    private fun savedServerState(): Pair<String, Level> {
+        val saved = prefs.serverUrl
+        if (saved.isBlank()) return "Chưa lưu địa chỉ server. Nhập địa chỉ ở trên rồi bấm \"Lưu địa chỉ\"." to Level.WARN
+        val problem = serverUrlProblem(saved)
+        if (problem != null) return "Địa chỉ đã lưu không dùng được: $problem Sửa lại ở trên rồi bấm \"Lưu địa chỉ\"." to Level.ERR
+        return "Đang dùng: ${normalizeServerUrl(saved)} (đã lưu trong máy)" to Level.OK
+    }
+
+    private fun setSaved(text: String, level: Level) {
+        savedView.text = text
+        (savedDot.background as GradientDrawable).setColor(levelColor(level))
+    }
+
+    /** Stores the address only when it is usable; otherwise says why and keeps what was saved before. */
+    private fun saveServer() {
+        val input = serverInput.text.toString()
+        val problem = serverUrlProblem(input)
+        if (problem != null) {
+            setSaved("Chưa lưu: $problem", Level.ERR)
+            StatusBus.log("Chưa lưu địa chỉ server: $problem")
+            return
+        }
+        val url = normalizeServerUrl(input)!!
+        prefs.serverUrl = url
+        serverInput.setText(url)
+        setSaved("Đã lưu địa chỉ server: $url", Level.OK)
+        StatusBus.log("Đã lưu địa chỉ server: $url")
+        checkConnection()
     }
 
     /** Runs [work] in the background with a ready engine; checks the address and the storage permission first. */
@@ -495,8 +540,10 @@ class MainActivity : Activity() {
     }
 
     private fun checkConnection() {
-        val url = normalizeServerUrl(serverInput.text.toString())
-        if (url == null) { setStatus("Chưa nhập địa chỉ server (ví dụ http://192.168.4.17:8787)", Level.WARN); return }
+        val url = normalizeServerUrl(prefs.serverUrl)
+        val state = savedServerState()
+        setSaved(state.first, state.second)
+        if (url == null) { setStatus("Chưa có địa chỉ server hợp lệ: xem mục Cài đặt server", Level.WARN); setWeb("Giao diện web: chưa rõ (chưa có địa chỉ server)", false); return }
         setStatus("Đang kiểm tra kết nối tới $url …", Level.INFO)
         val me = identity()
         io.execute {
@@ -512,7 +559,7 @@ class MainActivity : Activity() {
 
     /** every 15 s while this screen is on: tells the server (so the web page) this phone is here, and learns whether the web page is open */
     private fun sendHeartbeat() {
-        val url = normalizeServerUrl(serverInput.text.toString()) ?: return
+        val url = normalizeServerUrl(prefs.serverUrl) ?: return
         val me = identity()
         val auto = prefs.autoPush
         val folder = prefs.databasesPath
