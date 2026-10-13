@@ -152,7 +152,7 @@ label.row { cursor: pointer; }
 .badge.danger { background: var(--danger-soft); color: var(--danger); }
 .badge.info { background: var(--info-soft); color: var(--info); }
 .badge.accent { background: var(--accent-soft); color: var(--accent-hover); }
-.badge.dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.badge.with-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--faint); vertical-align: 0; }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .dot.off { background: var(--faint); }

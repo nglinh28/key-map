@@ -122,7 +122,7 @@
 
   // ---------------------------------------------------------------- small components
   // Badge: a small non-interactive label. tone: neutral | ok | warn | danger | info | accent
-  const badge = (text, tone = 'neutral', { title, dot = false } = {}) => el('span', { class: `badge${tone === 'neutral' ? '' : ` ${tone}`}${dot ? ' dot' : ''}`, title }, text);
+  const badge = (text, tone = 'neutral', { title, dot = false } = {}) => el('span', { class: `badge${tone === 'neutral' ? '' : ` ${tone}`}${dot ? ' with-dot' : ''}`, title }, text);
 
   // Status dot with the words next to it (colour is never the only signal)
   const status = (on, text) => el('span', { class: 'row' }, el('span', { class: `dot ${on ? 'on' : 'off'}`, 'aria-hidden': 'true' }), el('span', {}, text));
