@@ -66,6 +66,19 @@ class Commands {
     return this.items.filter((c) => !this.expired(c) && c.targets.some((t) => t.id === deviceId) && !Object.hasOwn(c.results, deviceId));
   }
 
+  // A device that is forgotten will not report any more: take it out of the commands that still wait for it.
+  // A device that already answered stays (its answer is history). Returns how many commands it was taken out of.
+  dropTarget(deviceId) {
+    let n = 0;
+    for (const c of this.items) {
+      if (Object.hasOwn(c.results, deviceId) || !c.targets.some((t) => t.id === deviceId)) continue;
+      c.targets = c.targets.filter((t) => t.id !== deviceId);
+      n++;
+    }
+    if (n) this.save();
+    return n;
+  }
+
   // The result of one device. Returns the command, or null when the command or the device is unknown.
   report(id, deviceId, result = {}) {
     const c = this.items.find((x) => x.id === id);

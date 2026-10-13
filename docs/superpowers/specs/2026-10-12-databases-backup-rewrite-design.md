@@ -131,6 +131,6 @@ Module UMD (chạy trong trình duyệt và trong Node, giống `recoil.js`), kh
 - **Trên app**: app lấy `GET /admin/api/sync/manifest` (bản mới nhất và ngày mới nhất) rồi tự so file trên máy: giống / khác bản mới nhất / chỉ có trên máy / chỉ có trên server / khác ngày mới nhất. Lỗi mạng là một kết quả (`error`), không phải ngoại lệ.
 - **Sau mỗi lần đẩy** (tay hoặc Tự đẩy): `checkAfterPush(names)` so các file vừa gửi với ngày mới nhất; không báo file "chỉ có trên server"; ghi một dòng vào nhật ký việc đã làm.
 - **Web nhờ app** (`POST /admin/api/sync/verify-request`): lệnh `verify_sync` cho các thiết bị đã biết; kết quả (`verify`) trong `results` của lệnh; trạng thái `attention` nếu có khác biệt hoặc lỗi.
-  Máy đã biết mà không bao giờ trả lời (ví dụ máy cũ) giữ lệnh ở trạng thái "đang chờ" tới 14 ngày; dùng "Quên thiết bị" để loại.
+  Máy đã biết mà không bao giờ trả lời (ví dụ máy cũ) giữ lệnh ở trạng thái "đang chờ" tới 14 ngày; dùng "Quên thiết bị" để loại: quên máy nào thì máy đó cũng bị bỏ khỏi `targets` của mọi lệnh còn chờ nó (`Commands.dropTarget`), máy đã trả lời thì giữ nguyên làm lịch sử.
 - **Tên mục đã xóa**: lệnh xóa mang `labels` (theo thứ tự `ids`, từ `items` của web); app ghi "đã xóa trên máy: «tên» (map|id)" vào nhật ký và vào danh sách việc đã làm (lưu trong SharedPreferences, 40 dòng gần nhất, hiện trên màn hình app).
 - Giao diện: thẻ "Kiểm tra đồng bộ" ở tab Sao lưu theo ngày (hai nút, kết quả cập nhật mỗi 3 giây tới 2 phút khi chờ máy) và hai hành động trong Tìm nhanh.

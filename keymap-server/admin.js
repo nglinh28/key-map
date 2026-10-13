@@ -178,7 +178,10 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       return json(res, 200, { now: new Date().toISOString(), web: { sessions: devices.webSessions() }, devices: devices.list() });
     }
     if ((m = /^\/admin\/api\/sync\/devices\/([^/]+)$/.exec(p)) && method === 'DELETE') {
-      return devices.forget(safeDecode(m[1])) ? json(res, 200, { ok: true }) : err(res, 404, 'Device not found');
+      const deviceId = safeDecode(m[1]);
+      if (!devices.forget(deviceId)) return err(res, 404, 'Device not found');
+      commands.dropTarget(deviceId);
+      return json(res, 200, { ok: true });
     }
     if (p === '/admin/api/presence' && method === 'POST') {
       const body = await jsonBody(req);

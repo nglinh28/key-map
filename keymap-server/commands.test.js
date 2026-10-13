@@ -71,6 +71,42 @@ test('store: a command is for the devices known when it was made, until each one
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('store: a device that is forgotten no longer holds commands back; what it already answered is kept', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ftcmd-'));
+  const s = new Commands({ file: path.join(dir, 'commands.json'), clock: () => T0 });
+  const c = s.create({ type: 'delete_cache_items', file: CACHE, ids: [id('b')], targets: [{ id: 'tablet-0001', name: 'Tab' }, { id: 'old-device-3', name: 'Tab' }] });
+  s.report(c.id, 'tablet-0001', { removed: [], missing: [id('b')] });
+  assert.equal(s.list()[0].status, 'pending', 'the old device never answers');
+  assert.equal(s.dropTarget('old-device-3'), 1);
+  assert.equal(s.list()[0].status, 'done');
+  assert.deepEqual(s.list()[0].targets.map((t) => t.id), ['tablet-0001']);
+  assert.deepEqual(s.pendingFor('old-device-3'), []);
+  // a device that answered stays in the command (its answer is history); a command left with nobody is a server-only change
+  assert.equal(s.dropTarget('tablet-0001'), 0, 'already answered: kept');
+  const d = s.create({ type: 'verify_sync', file: '', ids: [], targets: [{ id: 'old-device-3', name: 'Tab' }] });
+  assert.equal(s.dropTarget('old-device-3'), 1);
+  assert.equal(s.list().find((x) => x.id === d.id).status, 'server_only');
+  assert.equal(s.dropTarget('nobody-0001'), 0);
+  assert.equal(new Commands({ file: path.join(dir, 'commands.json'), clock: () => T0 }).list().find((x) => x.id === d.id).targets.length, 0, 'saved');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('forgetting a device on the web page releases the commands that were waiting for it', async () => {
+  await withServer({}, async ({ port }) => {
+    await push(port, CACHE, cacheXml(), A);
+    await hello(port, B);
+    const made = (await del(port, { file: CACHE, ids: [id('b')], etag: (await getFile(port)).etag })).json;
+    assert.equal(made.command.targets, 2);
+    await report(port, made.command.id, { removed: [id('b')] }, A);
+    assert.equal((await commands(port))[0].status, 'pending', 'the phone has not answered');
+    const gone = await raw(port, 'DELETE', `/admin/api/sync/devices/${B['X-Device-Id']}`, { headers: W });
+    assert.equal(gone.status, 200);
+    const after = (await commands(port))[0];
+    assert.equal(after.status, 'done');
+    assert.deepEqual(after.targets.map((t) => t.id), ['tablet-0001']);
+  });
+});
+
 test('store: results are cleaned, unknown commands and devices are ignored, only the newest 50 are kept', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ftcmd-'));
   const s = new Commands({ file: path.join(dir, 'commands.json'), clock: () => T0 });
