@@ -34,7 +34,32 @@ data class DeviceIdentity(val id: String, val name: String, val model: String, v
 /** What the phone reports in each heartbeat. */
 data class Heartbeat(val autoPush: Boolean, val folder: String, val state: String, val error: String)
 
-data class HelloResult(val webSessions: Int, val devicesOnline: Int)
+/** Something the web page asked this phone to do (today only: delete items of the keymap cache). */
+data class ServerCommand(val id: String, val type: String, val file: String, val ids: List<String>)
+
+/** What this phone did about a command, as the web page shows it. */
+data class CommandReport(
+    val removed: List<String> = emptyList(),
+    val missing: List<String> = emptyList(),
+    val reappeared: List<String> = emptyList(),
+    val skipped: List<Pair<String, String>> = emptyList(),
+    val error: String = "",
+    val backup: String = "",
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("removed", org.json.JSONArray(removed)).put("missing", org.json.JSONArray(missing)).put("reappeared", org.json.JSONArray(reappeared))
+        .put("skipped", org.json.JSONArray().also { a -> skipped.forEach { a.put(JSONObject().put("id", it.first).put("reason", it.second)) } })
+        .put("error", error).put("backup", backup)
+
+    fun describe(): String = buildString {
+        append("đã xóa ${removed.size} mục trên máy")
+        if (missing.isNotEmpty()) append(", ${missing.size} mục không còn")
+        if (reappeared.isNotEmpty()) append(", ⚠ ${reappeared.size} mục hiện lại (Gamwing ghi đè file? hãy đóng Gamwing)")
+        if (error.isNotEmpty()) append(", lỗi: $error")
+    }
+}
+
+data class HelloResult(val webSessions: Int, val devicesOnline: Int, val commands: List<ServerCommand> = emptyList())
 
 /** Tells when the next heartbeat is due; the first one is due at once. */
 class HeartbeatTimer(private val intervalMs: Long, private val clock: () -> Long = { System.currentTimeMillis() }) {

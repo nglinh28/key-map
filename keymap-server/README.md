@@ -28,8 +28,16 @@ Truy cập bằng tên miền riêng thì thêm vào `ADMIN_ALLOWED_HOSTS`. Ch�
   - **mục mồ côi** (có nội dung nhưng không nằm trong danh sách), mục thiếu nội dung, tên trong danh sách khác tên trong dữ liệu;
   - bấm một mục: sơ đồ phím/nhận diện AI hiện **trên màn hình mô phỏng** đúng toạ độ (có thể chọn ảnh chụp game làm nền); độ giật hiện
     theo súng, tư thế, ống ngắm, đường cong và hệ số (mô phỏng cách app chọn đường cong, `admin/recoil.js`). Chỉ xem, không sửa.
-  - nguồn có thể là bản mới nhất hoặc một ngày sao lưu.
-- **Tệp cài đặt**: danh sách file `.xml`, xem, tải về, lịch sử 10 bản mỗi file, và **sửa trực tiếp** (file ≤ 256 KB): kiểm tra XML hợp lệ,
+  - nguồn có thể là bản mới nhất hoặc một ngày sao lưu;
+  - mỗi mục cho biết **nó nằm ở đâu**: file XML nào, mục `map|<id>` nào, trong danh sách `list|<namespace>` nào (hoặc "không nằm trong danh sách nào"),
+    thư mục nào trên máy tính bảng, và các dòng `document|…|<id>` ghi id đó ở `ft_map_server_v1.xml`;
+  - **xóa**: mọi mục (đang trong danh sách hay mồ côi) có nút **Xóa**, mục mồ côi có thêm "Xóa cả N mục mồ côi". Xóa phải qua **hai hộp xác nhận**.
+    Server cắt `map|<id>` khỏi `gamwing_keymap_cache.xml` ngay (mục nằm trong danh sách thì bỏ luôn khỏi `list|…`; nếu là mục đang được chọn thì danh sách
+    chọn mục đầu còn lại), giữ bản trước trong lịch sử, và để lại một **lệnh** cho các tablet; app KeyMap Sync nhận lệnh ở nhịp 15 giây, tự sửa file trên máy
+    (chép file cũ trước), rồi báo kết quả. Thẻ "Lệnh xóa gần đây" hiện: chờ máy nhận / đã xóa trên máy / cần xem lại (mục hiện lại vì Gamwing ghi đè, lỗi…).
+    Trong lúc tablet chưa báo, file cache nó đẩy lên bị server cắt lại các mục đó, nên bản cũ trên máy không làm mục đã xóa hiện lại.
+    Không xóa các dòng `document|…` ở `ft_map_server_v1.xml` và các bản chép `.json` (nếu có) ở `Documents/Gamwing/keymap_cache`.
+- **Tệp cài đặt**: danh sách file `.xml` (kèm thư mục của file trên máy tính bảng), xem, tải về, **Lịch sử** 10 bản mỗi file với nút khôi phục trên server (mọi kích thước), và **sửa trực tiếp** (file ≤ 256 KB): kiểm tra XML hợp lệ,
   hộp cảnh báo liệt kê thay đổi, từ chối ghi đè nếu file đã bị nơi khác sửa (HTTP 409). File lớn (cache keymap) chỉ xem và tải.
 - **So sánh ngày**: chọn một file và hai thời điểm (hoặc bản mới nhất); liệt kê mục thêm/mất/đổi; với file cache, mục đổi có nút "Chi tiết"
   để xem từng giá trị JSON thay đổi.
@@ -63,7 +71,10 @@ Dùng cùng lớp bảo vệ với trang web (`Host` hợp lệ, header `X-Admin
 | `GET /admin/api/sync/backups` | Danh sách ngày sao lưu (mới nhất trước) |
 | `GET …/backups/<YYYY-MM-DD>/databases` | Cả bộ file của một ngày (tên thật, có dấu và CJK) |
 | `GET …/backups/<YYYY-MM-DD>/databases/<tên>` | Một file của một ngày |
-| `POST …/hello`, `GET …/devices`, `DELETE …/devices/<id>`, `POST /admin/api/presence` | Kết nối app ↔ web |
+| `POST …/hello`, `GET …/devices`, `DELETE …/devices/<id>`, `POST /admin/api/presence` | Kết nối app ↔ web. Câu trả lời của `hello` có `commands`: các lệnh đang chờ thiết bị đó |
+| `POST /admin/api/cache/delete` | `{file, ids, etag, labels}`: cắt các mục khỏi file cache trên server (cần `etag` hiện hành, 409 nếu file đã đổi; 404 nếu id không có ở đâu; 400 nếu id/file sai) và tạo lệnh cho các thiết bị đã biết |
+| `GET /admin/api/cache/commands` | Các lệnh gần đây (50 mới nhất) với trạng thái `pending` / `done` / `attention` / `server_only` / `expired` và kết quả từng thiết bị |
+| `POST …/commands/<id>/result` | App báo kết quả: `{removed, missing, reappeared, skipped, error, backup}` (cần `X-Device-Id`) |
 | `POST …/wipe` | Xóa toàn bộ (cần `{"confirm":"XOA TAT CA"}`); bản xóa gần nhất được giữ ở `data/_wiped/` |
 
 ## Sao lưu theo ngày

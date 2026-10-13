@@ -110,3 +110,16 @@ Module UMD (chạy trong trình duyệt và trong Node, giống `recoil.js`), kh
 - `docker-compose.yml` ghim `name: ft-keymap-server` để luôn dùng volume dữ liệu `ft-keymap-server_ftdata` dù thư mục đổi tên.
 - Tab "Tệp cài đặt" của file cache có nút "Phân tích" thay cho nút "Sửa".
 - App Android lên 2.0.0 (versionCode 2); đẩy file lớn hơn một lô thì đi riêng một request.
+
+## Thêm sau: xóa mục khỏi cache, từ web xuống tablet (2026-10-13)
+
+- Mọi mục của tab "Phân tích cache" (sơ đồ phím, nhận diện AI, độ giật; trong danh sách hay mồ côi) có nút **Xóa**, qua **hai hộp xác nhận**; chỉ ở "Bản mới nhất".
+  Mỗi mục hiện rõ: file XML, mục `map|<id>`, danh sách `list|<ns>`, thư mục trên máy, và các dòng `document|…|<id>` ở `ft_map_server_v1.xml` (không bị xóa).
+- Server (`POST /admin/api/cache/delete`): `cachexml.removeItems` cắt `map|<id>` và bỏ mục khỏi `list|<ns>` (mục đang chọn → chọn mục đầu còn lại, hoặc bỏ `selected` khi danh sách trống);
+  ghi qua `databases.update` (etag, 10 bản lịch sử, sao lưu ngày) rồi tạo **lệnh** (`commands.js`, `data/commands.json`) cho các thiết bị đã biết.
+- Tablet: lệnh đi trong câu trả lời của `hello` (nhịp 15 giây); app (`SyncEngine.applyDeletion`) chép file cũ vào `Documents/FTKeymapSync/backup/<thời gian>/databases/`,
+  cắt bằng `CacheEdit.removeItems` (cùng luật với JS), ghi đè tại chỗ, chờ 3 giây, đọc lại để phát hiện Gamwing ghi đè (`reappeared`), rồi báo `POST …/commands/<id>/result`.
+  **Không hỏi trên máy** (lựa chọn của người dùng). Mỗi lệnh làm một lần; kết quả chưa gửi được giữ để gửi lại.
+- Trong lúc tablet chưa báo, server cắt lại các mục đó khỏi file cache mà thiết bị đó đẩy lên, nên bản cũ trên máy không làm mục đã xóa hiện lại.
+- Tab "Tệp cài đặt" có nút **Lịch sử** (khôi phục bản cũ trên server, mọi kích thước) để xóa nhầm vẫn lấy lại được phía server.
+- Không làm: xóa `document|…` ở `ft_map_server_v1.xml`, xóa bản chép `.json` ở `Documents/Gamwing/keymap_cache`, công tắc tắt lệnh xóa trong app, đăng nhập.

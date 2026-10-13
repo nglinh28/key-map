@@ -31,7 +31,7 @@ abstract class SyncTestBase {
         backup = File(tmp.root, "backup")
         folder = LocalFolder(dir)
         client = ServerClient(server.url)
-        engine = SyncEngine(folder, client, backup, maxBatchBytes = 6_000_000, clock = { 1_700_000_000_000L })
+        engine = SyncEngine(folder, client, backup, maxBatchBytes = 6_000_000, clock = { 1_700_000_000_000L }, settle = {}, commandState = CommandState())
     }
 
     @After fun tearDown() = server.stop()

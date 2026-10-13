@@ -22,6 +22,8 @@ class FakeSyncServer {
     @Volatile var wipes = 0                                                  // how many times "delete everything" was confirmed
     val databases = LinkedHashMap<String, String>()                         // preference files the "server" holds, by real name
     val databasePushes = mutableListOf<List<String>>()                      // file names of every databases push request
+    val pendingCommands = mutableListOf<ServerCommand>()                    // handed out in every heartbeat answer until a result is posted
+    val commandResults = mutableListOf<Pair<String, CommandReport>>()       // command id -> what the phone reported
     val pushFolders = mutableListOf<String>()                               // the phone folder named in every databases push request
     val backupDatabases = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> preference files (a day exists once it has an entry)
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
@@ -93,12 +95,24 @@ class FakeSyncServer {
         if (path.startsWith("/admin/api/other")) return 200 to "<html>not a keymap server</html>"
         if (failNext) { failNext = false; return 500 to """{"error":"Internal error"}""" }
         if (method != "GET" && headers["x-admin-request"] != "1") return 403 to """{"error":"Cross-site or missing X-Admin-Request"}"""
+        val commandResultMatch = Regex("""/sync/commands/([A-Za-z0-9._-]+)/result\z""").find(path)
         val dbDayMatch = Regex("""/sync/backups/(\d{4}-\d{2}-\d{2})/databases\z""").find(path)
         return when {
             path.endsWith("/sync/info") -> 200 to JSONObject().put("ok", true).put("server", "ft-keymap-server").put("version", "2.0.0")
                 .put("files", databases.size).put("docs", databases.size)
                 .put("web", JSONObject().put("sessions", webSessions)).put("devices_online", 1).put("backup_days", backupDatabases.size).toString()
-            path.endsWith("/sync/hello") -> { hellos += JSONObject(body); 200 to JSONObject().put("ok", true).put("online", 1).put("web", JSONObject().put("sessions", webSessions)).toString() }
+            path.endsWith("/sync/hello") -> {
+                hellos += JSONObject(body)
+                val cmds = JSONArray().also { a -> pendingCommands.forEach { c -> a.put(JSONObject().put("id", c.id).put("type", c.type).put("file", c.file).put("ids", JSONArray(c.ids))) } }
+                200 to JSONObject().put("ok", true).put("online", 1).put("web", JSONObject().put("sessions", webSessions)).put("commands", cmds).toString()
+            }
+            commandResultMatch != null -> {
+                val j = JSONObject(body)
+                fun ids(key: String) = j.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+                commandResults += commandResultMatch.groupValues[1] to CommandReport(ids("removed"), ids("missing"), ids("reappeared"), emptyList(), j.optString("error"), j.optString("backup"))
+                pendingCommands.removeAll { it.id == commandResultMatch.groupValues[1] }
+                200 to """{"ok":true}"""
+            }
             path.endsWith("/sync/backups") -> {
                 val arr = JSONArray()
                 for ((d, f) in backupDatabases.entries.sortedByDescending { it.key }) {

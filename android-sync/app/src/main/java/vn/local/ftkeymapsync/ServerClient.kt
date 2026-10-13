@@ -44,7 +44,19 @@ class ServerClient(
             .put("id", me.id).put("name", me.name).put("model", me.model).put("android", me.android).put("app_version", me.appVersion)
             .put("ip", me.ip).put("auto_push", h.autoPush).put("folder", h.folder).put("state", h.state).put("error", h.error)
         val j = request("POST", "/admin/api/sync/hello", body.toString())
-        return HelloResult(j.optJSONObject("web")?.optInt("sessions") ?: 0, j.optInt("online"))
+        val cmds = j.optJSONArray("commands")
+        val commands = (0 until (cmds?.length() ?: 0)).mapNotNull { i ->
+            val o = cmds!!.optJSONObject(i) ?: return@mapNotNull null
+            val ids = o.optJSONArray("ids")
+            ServerCommand(o.optString("id"), o.optString("type"), o.optString("file"), (0 until (ids?.length() ?: 0)).map { ids!!.getString(it) })
+        }.filter { it.id.isNotEmpty() }
+        return HelloResult(j.optJSONObject("web")?.optInt("sessions") ?: 0, j.optInt("online"), commands)
+    }
+
+    /** Tells the server what this phone did about a command. */
+    fun reportCommand(id: String, report: CommandReport) {
+        if (!Regex("[A-Za-z0-9._-]+").matches(id)) throw SyncException("Mã lệnh không hợp lệ: $id")
+        request("POST", "/admin/api/sync/commands/$id/result", report.toJson().toString())
     }
 
     fun backups(): List<BackupDay> {

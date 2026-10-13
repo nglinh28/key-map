@@ -19,6 +19,10 @@ license hay chứng chỉ của nó.
   **Hãy đóng hẳn Gamwing trước khi ghi**; chưa kiểm chứng app có đọc lại các file này hay không (nó có thể ghi đè lại).
 - **Tự đẩy khi thư mục thay đổi** (công tắc): dịch vụ nền có thông báo cố định, kiểm tra thư mục mỗi 3 giây, chỉ đẩy file đã đổi và chỉ
   đẩy sau khi thư mục "đứng yên" qua 2 lần kiểm tra liên tiếp (tránh gửi file app đang ghi dở). Lỗi thì thử lại, giãn dần tới 60 giây.
+- **Lệnh xóa từ giao diện web**: khi bạn xóa một mục ở tab "Phân tích cache" của web, server trả lệnh trong nhịp tim 15 giây (cần app đang mở hoặc đang bật Tự đẩy).
+  App **tự làm, không hỏi**: chép `gamwing_keymap_cache.xml` cũ vào `Documents/FTKeymapSync/backup/<thời gian>/databases/`, cắt `map|<id>` (và bỏ khỏi `list|…`),
+  ghi đè tại chỗ, chờ 3 giây rồi đọc lại để biết Gamwing có ghi đè lại không, và báo kết quả lên web ("đã xóa", "không còn", "hiện lại", lỗi). **Hãy đóng hẳn Gamwing**
+  trước khi xóa. Mỗi lệnh chỉ làm một lần; kết quả chưa gửi được sẽ gửi lại ở nhịp sau.
 - **Tên thiết bị** (mặc định là hãng + model máy): hiện trên trang web ở tab "Thiết bị".
 - **Kết nối với web**: app gửi nhịp tim mỗi 15 giây nên trang web hiện "đang kết nối"; app hiện "Giao diện web: đang mở (N phiên)" hoặc
   "chưa có ai mở". Mất nhịp quá 40 giây thì web coi là ngắt.
@@ -47,5 +51,6 @@ APK ký bằng khóa debug của chính bạn (khác hoàn toàn chứng chỉ c
 - `Models.kt`, `Helpers.kt`: kiểu dữ liệu, luật tên file (`DatabaseNames`), chuẩn hóa địa chỉ.
 - `ServerClient.kt`: HTTP tới `/admin/api/sync/*`.
 - `SyncEngine.kt`: quét, đẩy (chia lô ≤ 6 MB, file lớn hơn đi riêng), kế hoạch và ghi khi khôi phục (có sao lưu file cũ).
+- `CacheEdit.kt`: cắt mục khỏi file cache (cùng luật với `admin/cachexml.js` của server).
 - `Watcher.kt`: logic theo dõi (thuần, test được). `WatchService.kt`: dịch vụ nền gọi `Watcher.tick()` và gửi nhịp tim.
 - `MainActivity.kt`: giao diện. `Prefs.kt`: cài đặt và `StatusBus` (nhật ký).

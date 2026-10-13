@@ -82,6 +82,10 @@ class WatchService : Service() {
                         }
                         if (beat.due()) {
                             runCatching { client!!.hello(Heartbeat(true, prefs.databasesPath, if (lastError.isEmpty()) "watching" else "error", lastError)) }
+                                .getOrNull()?.commands?.takeIf { it.isNotEmpty() }?.let { cmds ->
+                                    // the web page asked to delete items from the cache file on this tablet: do it before the next push
+                                    SyncEngine(folder, client!!, backupRoot()).runCommands(cmds).forEach { StatusBus.log(it) }
+                                }
                         }
                         when (val ev = watcher!!.tick()) {
                             is WatchEvent.Pushed -> {

@@ -567,6 +567,14 @@ class MainActivity : Activity() {
             try {
                 val r = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).hello(Heartbeat(auto, folder, if (auto) "watching" else "idle", ""))
                 runOnUiThread { setWeb(if (r.webSessions > 0) "Giao diện web: đang mở (${r.webSessions} phiên)" else "Giao diện web: chưa có ai mở", r.webSessions > 0) }
+                if (r.commands.isNotEmpty()) {
+                    // the web page asked to delete items from the cache file on this tablet
+                    if (!hasAllFiles()) StatusBus.log("Có lệnh xóa từ giao diện web nhưng chưa cấp quyền \"Truy cập mọi file\".")
+                    else {
+                        val local = LocalFolder(resolveFolder(folder))
+                        SyncEngine(local, ServerClient(url, identity = me), backupRoot()).runCommands(r.commands).forEach { StatusBus.log(it) }
+                    }
+                }
             } catch (e: SyncException) {
                 // the status line above already shows the connection problem
             }
