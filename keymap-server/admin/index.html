@@ -3,24 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>KeyMap — Quản trị</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/admin/app.css">
+  <script src="/admin/theme.js"></script>
 </head>
 <body>
-  <header class="top">
-    <h1>KeyMap</h1>
-    <nav id="nav" aria-label="Mục"></nav>
-    <span id="conn" class="conn off" role="status" aria-live="polite">○ Đang kiểm tra kết nối thiết bị…</span>
-    <span id="meta" class="muted"></span>
-  </header>
-  <main id="app"><p class="muted">Đang tải…</p></main>
+  <a class="skip" href="#app">Bỏ qua điều hướng</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Điều hướng chính">
+      <div class="brand" id="brand"></div>
+      <nav id="nav" aria-label="Các mục"></nav>
+      <div class="side-foot">
+        <div id="conn" class="conn off" role="status" aria-live="polite">Đang kiểm tra kết nối thiết bị…</div>
+        <div id="meta"></div>
+      </div>
+    </aside>
+    <div class="main-col">
+      <header class="toolbar">
+        <ol id="crumbs" class="crumbs" aria-label="Vị trí hiện tại"></ol>
+        <div class="tool-actions" id="tools"></div>
+      </header>
+      <main id="app" tabindex="-1"><p class="muted">Đang tải…</p></main>
+    </div>
+  </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/admin/recoil.js"></script>
   <script src="/admin/edit.js"></script>
   <script src="/admin/layout.js"></script>
   <script src="/admin/cachexml.js"></script>
   <script src="/admin/ui.js"></script>
+  <script src="/admin/palette.js"></script>
   <script src="/admin/analysis.js"></script>
   <script src="/admin/app.js"></script>
 </body>

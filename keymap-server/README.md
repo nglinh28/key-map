@@ -23,6 +23,13 @@ Truy cập bằng tên miền riêng thì thêm vào `ADMIN_ALLOWED_HOSTS`. Ch�
 
 ## Trang web (5 tab)
 
+Giao diện kiểu quản trị tối giản, mật độ vừa-cao: **Sidebar** bên trái (5 mục, chấm trạng thái thiết bị), **Toolbar** phía trên có đường dẫn (breadcrumbs), nút **Tìm nhanh** và nút đổi giao diện;
+danh sách bên trái và **Inspector** bên phải cho mục đang chọn (dưới 1100 px Inspector xuống dưới danh sách, dưới 900 px sidebar thành thanh trên). Không tải phông hay thư viện ngoài.
+- **Tìm nhanh (Ctrl+K hoặc "/")**: gõ vài chữ (không cần dấu: "do giat" ra "Độ giật") để nhảy tới tab, một mục của cache, một tệp, hoặc đổi giao diện / tải lại. ↑ ↓ chọn, Enter mở, Esc đóng.
+- **Giao diện sáng / tối**: theo hệ thống; nút ở góc phải trên đổi vòng "hệ thống → sáng → tối" và nhớ lựa chọn trong trình duyệt.
+- Menu ba chấm ở mỗi hàng gom các thao tác phụ (mở, xem, sửa, tải, lịch sử, sao chép); **Xóa** luôn là nút riêng màu đỏ. Điều khiển được bằng bàn phím (Tab, Enter, Esc, mũi tên); khi đang tải file lớn có khung xám (skeleton).
+
+
 - **Phân tích cache**: đọc `gamwing_keymap_cache.xml` (file SharedPreferences chứa các mục `list|<namespace>` và `map|<id>`) và cho thấy
   - danh sách theo loại: sơ đồ phím, nhận diện AI, độ giật/cấu hình; bản đang được chọn trong app; tên, ngày, dung lượng;
   - **mục mồ côi** (có nội dung nhưng không nằm trong danh sách), mục thiếu nội dung, tên trong danh sách khác tên trong dữ liệu;
