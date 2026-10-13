@@ -19,10 +19,15 @@ license hay chứng chỉ của nó.
   **Hãy đóng hẳn Gamwing trước khi ghi**; chưa kiểm chứng app có đọc lại các file này hay không (nó có thể ghi đè lại).
 - **Tự đẩy khi thư mục thay đổi** (công tắc): dịch vụ nền có thông báo cố định, kiểm tra thư mục mỗi 3 giây, chỉ đẩy file đã đổi và chỉ
   đẩy sau khi thư mục "đứng yên" qua 2 lần kiểm tra liên tiếp (tránh gửi file app đang ghi dở). Lỗi thì thử lại, giãn dần tới 60 giây.
+- **Kiểm tra đồng bộ** (hai nút trong "Thao tác"):
+  - *Kiểm tra đồng bộ trên app*: so các file `.xml` trên máy tính bảng với server bằng sha-256 của nội dung (bản mới nhất **và** bản sao lưu của ngày mới nhất): file giống, khác, chỉ có trên máy, chỉ có trên server. Kết quả hiện trong hộp thoại và nhật ký.
+  - *Kiểm tra đồng bộ trên server*: nhờ server so bản mới nhất của nó với bản sao lưu ngày mới nhất.
+  - **Sau mỗi lần đẩy** (nút "Đẩy lên server" hoặc Tự đẩy) app tự kiểm tra các file vừa gửi với bản sao lưu ngày mới nhất và ghi kết quả vào nhật ký và vào danh sách "Việc đã làm theo lệnh từ web".
+  - Giao diện web cũng nhờ app kiểm tra được (lệnh `verify_sync` qua nhịp 15 giây).
 - **Lệnh xóa từ giao diện web**: khi bạn xóa một mục ở tab "Phân tích cache" của web, server trả lệnh trong nhịp tim 15 giây (cần app đang mở hoặc đang bật Tự đẩy).
   App **tự làm, không hỏi**: chép `gamwing_keymap_cache.xml` cũ vào `Documents/FTKeymapSync/backup/<thời gian>/databases/`, cắt `map|<id>` (và bỏ khỏi `list|…`),
   ghi đè tại chỗ, chờ 3 giây rồi đọc lại để biết Gamwing có ghi đè lại không, và báo kết quả lên web ("đã xóa", "không còn", "hiện lại", lỗi). **Hãy đóng hẳn Gamwing**
-  trước khi xóa. Mỗi lệnh chỉ làm một lần; kết quả chưa gửi được sẽ gửi lại ở nhịp sau.
+  trước khi xóa. App **ghi tên từng mục đã xóa** (nhật ký và thẻ "Việc đã làm theo lệnh từ web", giữ lại sau khi tắt app). Mỗi lệnh chỉ làm một lần; kết quả chưa gửi được sẽ gửi lại ở nhịp sau.
 - **Tên thiết bị** (mặc định là hãng + model máy): hiện trên trang web ở tab "Thiết bị".
 - **Kết nối với web**: app gửi nhịp tim mỗi 15 giây nên trang web hiện "đang kết nối"; app hiện "Giao diện web: đang mở (N phiên)" hoặc
   "chưa có ai mở". Mất nhịp quá 40 giây thì web coi là ngắt.

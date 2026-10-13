@@ -48,7 +48,10 @@ danh sách bên trái và **Inspector** bên phải cho mục đang chọn (dư�
   hộp cảnh báo liệt kê thay đổi, từ chối ghi đè nếu file đã bị nơi khác sửa (HTTP 409). File lớn (cache keymap) chỉ xem và tải.
 - **So sánh ngày**: chọn một file và hai thời điểm (hoặc bản mới nhất); liệt kê mục thêm/mất/đổi; với file cache, mục đổi có nút "Chi tiết"
   để xem từng giá trị JSON thay đổi.
-- **Sao lưu theo ngày**: mỗi ngày một thư mục; xem và tải từng file.
+- **Sao lưu theo ngày**: mỗi ngày một thư mục (Timeline); xem và tải từng file. Có thẻ **Kiểm tra đồng bộ** với hai nút:
+  - *trên server*: so bản **mới nhất** của từng file với bản sao lưu của **ngày mới nhất** bằng dấu vân tay sha-256; báo file khác, thiếu hoặc thừa trong bản sao lưu;
+  - *trên app*: gửi lệnh cho máy tính bảng tự so các file của nó với server (bản mới nhất và ngày mới nhất); kết quả từng máy hiện ngay trên trang (cần app đang mở hoặc đang bật Tự đẩy).
+  Cả hai cũng có trong Tìm nhanh (Ctrl+K).
 - **Thiết bị**: app gửi nhịp "còn sống" mỗi 15 giây; trang web báo "đang mở" mỗi 10 giây để app biết.
 
 ## Cấu hình (biến môi trường)
@@ -81,6 +84,9 @@ Dùng cùng lớp bảo vệ với trang web (`Host` hợp lệ, header `X-Admin
 | `POST …/hello`, `GET …/devices`, `DELETE …/devices/<id>`, `POST /admin/api/presence` | Kết nối app ↔ web. Câu trả lời của `hello` có `commands`: các lệnh đang chờ thiết bị đó |
 | `POST /admin/api/cache/delete` | `{file, ids, etag, labels}`: cắt các mục khỏi file cache trên server (cần `etag` hiện hành, 409 nếu file đã đổi; 404 nếu id không có ở đâu; 400 nếu id/file sai) và tạo lệnh cho các thiết bị đã biết |
 | `GET /admin/api/cache/commands` | Các lệnh gần đây (50 mới nhất) với trạng thái `pending` / `done` / `attention` / `server_only` / `expired` và kết quả từng thiết bị |
+| `GET /admin/api/sync/verify` | Kiểm tra đồng bộ trên server: `{ok, at, day, checked, same, problems:[{name, kind: different / missing_in_day / extra_in_day, …sha256}]}`; `reason: "no_backup_day"` khi chưa có ngày sao lưu |
+| `GET /admin/api/sync/manifest` | Dấu vân tay `{latest:[{name,bytes,sha256}], day:{date, files:[…]}\|null}` của bản mới nhất và của ngày sao lưu mới nhất (app dùng để tự so) |
+| `POST /admin/api/sync/verify-request` | Nhờ các máy đã biết tự kiểm tra: tạo lệnh `verify_sync`; máy trả kết quả (`verify`) qua `…/commands/<id>/result` |
 | `POST …/commands/<id>/result` | App báo kết quả: `{removed, missing, reappeared, skipped, error, backup}` (cần `X-Device-Id`) |
 | `POST …/wipe` | Xóa toàn bộ (cần `{"confirm":"XOA TAT CA"}`); bản xóa gần nhất được giữ ở `data/_wiped/` |
 

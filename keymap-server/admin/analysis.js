@@ -44,7 +44,7 @@
   }
 
   async function loadCommands() {
-    try { S.cmds = (await api('GET', '/cache/commands')).commands; } catch { S.cmds = []; }
+    try { S.cmds = (await api('GET', '/cache/commands')).commands.filter((c) => c.type === 'delete_cache_items'); } catch { S.cmds = []; }
   }
 
   async function load() {
@@ -135,7 +135,7 @@
     });
     if (last !== 'go') return;
     try {
-      const r = await api('POST', '/cache/delete', { file: CACHE_FILE, ids, etag: S.data.file.etag, labels: items.map((i) => i.label) });
+      const r = await api('POST', '/cache/delete', { file: CACHE_FILE, ids, etag: S.data.file.etag, labels: items.map((i) => i.label), items: items.map((i) => ({ id: i.id, label: i.label })) });
       toast(`Đã xóa trên server${r.command.targets ? `; đã gửi lệnh tới ${r.command.targets} thiết bị` : '; chưa có thiết bị nào để gửi lệnh'}.`);
     } catch (e) {
       if (e.status === 409) { toast('File vừa được cập nhật ở nơi khác (có thể app vừa đồng bộ). Đã tải lại, hãy kiểm tra rồi xóa lại.', true); }

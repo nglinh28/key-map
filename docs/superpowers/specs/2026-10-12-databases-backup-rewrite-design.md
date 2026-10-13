@@ -123,3 +123,14 @@ Module UMD (chạy trong trình duyệt và trong Node, giống `recoil.js`), kh
 - Trong lúc tablet chưa báo, server cắt lại các mục đó khỏi file cache mà thiết bị đó đẩy lên, nên bản cũ trên máy không làm mục đã xóa hiện lại.
 - Tab "Tệp cài đặt" có nút **Lịch sử** (khôi phục bản cũ trên server, mọi kích thước) để xóa nhầm vẫn lấy lại được phía server.
 - Không làm: xóa `document|…` ở `ft_map_server_v1.xml`, xóa bản chép `.json` ở `Documents/Gamwing/keymap_cache`, công tắc tắt lệnh xóa trong app, đăng nhập.
+
+## Thêm sau: kiểm tra đồng bộ và báo tên mục đã xóa (2026-10-13)
+
+- **Dấu vân tay**: `{name, bytes (utf-8), sha256 (của văn bản)}`; server (`verify.js`) và app (`SyncEngine.localDigests`) tính giống hệt nhau.
+- **Trên server** (`GET /admin/api/sync/verify`): bản mới nhất của từng file so với file cùng tên trong **ngày sao lưu mới nhất** (`backups.list()[0]`): `different`, `missing_in_day`, `extra_in_day`. Chưa có ngày nào: `ok:false, reason:"no_backup_day"`.
+- **Trên app**: app lấy `GET /admin/api/sync/manifest` (bản mới nhất và ngày mới nhất) rồi tự so file trên máy: giống / khác bản mới nhất / chỉ có trên máy / chỉ có trên server / khác ngày mới nhất. Lỗi mạng là một kết quả (`error`), không phải ngoại lệ.
+- **Sau mỗi lần đẩy** (tay hoặc Tự đẩy): `checkAfterPush(names)` so các file vừa gửi với ngày mới nhất; không báo file "chỉ có trên server"; ghi một dòng vào nhật ký việc đã làm.
+- **Web nhờ app** (`POST /admin/api/sync/verify-request`): lệnh `verify_sync` cho các thiết bị đã biết; kết quả (`verify`) trong `results` của lệnh; trạng thái `attention` nếu có khác biệt hoặc lỗi.
+  Máy đã biết mà không bao giờ trả lời (ví dụ máy cũ) giữ lệnh ở trạng thái "đang chờ" tới 14 ngày; dùng "Quên thiết bị" để loại.
+- **Tên mục đã xóa**: lệnh xóa mang `labels` (theo thứ tự `ids`, từ `items` của web); app ghi "đã xóa trên máy: «tên» (map|id)" vào nhật ký và vào danh sách việc đã làm (lưu trong SharedPreferences, 40 dòng gần nhất, hiện trên màn hình app).
+- Giao diện: thẻ "Kiểm tra đồng bộ" ở tab Sao lưu theo ngày (hai nút, kết quả cập nhật mỗi 3 giây tới 2 phút khi chờ máy) và hai hành động trong Tìm nhanh.

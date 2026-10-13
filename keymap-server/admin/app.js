@@ -11,7 +11,7 @@
   const EDIT_MAX_BYTES = 256 * 1024; // larger files (the keymap cache) are shown and downloaded, not edited here
   const PREVIEW_CHARS = 300000;
   const enc = encodeURIComponent;
-  const state = { view: 'analysis', dbEdit: null, filePick: '', cmp: { file: CACHE_FILE, a: null, b: '' } };
+  const state = { view: 'analysis', dbEdit: null, filePick: '', autorun: '', cmp: { file: CACHE_FILE, a: null, b: '' } };
 
   // ---------------------------------------------------------------- shell: sidebar navigation, toolbar, theme, command palette
   const VIEWS = [['analysis', 'Phân tích cache', 'layers'], ['files', 'Tệp cài đặt', 'file'], ['compare', 'So sánh ngày', 'compare'], ['backups', 'Sao lưu theo ngày', 'clock'], ['devices', 'Thiết bị', 'tablet']];
@@ -49,6 +49,8 @@
     window.Palette.register(() => [
       { group: 'Thao tác', label: 'Đổi giao diện sáng / tối', hint: theme.label(), icon: theme.icon(), keywords: 'theme dark light', run: () => { const t = theme.cycle(); toast(`Giao diện: ${theme.label(t)}`); } },
       { group: 'Thao tác', label: 'Tải lại trang hiện tại', icon: 'refresh', keywords: 'reload refresh', run: () => render() },
+      { group: 'Thao tác', label: 'Kiểm tra đồng bộ trên server', icon: 'check', keywords: 'sync verify dong bo ngay moi nhat', run: () => { state.autorun = 'server'; goTo('backups'); } },
+      { group: 'Thao tác', label: 'Kiểm tra đồng bộ trên app (máy tính bảng)', icon: 'tablet', keywords: 'sync verify dong bo tablet', run: () => { state.autorun = 'app'; goTo('backups'); } },
     ]);
     window.Palette.register(async () => {
       if (Date.now() - fileCache.at > 20000) fileCache = { at: Date.now(), list: (await api('GET', '/sync/databases')).files };
@@ -425,8 +427,96 @@
   }
 
   // ---------------------------------------------------------------- daily backups (a timeline)
+  // ---------------------------------------------------------------- "Kiểm tra đồng bộ": the server against its newest day, and the tablet against the server
+  const SYNC_KIND = { different: ['Khác bản sao lưu', 'danger'], missing_in_day: ['Thiếu trong bản sao lưu', 'warn'], extra_in_day: ['Thừa trong bản sao lưu', 'warn'] };
+  const sha8 = (h) => (h ? h.slice(0, 8) : '—');
+  const sync = { server: null, app: null, timer: null };
+
+  function serverResultNode(r) {
+    if (r.reason === 'no_backup_day') return alert('warn', el('span', {}, 'Server chưa có ngày sao lưu nào để so sánh. Hãy đẩy file lên từ app trước.'));
+    const head = r.ok
+      ? alert('ok', el('span', {}, `Server đã đồng bộ: ${r.same}/${r.checked} file của bản mới nhất giống hệt bản sao lưu ngày ${r.day}. Kiểm tra lúc ${clockDateTime(r.at)}.`))
+      : alert('danger', el('span', {}, `Server CHƯA đồng bộ với bản sao lưu ngày ${r.day}: ${r.same}/${r.checked} file giống, ${r.problems.length} vấn đề. Kiểm tra lúc ${clockDateTime(r.at)}.`));
+    if (r.ok) return head;
+    const rows = r.problems.map((p) => el('tr', {}, el('td', { class: 'mono' }, p.name), el('td', {}, badge(...SYNC_KIND[p.kind] || [p.kind, 'neutral'])),
+      el('td', { class: 'mono' }, `bản mới nhất ${sha8(p.latest_sha256)} · ngày ${sha8(p.day_sha256)}`)));
+    return el('div', {}, head, el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['File', 'Vấn đề', 'Dấu vân tay (sha-256, 8 ký tự đầu)'].map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
+  }
+
+  function appResultNode(cmd, devices) {
+    if (!cmd.targets.length) return alert('warn', el('span', {}, 'Server chưa biết thiết bị nào, nên không có máy tính bảng để kiểm tra. Mở app KeyMap Sync trên máy tính bảng trước.'));
+    const names = (l) => l.join(', ');
+    const lines = cmd.targets.map((t) => {
+      const r = cmd.results[t.id];
+      const v = r && r.verify;
+      const dev = devices.find((d) => d.id === t.id);
+      if (!r) return alert('info', el('span', {}, `${t.name || t.id}: đang chờ máy trả lời${dev && !dev.online ? ' (máy đang ngắt kết nối: app cần đang mở hoặc đang bật Tự đẩy)' : ' (khoảng 15 giây)'}…`));
+      if (!v) return alert('warn', el('span', {}, `${t.name || t.id}: máy trả lời nhưng không có kết quả kiểm tra${r.error ? ` (${r.error})` : ''}.`));
+      if (v.error) return alert('danger', el('span', {}, `${t.name || t.id}: không kiểm tra được: ${v.error}`));
+      const ok = !v.different.length && !v.only_tablet.length && !v.only_server.length && !v.day_different.length;
+      return alert(ok ? 'ok' : 'danger', el('div', {},
+        el('b', {}, `${t.name || t.id}: ${ok ? 'đã đồng bộ' : 'CHƯA đồng bộ'}`), ` — ${v.same}/${v.checked} file trên máy giống bản mới nhất trên server; so với bản sao lưu ngày ${v.day || '(chưa có)'}. Lúc ${clockDateTime(r.at)}.`,
+        v.different.length ? el('div', {}, 'Khác bản mới nhất trên server: ', el('span', { class: 'mono' }, names(v.different))) : null,
+        v.only_tablet.length ? el('div', {}, 'Chỉ có trên máy: ', el('span', { class: 'mono' }, names(v.only_tablet))) : null,
+        v.only_server.length ? el('div', {}, 'Chỉ có trên server: ', el('span', { class: 'mono' }, names(v.only_server))) : null,
+        v.day_different.length ? el('div', {}, `Khác bản sao lưu ngày ${v.day}: `, el('span', { class: 'mono' }, names(v.day_different))) : null));
+    });
+    return el('div', {}, lines);
+  }
+
+  // The two buttons and their results (results stay on the page while it is open)
+  function syncCard(autorun) {
+    const serverOut = el('div', { 'aria-live': 'polite' });
+    const appOut = el('div', { 'aria-live': 'polite' });
+    const serverBtn = el('button', { type: 'button', class: 'btn' }, icon('check'), 'Kiểm tra đồng bộ trên server');
+    const appBtn = el('button', { type: 'button', class: 'btn' }, icon('tablet'), 'Kiểm tra đồng bộ trên app');
+    const runServer = guard(async () => {
+      serverBtn.disabled = true;
+      serverOut.replaceChildren(skeleton('page'));
+      try { sync.server = await api('GET', '/sync/verify'); serverOut.replaceChildren(serverResultNode(sync.server)); labelStacked(serverOut); } finally { serverBtn.disabled = false; }
+    });
+    const showApp = async () => {
+      const [{ commands }, { devices }] = await Promise.all([api('GET', '/cache/commands'), api('GET', '/sync/devices')]);
+      const cmd = commands.find((c) => c.id === (sync.app && sync.app.id));
+      if (!cmd) return null;
+      appOut.replaceChildren(appResultNode(cmd, devices));
+      return cmd;
+    };
+    const poll = (startedAt) => {
+      clearInterval(sync.timer);
+      sync.timer = setInterval(async () => {
+        if (state.view !== 'backups' || !appOut.isConnected) { clearInterval(sync.timer); return; }
+        const cmd = await showApp().catch(() => null);
+        const waiting = cmd && cmd.targets.some((t) => !cmd.results[t.id]);
+        if (!waiting || Date.now() - startedAt > 120000) clearInterval(sync.timer);
+      }, 3000);
+    };
+    const runApp = guard(async () => {
+      appBtn.disabled = true;
+      try {
+        const r = await api('POST', '/sync/verify-request', {});
+        sync.app = { id: r.command.id };
+        toast(r.command.targets ? `Đã gửi lệnh kiểm tra tới ${r.command.targets} thiết bị` : 'Chưa có thiết bị nào để kiểm tra', !r.command.targets);
+        await showApp();
+        if (r.command.targets) poll(Date.now());
+      } finally { appBtn.disabled = false; }
+    });
+    serverBtn.addEventListener('click', runServer);
+    appBtn.addEventListener('click', runApp);
+    if (sync.server) serverOut.replaceChildren(serverResultNode(sync.server));
+    if (sync.app) showApp().then((c) => { if (c && c.targets.some((t) => !c.results[t.id])) poll(Date.now()); });
+    if (autorun === 'server') runServer();
+    if (autorun === 'app') runApp();
+    return el('section', { class: 'card', 'aria-label': 'Kiểm tra đồng bộ' }, el('h2', {}, 'Kiểm tra đồng bộ'),
+      el('p', { class: 'muted' }, 'Trên server: so bản mới nhất của từng file với bản sao lưu của ngày mới nhất (dấu vân tay sha-256). Trên app: nhờ máy tính bảng tự so các file của nó với server (bản mới nhất và ngày mới nhất); máy phải đang mở app KeyMap Sync hoặc bật Tự đẩy.'),
+      el('div', { class: 'row' }, serverBtn, appBtn),
+      el('h2', {}, 'Kết quả trên server'), serverOut, el('h2', {}, 'Kết quả trên app'), appOut);
+  }
+
   async function viewBackups() {
     const { days } = await api('GET', '/sync/backups');
+    const autorun = state.autorun || '';
+    state.autorun = '';
     const item = (d, i) => el('li', { class: 't-item' }, el('span', { class: `t-dot ${i === 0 ? 'ok' : ''}`, 'aria-hidden': 'true' }),
       el('div', { class: 't-head' }, el('span', { class: 't-title mono' }, d.date), i === 0 ? badge('Mới nhất', 'ok') : null, badge(`${d.databases} file`), badge(fmtBytes(d.bytes)),
         d.databases ? el('button', { type: 'button', class: 'btn small', onclick: guard(() => showDay(d.date)) }, icon('eye'), 'Xem file') : null),
@@ -435,6 +525,7 @@
       el('div', { class: 'page-head' }, el('h1', {}, 'Sao lưu theo ngày'), badge(`${days.length} ngày`)),
       el('p', { class: 'muted' }, 'Mỗi ngày một thư mục (data/backups/<ngày>/databases) chứa cả bộ file như trên điện thoại. Trong ngày thì ghi đè bằng trạng thái mới nhất, sang ngày mới thì tạo thư mục mới. '
         + 'Ngày tính theo giờ Việt Nam. Khôi phục về máy: mở app Android → "Khôi phục theo ngày…" rồi chọn ngày.'),
+      syncCard(autorun),
       el('section', { class: 'card' }, days.length ? el('ol', { class: 'timeline' }, days.map(item)) : emptyState('clock', 'Chưa có bản sao lưu nào', 'Bản đầu tiên được tạo khi app gửi file lên.')));
   }
 
