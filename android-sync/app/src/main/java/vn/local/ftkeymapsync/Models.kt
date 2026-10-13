@@ -35,7 +35,10 @@ data class DeviceIdentity(val id: String, val name: String, val model: String, v
 data class Heartbeat(val autoPush: Boolean, val folder: String, val state: String, val error: String)
 
 /** Something the web page asked this phone to do (today only: delete items of the keymap cache). */
-data class ServerCommand(val id: String, val type: String, val file: String, val ids: List<String>)
+data class ServerCommand(val id: String, val type: String, val file: String, val ids: List<String>, val labels: List<String> = emptyList()) {
+    /** the name the web page showed for an id ('' when it did not say) */
+    fun labelOf(itemId: String): String = labels.getOrNull(ids.indexOf(itemId)).orEmpty()
+}
 
 /** What this phone did about a command, as the web page shows it. */
 data class CommandReport(
@@ -45,11 +48,14 @@ data class CommandReport(
     val skipped: List<Pair<String, String>> = emptyList(),
     val error: String = "",
     val backup: String = "",
+    /** only for a "kiểm tra đồng bộ" command: what the tablet found */
+    val verify: SyncCheck? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("removed", org.json.JSONArray(removed)).put("missing", org.json.JSONArray(missing)).put("reappeared", org.json.JSONArray(reappeared))
         .put("skipped", org.json.JSONArray().also { a -> skipped.forEach { a.put(JSONObject().put("id", it.first).put("reason", it.second)) } })
         .put("error", error).put("backup", backup)
+        .also { if (verify != null) it.put("verify", verify.toJson()) }
 
     fun describe(): String = buildString {
         append("đã xóa ${removed.size} mục trên máy")

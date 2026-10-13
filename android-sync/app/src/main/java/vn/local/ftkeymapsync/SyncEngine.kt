@@ -2,6 +2,7 @@ package vn.local.ftkeymapsync
 
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -48,7 +49,61 @@ class SyncEngine(
     /** waits a little after a file was written by a command, so a write-back by Gamwing can be noticed */
     private val settle: () -> Unit = { Thread.sleep(3_000) },
     private val commandState: CommandState = CommandState.shared,
+    /** receives a line for every thing done because of the web page, and for every check made after a push */
+    private val actions: ActionLog? = null,
 ) {
+    // ---------------------------------------------------------------- "kiểm tra đồng bộ": this tablet against the server
+    private fun sha256(text: String): String = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+    /** Fingerprints of the files on this tablet that may be backed up ([names]: only these). Same rules as the server's: sha-256 of the utf-8 text. */
+    fun localDigests(names: Collection<String>? = null): List<FileDigest> =
+        folder.scan().filter { DatabaseNames.isBackupName(it.name) && (names == null || it.name in names) }
+            .map { FileDigest(it.name, it.size, sha256(folder.read(it.name))) }.sortedBy { it.name }
+
+    /**
+     * Compares the files of this tablet with the server's latest copy and with the files of its newest backup day.
+     * With [names] only those files are looked at (what a push just sent): files that exist only on the server are then not reported.
+     */
+    fun checkSync(manifest: ServerManifest, names: Collection<String>? = null): SyncCheck {
+        val local = localDigests(names)
+        val latest = manifest.latest.associateBy { it.name }
+        val day = manifest.day.associateBy { it.name }
+        val different = mutableListOf<String>()
+        val onlyTablet = mutableListOf<String>()
+        val dayDifferent = mutableListOf<String>()
+        var same = 0
+        for (f in local) {
+            val s = latest[f.name]
+            when {
+                s == null -> onlyTablet += f.name
+                s.sha256 == f.sha256 -> same++
+                else -> different += f.name
+            }
+            if (manifest.dayDate != null && day[f.name]?.sha256 != f.sha256) dayDifferent += f.name
+        }
+        val onlyServer = if (names == null) manifest.latest.map { it.name }.filter { n -> local.none { it.name == n } }.sorted() else emptyList()
+        return SyncCheck(manifest.dayDate.orEmpty(), local.size, same, different, onlyTablet, onlyServer, dayDifferent)
+    }
+
+    /** The whole check, asking the server for its fingerprints. A problem talking to the server is part of the answer, not an exception. */
+    fun checkSync(names: Collection<String>? = null): SyncCheck = try {
+        checkSync(client.manifest(), names)
+    } catch (e: Exception) {
+        SyncCheck("", 0, 0, emptyList(), emptyList(), emptyList(), emptyList(), error = e.message ?: e.javaClass.simpleName)
+    }
+
+    /** After a push: the files just sent against the newest backup day (and the latest copy) on the server. The result is also written to the action log. */
+    fun checkAfterPush(names: Collection<String>): SyncCheck {
+        val r = checkSync(names)
+        val short = when {
+            r.error.isNotEmpty() -> "Sau khi đẩy: không kiểm tra được đồng bộ (${r.error})"
+            r.inSync -> "Sau khi đẩy: đã kiểm tra đồng bộ với bản sao lưu ngày ${r.dayDate}: ${r.same}/${r.checked} file giống."
+            else -> "Sau khi đẩy: CHƯA đồng bộ với bản sao lưu ngày ${r.dayDate.ifEmpty { "(chưa có)" }}: ${(r.different + r.onlyTablet + r.dayDifferent).distinct().joinToString()}"
+        }
+        actions?.addAction(short)
+        return r
+    }
+
     fun scan(): DatabaseScan {
         if (!folder.exists()) return DatabaseScan(false, 0, emptyList(), 0, folder.dir.path)
         val all = folder.scan()
@@ -122,6 +177,31 @@ class SyncEngine(
 
     // ---------------------------------------------------------------- commands from the web page
     /** Deletes the items of a delete_cache_items command from the file on this phone. Never throws: problems are in the report. */
+    fun applyCommand(cmd: ServerCommand): CommandReport = when (cmd.type) {
+        "delete_cache_items" -> applyDeletion(cmd)
+        "verify_sync" -> CommandReport(verify = checkSync())
+        else -> CommandReport(error = "Lệnh không biết: ${cmd.type}")
+    }
+
+    /** What to tell the user (log lines) about a command that was done and reported; also adds lines to the action log. */
+    private fun describeDone(c: ServerCommand, report: CommandReport): List<String> {
+        if (c.type == "verify_sync") {
+            val v = report.verify
+            val lines = v?.lines() ?: listOf(report.error)
+            actions?.addAction("Kiểm tra đồng bộ (lệnh từ web): ${lines.first()}")
+            return listOf("Kiểm tra đồng bộ theo lệnh từ giao diện web:") + lines
+        }
+        fun named(id: String) = "«${c.labelOf(id).ifEmpty { "(không tên)" }}» (map|$id)"
+        val lines = mutableListOf("Lệnh xóa từ giao diện web: ${report.describe()}" + if (report.backup.isNotEmpty()) " (file cũ đã chép vào ${report.backup})" else "")
+        report.removed.forEach { lines += "  • đã xóa trên máy: ${named(it)}" }
+        report.missing.forEach { lines += "  • không còn trên máy: ${named(it)}" }
+        report.reappeared.forEach { lines += "  ⚠ hiện lại sau khi xóa: ${named(it)}" }
+        if (report.removed.isNotEmpty()) actions?.addAction("Đã xóa trên máy theo lệnh từ web: " + report.removed.joinToString("; ") { named(it) })
+        if (report.reappeared.isNotEmpty()) actions?.addAction("⚠ ${report.reappeared.size} mục hiện lại sau khi xóa (Gamwing ghi đè file?): " + report.reappeared.joinToString("; ") { named(it) })
+        if (report.error.isNotEmpty()) actions?.addAction("Lệnh xóa từ web gặp lỗi: ${report.error}")
+        return lines
+    }
+
     fun applyDeletion(cmd: ServerCommand): CommandReport {
         if (cmd.type != "delete_cache_items") return CommandReport(error = "Lệnh không biết: ${cmd.type}")
         if (!DatabaseNames.isBackupName(cmd.file)) return CommandReport(error = "Tên file không được phép: ${cmd.file}")
@@ -156,12 +236,12 @@ class SyncEngine(
         val lines = mutableListOf<String>()
         for (c in cmds) {
             if (c.id in commandState.done) continue
-            val report = commandState.unsent[c.id] ?: applyDeletion(c).also { commandState.unsent[c.id] = it }
+            val report = commandState.unsent[c.id] ?: applyCommand(c).also { commandState.unsent[c.id] = it }
             try {
                 client.reportCommand(c.id, report)
                 commandState.unsent.remove(c.id)
                 commandState.done += c.id
-                lines += "Lệnh xóa từ giao diện web: ${report.describe()}" + if (report.backup.isNotEmpty()) " (file cũ đã chép vào ${report.backup})" else ""
+                lines += describeDone(c, report)
             } catch (e: SyncException) {
                 lines += "Đã làm lệnh ${c.id} nhưng chưa báo được lên server, sẽ thử lại: ${e.message}"
             }

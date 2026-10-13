@@ -48,9 +48,37 @@ class ServerClient(
         val commands = (0 until (cmds?.length() ?: 0)).mapNotNull { i ->
             val o = cmds!!.optJSONObject(i) ?: return@mapNotNull null
             val ids = o.optJSONArray("ids")
-            ServerCommand(o.optString("id"), o.optString("type"), o.optString("file"), (0 until (ids?.length() ?: 0)).map { ids!!.getString(it) })
+            val labels = o.optJSONArray("labels")
+            ServerCommand(o.optString("id"), o.optString("type"), o.optString("file"), (0 until (ids?.length() ?: 0)).map { ids!!.getString(it) },
+                (0 until (labels?.length() ?: 0)).map { labels!!.optString(it) })
         }.filter { it.id.isNotEmpty() }
         return HelloResult(j.optJSONObject("web")?.optInt("sessions") ?: 0, j.optInt("online"), commands)
+    }
+
+    private fun digests(arr: JSONArray?): List<FileDigest> =
+        (0 until (arr?.length() ?: 0)).map { val o = arr!!.getJSONObject(it); FileDigest(o.getString("name"), o.optLong("bytes"), o.getString("sha256")) }
+
+    /** Fingerprints of what the server holds: the latest copy of every file, and the files of the newest backup day. */
+    fun manifest(): ServerManifest {
+        val j = request("GET", "/admin/api/sync/manifest", null)
+        val day = j.optJSONObject("day")
+        return ServerManifest(digests(j.optJSONArray("latest")), day?.optString("date"), digests(day?.optJSONArray("files")))
+    }
+
+    /** The server compares its latest copy with its newest backup day and says what it found. */
+    fun serverVerify(): ServerVerify {
+        val j = request("GET", "/admin/api/sync/verify", null)
+        val problems = j.optJSONArray("problems")
+        val text = (0 until (problems?.length() ?: 0)).map {
+            val p = problems!!.getJSONObject(it)
+            p.optString("name") + ": " + when (p.optString("kind")) {
+                "different" -> "khác bản sao lưu"
+                "missing_in_day" -> "thiếu trong bản sao lưu"
+                "extra_in_day" -> "thừa trong bản sao lưu"
+                else -> p.optString("kind")
+            }
+        }
+        return ServerVerify(j.optBoolean("ok"), j.optString("reason"), j.optString("day"), j.optInt("checked"), j.optInt("same"), text)
     }
 
     /** Tells the server what this phone did about a command. */

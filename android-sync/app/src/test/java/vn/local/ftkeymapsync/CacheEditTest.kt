@@ -197,7 +197,8 @@ class DeleteCommandTest : SyncTestBase() {
         val lines = e.runCommands(hello.commands)
         assertEquals(1, server.commandResults.size)
         assertEquals(listOf(id('b')), server.commandResults[0].second.removed)
-        assertTrue(lines.single(), lines.single().contains("1"))
+        assertTrue(lines.toString(), lines[0].contains("đã xóa 1 mục"))
+        assertTrue(lines.toString(), lines.any { it.contains("đã xóa trên máy:") && it.contains("map|${id('b')}") })
         assertEquals("the server stops sending it once it has the result", 0, c.hello(Heartbeat(true, dir.path, "watching", "")).commands.size)
         // the same command handed out twice (by two heartbeats at once) is only done once
         server.pendingCommands += cmd(id('c')).copy(id = "cmd_2")

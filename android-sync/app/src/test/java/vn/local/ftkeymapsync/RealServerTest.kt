@@ -95,7 +95,7 @@ class RealServerTest {
         val commands = client.hello(Heartbeat(false, dir.path, "idle", "")).commands
         assertEquals(1, commands.size)
         val lines = engine.runCommands(commands)
-        assertTrue(lines.toString(), lines.single().contains("đã xóa 1 mục"))
+        assertTrue(lines.toString(), lines[0].contains("đã xóa 1 mục"))
         assertTrue(!cacheFile.readText().contains("map|$orphan"))
         assertEquals(original.length - CacheEdit.removeItems(original, listOf(orphan!!)).text.length, original.length - cacheFile.readText().length)
         assertEquals(0, client.hello(Heartbeat(false, dir.path, "idle", "")).commands.size)
@@ -103,5 +103,48 @@ class RealServerTest {
         assertEquals("done", status.getString("status"))
         // the file on the tablet is now what the server holds
         assertEquals(cacheFile.readText(), JSONObject(getText(url, "/admin/api/sync/databases/gamwing_keymap_cache.xml")).getString("text"))
+    }
+
+    @Test fun `after a push the newest backup day matches, the server agrees, and the web page can ask the tablet to check`() {
+        val url = System.getenv("SYNC_TEST_SERVER")
+        val src = System.getenv("SYNC_TEST_DATABASES")
+        assumeNotNull(url, src)
+
+        val dir = tmp.newFolder("databases3")
+        File(src).listFiles()!!.filter { it.isFile && it.name.endsWith(".xml") }.forEach { it.copyTo(File(dir, it.name)) }
+        val me = DeviceIdentity("ftks-e2e-test-0002", "Máy thử 2", "SM", "15", "2.0.0", "")
+        val client = ServerClient(url, identity = me)
+        val engine = SyncEngine(LocalFolder(dir), client, File(tmp.root, "backup4"), settle = {}, commandState = CommandState())
+        engine.push()
+        val sent = dir.listFiles()!!.map { it.name }.filter { DatabaseNames.isBackupName(it) }
+
+        // 1) the files just sent are the same as the newest backup day on the server
+        val after = engine.checkAfterPush(sent)
+        assertTrue(after.lines().toString(), after.inSync)
+        assertEquals(sent.size, after.checked)
+
+        // 2) the server's own check agrees
+        val server = client.serverVerify()
+        assertTrue(server.lines().toString(), server.ok)
+
+        // 3) the web page asks the tablet to check itself, the tablet answers
+        client.hello(Heartbeat(false, dir.path, "idle", ""))
+        val asked = JSONObject(postJson(url, "/admin/api/sync/verify-request", "{}"))
+        assertTrue(asked.toString(), asked.optBoolean("ok"))
+        val commands = client.hello(Heartbeat(false, dir.path, "idle", "")).commands.filter { it.type == "verify_sync" }
+        assertEquals(1, commands.size)
+        engine.runCommands(commands)
+        val status = JSONObject(getText(url, "/admin/api/cache/commands")).getJSONArray("commands").getJSONObject(0)
+        // other devices that this server knows (from earlier tests) never answer, so the command as a whole may still be waiting for them
+        val mine = status.getJSONObject("results").getJSONObject("ftks-e2e-test-0002").getJSONObject("verify")
+        assertEquals(sent.size, mine.getInt("checked"))
+        assertEquals(sent.size, mine.getInt("same"))
+        assertEquals(0, mine.getJSONArray("different").length())
+
+        // 4) a file changed on the tablet is found
+        File(dir, "PubgSettings.xml").appendText("<!-- changed -->")
+        val changed = engine.checkSync()
+        assertTrue(changed.different.contains("PubgSettings.xml"))
+        assertTrue(!changed.inSync)
     }
 }

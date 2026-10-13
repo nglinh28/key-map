@@ -16,8 +16,13 @@ import java.util.UUID
 
 const val DEFAULT_DATABASES = "Documents/jya2/databases"
 
+/** Where the engine writes what it did for the user to read later (shown on the main screen). */
+interface ActionLog {
+    fun addAction(line: String)
+}
+
 /** Settings, plus the "what was last pushed" memory the watcher needs (so a restart does not push everything again). */
-class Prefs(context: Context) : DbStateStore {
+class Prefs(context: Context) : DbStateStore, ActionLog {
     private val sp = context.applicationContext.getSharedPreferences("ftkeymapsync", Context.MODE_PRIVATE)
 
     var serverUrl: String
@@ -39,6 +44,18 @@ class Prefs(context: Context) : DbStateStore {
             j.keys().asSequence().associateWith { j.getString(it) }
         }.getOrDefault(emptyMap())
         set(v) { sp.edit().putString("lastPushedDb", JSONObject(v).toString()).apply() }
+
+    /** The last things done on this phone because the web page asked (or checks made after a push), newest first, one line each. */
+    fun actionLog(): List<String> = runCatching {
+        val a = org.json.JSONArray(sp.getString("actionLog", "[]") ?: "[]")
+        (0 until a.length()).map { a.getString(it) }
+    }.getOrDefault(emptyList())
+
+    @Synchronized override fun addAction(line: String) {
+        val stamp = SimpleDateFormat("dd/MM HH:mm", Locale.US).format(Date())
+        val next = (listOf("$stamp  $line") + actionLog()).take(40)
+        sp.edit().putString("actionLog", org.json.JSONArray(next).toString()).apply()
+    }
 
     /** A random id made once; it is how the server and the web page recognise this phone. */
     val deviceId: String

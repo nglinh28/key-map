@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var webView: TextView
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
+    private lateinit var actionsView: TextView
     private lateinit var permBox: LinearLayout
     private lateinit var serverInput: EditText
     private lateinit var savedView: TextView
@@ -85,6 +86,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshPermission()
+        refreshActions()
         checkConnection() // the "which server am I connected to" message, every time the app opens
         ui.post(beatTask)
     }
@@ -179,6 +181,8 @@ class MainActivity : Activity() {
                 actionButton("Khôi phục theo ngày…", false) { restoreByDay() },
                 actionButton("Kiểm tra kết nối", false) { checkConnection() },
                 actionButton("Quét file", false) { scanFolder() },
+                actionButton("Kiểm tra đồng bộ trên app", false) { checkTabletSync() },
+                actionButton("Kiểm tra đồng bộ trên server", false) { checkServerSync() },
             )
         }
 
@@ -213,6 +217,11 @@ class MainActivity : Activity() {
         }
         val logCard = card("Nhật ký") { addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(if (twoColumns) 200 else 240))) }
 
+        // ---- what the web page made this tablet do, and the checks after a push (kept across restarts)
+        actionsView = TextView(this).apply { textSize = 13f; setTextColor(pal.text); setTextIsSelectable(true) }
+        val historyCard = card("Việc đã làm theo lệnh từ web") { addView(actionsView) }
+        refreshActions()
+
         // storage permission: only shown while it is missing
         permBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -240,10 +249,10 @@ class MainActivity : Activity() {
             col.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 addView(column(settingsCard, connectCard, folderCard, dangerCard, endGap = true))
-                addView(column(actionCard, autoCard, logCard, endGap = false))
+                addView(column(actionCard, historyCard, autoCard, logCard, endGap = false))
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         } else {
-            listOf(settingsCard, connectCard, folderCard, actionCard, autoCard, logCard, dangerCard).forEach { col.addView(it) }
+            listOf(settingsCard, connectCard, folderCard, actionCard, historyCard, autoCard, logCard, dangerCard).forEach { col.addView(it) }
         }
 
         // Content is centred and at most 640dp (one column) or 1200dp (two) wide, so a big screen is not stretched edge to edge.
@@ -530,7 +539,7 @@ class MainActivity : Activity() {
         setBusy(true)
         io.execute {
             try {
-                work(folder, SyncEngine(folder, ServerClient(url, identity = me), backupRoot()))
+                work(folder, SyncEngine(folder, ServerClient(url, identity = me), backupRoot(), actions = prefs))
             } catch (e: Exception) {
                 StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
             } finally {
@@ -568,11 +577,12 @@ class MainActivity : Activity() {
                 val r = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).hello(Heartbeat(auto, folder, if (auto) "watching" else "idle", ""))
                 runOnUiThread { setWeb(if (r.webSessions > 0) "Giao diện web: đang mở (${r.webSessions} phiên)" else "Giao diện web: chưa có ai mở", r.webSessions > 0) }
                 if (r.commands.isNotEmpty()) {
-                    // the web page asked to delete items from the cache file on this tablet
-                    if (!hasAllFiles()) StatusBus.log("Có lệnh xóa từ giao diện web nhưng chưa cấp quyền \"Truy cập mọi file\".")
+                    // the web page asked something of this tablet (delete items of the cache file, check the sync)
+                    if (!hasAllFiles()) StatusBus.log("Có lệnh từ giao diện web nhưng chưa cấp quyền \"Truy cập mọi file\".")
                     else {
                         val local = LocalFolder(resolveFolder(folder))
-                        SyncEngine(local, ServerClient(url, identity = me), backupRoot()).runCommands(r.commands).forEach { StatusBus.log(it) }
+                        SyncEngine(local, ServerClient(url, identity = me), backupRoot(), actions = prefs).runCommands(r.commands).forEach { StatusBus.log(it) }
+                        runOnUiThread { refreshActions() }
                     }
                 }
             } catch (e: SyncException) {
@@ -593,6 +603,53 @@ class MainActivity : Activity() {
         prefs.lastPushedDb = databaseFingerprints(folder) // the watcher must not push the same files again
         StatusBus.log("Đã đẩy lên: ${s.describe()}")
         s.skipped.forEach { StatusBus.log("  bỏ qua $it") }
+        // the files just sent must be the same as the newest backup day on the server
+        val sent = folder.scan().map { it.name }.filter { DatabaseNames.isBackupName(it) }
+        engine.checkAfterPush(sent).lines().forEach { StatusBus.log(it) }
+        runOnUiThread { refreshActions() }
+    }
+
+    /** "Kiểm tra đồng bộ trên app": the files on this tablet against the server's latest copy and its newest backup day. */
+    private fun checkTabletSync() = withEngine { _, engine ->
+        StatusBus.log("Đang kiểm tra đồng bộ giữa máy tính bảng và server…")
+        val r = engine.checkSync()
+        r.lines().forEach { StatusBus.log(it) }
+        showResult("Đồng bộ giữa máy tính bảng và server", r.lines(), good = r.inSync)
+    }
+
+    /** "Kiểm tra đồng bộ trên server": the server compares its latest copy with its newest backup day. */
+    private fun checkServerSync() {
+        val url = serverUrlOrNull() ?: return
+        val me = identity()
+        setBusy(true)
+        StatusBus.log("Đang nhờ server kiểm tra đồng bộ…")
+        io.execute {
+            try {
+                val r = ServerClient(url, identity = me).serverVerify()
+                r.lines().forEach { StatusBus.log(it) }
+                showResult("Đồng bộ trên server", r.lines(), good = r.ok)
+            } catch (e: Exception) {
+                StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                runOnUiThread { setBusy(false) }
+            }
+        }
+    }
+
+    private fun showResult(title: String, lines: List<String>, good: Boolean) {
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle(if (good) "$title: ĐÃ ĐỒNG BỘ" else "$title: CHƯA ĐỒNG BỘ")
+                .setMessage(lines.joinToString("\n"))
+                .setPositiveButton("Đóng", null)
+                .show()
+        }
+    }
+
+    /** the list of what the web page made this tablet do (deleted items by name, checks) and of the checks after a push */
+    private fun refreshActions() {
+        val lines = prefs.actionLog().take(12)
+        actionsView.text = if (lines.isEmpty()) "Chưa có gì. Khi bạn xóa mục hoặc kiểm tra đồng bộ từ giao diện web, app ghi lại ở đây." else lines.joinToString("\n\n")
     }
 
     private fun restoreByDay() = withEngine { folder, engine ->

@@ -57,6 +57,7 @@ class WatchService : Service() {
         val prefs = Prefs(this)
         var key = ""
         var watcher: Watcher? = null
+        var engine: SyncEngine? = null
         var client: ServerClient? = null
         var backoff = 0L
         var lastError = ""
@@ -77,14 +78,15 @@ class WatchService : Service() {
                             client = ServerClient(url, identity = identityOf(this, prefs))
                             lastClient = client
                             lastFolder = prefs.databasesPath
-                            watcher = Watcher(folder, SyncEngine(folder, client, backupRoot()), prefs)
+                            engine = SyncEngine(folder, client, backupRoot(), actions = prefs)
+                            watcher = Watcher(folder, engine, prefs)
                             update("Đang theo dõi ${folder.dir.path} → $url")
                         }
                         if (beat.due()) {
                             runCatching { client!!.hello(Heartbeat(true, prefs.databasesPath, if (lastError.isEmpty()) "watching" else "error", lastError)) }
                                 .getOrNull()?.commands?.takeIf { it.isNotEmpty() }?.let { cmds ->
-                                    // the web page asked to delete items from the cache file on this tablet: do it before the next push
-                                    SyncEngine(folder, client!!, backupRoot()).runCommands(cmds).forEach { StatusBus.log(it) }
+                                    // the web page asked something (delete items of the cache file, check the sync): do it before the next push
+                                    engine!!.runCommands(cmds).forEach { StatusBus.log(it) }
                                 }
                         }
                         when (val ev = watcher!!.tick()) {
@@ -93,6 +95,8 @@ class WatchService : Service() {
                                 lastError = ""
                                 StatusBus.log("Tự đẩy lên server: ${ev.names.size} file đã đổi — ${ev.summary.describe()}")
                                 ev.summary.skipped.forEach { StatusBus.log("  bỏ qua $it") }
+                                // the files just sent must be the same as the newest backup day on the server
+                                engine!!.checkAfterPush(ev.names).lines().forEach { StatusBus.log(it) }
                                 update("Đã đẩy lúc ${now()} (${ev.names.size} file) → $url")
                             }
                             is WatchEvent.Failed -> {

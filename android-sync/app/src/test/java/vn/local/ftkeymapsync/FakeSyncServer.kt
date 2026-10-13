@@ -7,7 +7,10 @@ import java.io.InputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.concurrent.Executors
+
+private fun sha(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
 /**
  * A tiny stand-in for the keymap server's sync endpoints, running inside the JVM test.
@@ -24,7 +27,9 @@ class FakeSyncServer {
     val databasePushes = mutableListOf<List<String>>()                      // file names of every databases push request
     val pendingCommands = mutableListOf<ServerCommand>()                    // handed out in every heartbeat answer until a result is posted
     val commandResults = mutableListOf<Pair<String, CommandReport>>()       // command id -> what the phone reported
-    val pushFolders = mutableListOf<String>()                               // the phone folder named in every databases push request
+    @Volatile var snapshotOnPush = false                                    // behave like the real server: every push updates the newest backup day
+    var snapshotDay = "2026-10-11"
+    val pushFolders = mutableListOf<String>()                              // the phone folder named in every databases push request
     val backupDatabases = LinkedHashMap<String, LinkedHashMap<String, String>>() // date -> preference files (a day exists once it has an entry)
     private val socket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val pool = Executors.newCachedThreadPool()
@@ -103,15 +108,40 @@ class FakeSyncServer {
                 .put("web", JSONObject().put("sessions", webSessions)).put("devices_online", 1).put("backup_days", backupDatabases.size).toString()
             path.endsWith("/sync/hello") -> {
                 hellos += JSONObject(body)
-                val cmds = JSONArray().also { a -> pendingCommands.forEach { c -> a.put(JSONObject().put("id", c.id).put("type", c.type).put("file", c.file).put("ids", JSONArray(c.ids))) } }
+                val cmds = JSONArray().also { a -> pendingCommands.forEach { c -> a.put(JSONObject().put("id", c.id).put("type", c.type).put("file", c.file).put("ids", JSONArray(c.ids)).put("labels", JSONArray(c.labels))) } }
                 200 to JSONObject().put("ok", true).put("online", 1).put("web", JSONObject().put("sessions", webSessions)).put("commands", cmds).toString()
             }
             commandResultMatch != null -> {
                 val j = JSONObject(body)
                 fun ids(key: String) = j.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-                commandResults += commandResultMatch.groupValues[1] to CommandReport(ids("removed"), ids("missing"), ids("reappeared"), emptyList(), j.optString("error"), j.optString("backup"))
+                fun names(o: JSONObject, key: String) = o.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+                val v = j.optJSONObject("verify")?.let { SyncCheck(it.optString("day"), it.optInt("checked"), it.optInt("same"), names(it, "different"), names(it, "only_tablet"), names(it, "only_server"), names(it, "day_different"), it.optString("error")) }
+                commandResults += commandResultMatch.groupValues[1] to CommandReport(ids("removed"), ids("missing"), ids("reappeared"), emptyList(), j.optString("error"), j.optString("backup"), v)
                 pendingCommands.removeAll { it.id == commandResultMatch.groupValues[1] }
                 200 to """{"ok":true}"""
+            }
+            path.endsWith("/sync/manifest") -> {
+                val newest = backupDatabases.keys.maxOrNull()
+                fun digests(files: Map<String, String>) = JSONArray().also { a -> files.toSortedMap().forEach { (n, t) -> a.put(JSONObject().put("name", n).put("bytes", t.toByteArray().size).put("sha256", sha(t))) } }
+                val day = newest?.let { JSONObject().put("date", it).put("files", digests(backupDatabases[it]!!)) }
+                200 to JSONObject().put("latest", digests(databases)).put("day", day ?: JSONObject.NULL).toString()
+            }
+            path.endsWith("/sync/verify") -> {
+                val newest = backupDatabases.keys.maxOrNull()
+                if (newest == null) 200 to JSONObject().put("ok", false).put("reason", "no_backup_day").put("day", JSONObject.NULL).put("checked", databases.size).put("same", 0).put("problems", JSONArray()).toString() else {
+                    val day = backupDatabases[newest]!!
+                    val problems = JSONArray()
+                    var same = 0
+                    for ((n, t) in databases.toSortedMap()) {
+                        when {
+                            n !in day -> problems.put(JSONObject().put("name", n).put("kind", "missing_in_day"))
+                            day[n] != t -> problems.put(JSONObject().put("name", n).put("kind", "different"))
+                            else -> same++
+                        }
+                    }
+                    for (n in day.keys.sorted()) if (n !in databases) problems.put(JSONObject().put("name", n).put("kind", "extra_in_day"))
+                    200 to JSONObject().put("ok", problems.length() == 0).put("day", newest).put("checked", databases.size).put("same", same).put("problems", problems).toString()
+                }
             }
             path.endsWith("/sync/backups") -> {
                 val arr = JSONArray()
@@ -157,6 +187,8 @@ class FakeSyncServer {
             if (databases[name] == text) unchanged++ else { databases[name] = text; saved++ }
         }
         databasePushes += names
+        // a real server copies the whole set into today's backup day after a change
+        if (snapshotOnPush && saved > 0) backupDatabases[snapshotDay] = LinkedHashMap(databases)
         return 200 to JSONObject().put("saved", saved).put("unchanged", unchanged).put("skipped", JSONArray()).toString()
     }
 }
