@@ -14,6 +14,7 @@ const PKG_VERSION = require('./package.json').version;
 const { DAY_RE } = require('./backup');
 const { DEVICE_ID_RE } = require('./devices');
 const CacheXml = require('./admin/cachexml');
+const { manifestOf, serverCheck } = require('./verify');
 
 const CACHE_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_DELETE_IDS = 200;
@@ -135,7 +136,13 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     if (saved.status !== 200) return json(res, saved.status, { error: saved.error, ...(saved.etag ? { etag: saved.etag } : {}) });
     snapshotNow();
     const targets = devices.list().map((d) => ({ id: d.id, name: d.name }));
-    const command = commands.create({ type: 'delete_cache_items', file: name, ids: [...cut.removedMaps, ...cut.lists.flatMap((l) => l.removed)], labels: Array.isArray(body.labels) ? body.labels : [], targets });
+    // names for the tablet: from items [{id,label}], or labels in the order of the request
+    const names = new Map();
+    if (Array.isArray(body.items)) for (const it of body.items) if (it && typeof it.id === 'string' && typeof it.label === 'string') names.set(it.id, it.label);
+    else if (Array.isArray(body.labels)) ids.forEach((x, i) => { if (typeof body.labels[i] === 'string') names.set(x, body.labels[i]); });
+    if (!names.size && Array.isArray(body.labels)) ids.forEach((x, i) => { if (typeof body.labels[i] === 'string') names.set(x, body.labels[i]); });
+    const done = [...new Set([...cut.removedMaps, ...cut.lists.flatMap((l) => l.removed)])];
+    const command = commands.create({ type: 'delete_cache_items', file: name, ids: done, labels: done.map((x) => names.get(x) || ''), targets });
     return json(res, 200, {
       ok: true, etag: saved.etag, removedMaps: cut.removedMaps, lists: cut.lists, missing: cut.missing, warnings: cut.warnings,
       command: { id: command.id, targets: command.targets.length },
@@ -164,7 +171,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       if (typeof id !== 'string' || !DEVICE_ID_RE.test(id)) return err(res, 400, 'Invalid device id');
       const device = devices.hello(id, body, remoteOf(req));
       backups.ensureToday();
-      const pending = commands.pendingFor(id).map((c) => ({ id: c.id, type: c.type, file: c.file, ids: c.ids }));
+      const pending = commands.pendingFor(id).map((c) => ({ id: c.id, type: c.type, file: c.file, ids: c.ids, labels: c.labels }));
       return json(res, 200, { ok: true, now: new Date().toISOString(), online: devices.onlineCount(), web: { sessions: devices.webSessions() }, device, commands: pending });
     }
     if (p === '/admin/api/sync/devices' && method === 'GET') {
@@ -186,6 +193,21 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       if (!who) return err(res, 400, 'Invalid device id');
       const body = await jsonBody(req);
       return commands.report(safeDecode(m[1]), who.id, body) ? json(res, 200, { ok: true }) : err(res, 404, 'Command not found');
+    }
+    // ---- "kiểm tra đồng bộ": what the server holds against its newest backup day; fingerprints for the app; ask the tablet to check itself
+    if (p === '/admin/api/sync/verify' && method === 'GET') {
+      backups.ensureToday();
+      return json(res, 200, serverCheck({ databases, backups }));
+    }
+    if (p === '/admin/api/sync/manifest' && method === 'GET') {
+      backups.ensureToday();
+      const days = backups.list();
+      return json(res, 200, { at: new Date().toISOString(), latest: manifestOf(databases.all()), day: days.length ? { date: days[0].date, files: manifestOf(backups.readDatabases(days[0].date)) } : null });
+    }
+    if (p === '/admin/api/sync/verify-request' && method === 'POST') {
+      const targets = devices.list().map((d) => ({ id: d.id, name: d.name }));
+      const command = commands.create({ type: 'verify_sync', file: '', ids: [], targets });
+      return json(res, 200, { ok: true, command: { id: command.id, targets: command.targets.length } });
     }
     // ---- daily backups
     if (p === '/admin/api/sync/backups' && method === 'GET') {
