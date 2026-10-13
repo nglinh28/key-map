@@ -288,6 +288,35 @@
         save));
   }
 
+  // Puts an older copy of a file back on the SERVER (any size). The tablet is not touched: use "Khôi phục theo ngày" in the app for that.
+  async function restoreFromHistory(name) {
+    const cur = await api('GET', `/sync/databases/${enc(name)}`);
+    const { versions } = await api('GET', `/sync/databases/${enc(name)}/history`);
+    if (!versions.length) { toast('Chưa có bản cũ nào của file này.'); return; }
+    const picked = await showModal({
+      title: `Bản cũ của ${name}`, tone: 'info',
+      body: el('p', { class: 'muted' }, `${versions.length} bản gần nhất (mỗi lần file đổi, bản trước được giữ lại). Chọn một bản để xem thay đổi rồi khôi phục.`),
+      actions: [{ id: null, label: 'Đóng' }, ...versions.map((v) => ({ id: v.version, label: `${clockDateTime(v.saved_at)} · ${fmtBytes(v.bytes)}` }))],
+    });
+    if (!picked) return;
+    const old = await api('GET', `/sync/databases/${enc(name)}/history/${enc(picked)}`);
+    const go = await showModal({
+      title: `Khôi phục bản cũ của ${name}?`,
+      body: [el('p', { class: 'warnbox' }, 'File trên SERVER sẽ được thay bằng bản cũ này (bản hiện tại vẫn được giữ trong lịch sử). Máy tính bảng KHÔNG đổi theo: muốn đưa về máy, dùng "Khôi phục theo ngày…" trong app.'),
+        el('h2', {}, 'Thay đổi so với bản đang lưu'), diffNode(cur.text, old.text)],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Khôi phục bản này', primary: true }],
+    });
+    if (go !== 'go') return;
+    try {
+      await api('PUT', `/sync/databases/${enc(name)}`, { text: old.text, etag: cur.etag });
+    } catch (e) {
+      if (e.status === 409) { toast('File vừa đổi ở nơi khác (có thể app vừa đồng bộ). Hãy thử lại.', true); await render(); return; }
+      throw e;
+    }
+    toast(`Đã khôi phục bản cũ của ${name} trên server`);
+    await render();
+  }
+
   async function viewFiles() {
     if (state.dbEdit) return viewDbEditor();
     const { files } = await api('GET', '/sync/databases');
@@ -298,7 +327,8 @@
         f.name === CACHE_FILE
           ? el('button', { class: 'btn small', onclick: () => { state.view = 'analysis'; render(); } }, 'Phân tích')
           : el('button', { class: 'btn small', disabled: f.bytes > EDIT_MAX_BYTES, title: f.bytes > EDIT_MAX_BYTES ? 'File lớn: chỉ xem và tải về' : '', onclick: guard(() => openDbEditor(f.name)) }, 'Sửa'), ' ',
-        el('button', { class: 'btn small', onclick: guard(async () => { downloadText(f.name, (await api('GET', `/sync/databases/${enc(f.name)}`)).text); }) }, 'Tải về'))))
+        el('button', { class: 'btn small', onclick: guard(async () => { downloadText(f.name, (await api('GET', `/sync/databases/${enc(f.name)}`)).text); }) }, 'Tải về'), ' ',
+        el('button', { class: 'btn small', title: 'Xem các bản cũ và khôi phục trên server', onclick: guard(() => restoreFromHistory(f.name)) }, 'Lịch sử'))))
       : el('tr', {}, el('td', { colspan: 5, class: 'muted' }, 'Chưa có file nào. Mở app KeyMap Sync, đặt thư mục (mặc định Documents/jya2/databases) rồi bấm "Đẩy lên server".'));
     return el('div', { class: 'card' }, el('h2', {}, 'Tệp cài đặt của Gamwing (Documents/jya2/databases)'),
       el('p', { class: 'muted' }, 'Các file XML mà app Gamwing lưu trên máy (cột "Thư mục trên máy" cho biết chúng nằm ở đâu trên máy tính bảng). App KeyMap Sync gửi lên; server giữ bản mới nhất, 10 bản cũ của mỗi file, và chép cả bộ vào thư mục của ngày sao lưu. '

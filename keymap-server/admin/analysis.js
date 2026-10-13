@@ -1,21 +1,43 @@
 'use strict';
 // Tab "Phân tích cache": reads gamwing_keymap_cache.xml from the server and shows what is inside it.
-// Read-only: key maps and AI recognition maps are drawn on a screen, recoil configs are analysed per gun.
+// Key maps and AI recognition maps are drawn on a screen, recoil configs are analysed per gun (read-only).
+// Items can be deleted: from the file on the server at once, and on the tablet by the app (a command it picks up).
 (() => {
-  const { $, el, svgEl, fmtBytes, short, textBytes, clockDateTime, toast, api, guard } = window.Ui;
+  const { $, el, svgEl, fmtBytes, short, textBytes, clockDateTime, toast, api, guard, showModal } = window.Ui;
   const CX = window.CacheXml;
   const LL = window.LayoutLib;
   const RL = window.RecoilLib;
   const CACHE_FILE = 'gamwing_keymap_cache.xml';
+  const REFS_FILE = 'ft_map_server_v1.xml'; // also writes the ids of the documents it knows
   const KIND_VN = { keymap: 'Sơ đồ phím', recognition: 'Nhận diện AI', recoil: 'Độ giật / Cấu hình', unknown: 'Không rõ' };
 
-  // data: the loaded file and its analysis; sel: the opened item { id, kind, ns, label }
-  const S = { src: '', days: [], data: null, error: '', sel: null };
+  // data: the loaded file and its analysis; sel: the opened item { id, kind, ns, label }; refs: id -> where else the id is written
+  const S = { src: '', days: [], data: null, error: '', sel: null, refs: new Map(), cmds: [] };
   const lay = { screenId: null, origin: 'topleft', custom: { w: 2960, h: 1848 }, bg: { url: null, opacity: 0.5 }, selected: null };
   const rc = { mode: 'touch', weapon: RL.WEAPONS.indexOf('AUG'), scope: 1, gesture: 0, showAll: false, picked: null, docId: null, idx: null };
 
   let active = false; // false once another tab is open: a slow reload must not draw over it
+  let pollTimer = null;
   const redraw = () => { if (!active) return; const y = window.scrollY; $('#app').replaceChildren(draw()); window.scrollTo(0, y); };
+  const latest = () => S.src === '';
+
+  async function loadRefs(day) {
+    S.refs = new Map();
+    try {
+      const name = encodeURIComponent(REFS_FILE);
+      const f = await api('GET', day ? `/sync/backups/${day}/databases/${name}` : `/sync/databases/${name}`);
+      for (const e of CX.parse(f.text).entries) {
+        const m = e.tag === 'string' ? /^document\|[^|]*\|(.+)$/.exec(e.name) : null;
+        if (!m) continue;
+        if (!S.refs.has(m[1])) S.refs.set(m[1], []);
+        S.refs.get(m[1]).push({ entry: e.name, ns: e.value });
+      }
+    } catch { /* the file may simply not exist */ }
+  }
+
+  async function loadCommands() {
+    try { S.cmds = (await api('GET', '/cache/commands')).commands; } catch { S.cmds = []; }
+  }
 
   async function load() {
     S.error = '';
@@ -28,11 +50,129 @@
       const t0 = performance.now();
       const parsed = CX.parse(file.text);
       S.data = { file, parsed, analysis: CX.analyze(parsed), ms: Math.round(performance.now() - t0) };
+      await Promise.all([loadRefs(S.src), loadCommands()]);
     } catch (e) {
       if (e.status === 404) S.error = S.src ? `Ngày ${S.src} không có file ${CACHE_FILE}.` : `Server chưa có file ${CACHE_FILE}. Mở app KeyMap Sync, kiểm tra thư mục Documents/jya2/databases rồi bấm "Đẩy lên server".`;
       else S.error = e.message;
     }
     if (S.sel && !(S.data && (S.data.analysis.docs.has(S.sel.id)))) S.sel = null;
+  }
+
+  // ---------------------------------------------------------------- where an item is stored
+  const folderOf = () => (S.data && S.data.file.folder) || '';
+  const folderLine = () => el('p', { class: 'muted' }, `Các mục này nằm trong file `, el('span', { class: 'mono' }, CACHE_FILE), ' · thư mục trên máy tính bảng: ',
+    el('span', { class: 'mono' }, folderOf() || '— (chưa rõ: sẽ có sau lần đẩy kế tiếp của app 2.0)'));
+
+  function sourceCell(id) {
+    const src = CX.sourceOf(S.data.parsed, id);
+    return el('td', {}, el('div', { class: 'mono', title: `${CACHE_FILE} › ${src.mapEntry || '(không có mục map|)'}` }, `${CACHE_FILE} › `, src.mapEntry ? `map|${short(id)}` : '(thiếu map|…)'),
+      el('div', { class: 'muted' }, src.listEntry ? `trong danh sách ${src.listEntry}` : 'không nằm trong danh sách nào'));
+  }
+
+  // Everything the page knows about one item, as { label, kind, ns, listed, selected, nextSelected, bytes }
+  function itemInfo(id) {
+    const a = S.data.analysis;
+    for (const n of a.namespaces) {
+      const it = n.items.find((x) => x.id === id);
+      if (!it) continue;
+      const others = n.items.filter((x) => x.id !== id);
+      return { id, label: it.dataName || it.listName || '(không tên)', kind: n.kind, ns: n.ns, listed: true, selected: n.selected === id, nextSelected: others[0] ? (others[0].dataName || others[0].listName || short(others[0].id)) : '', bytes: it.bytes, hasMap: it.hasMap };
+    }
+    const o = a.orphans.find((x) => x.id === id);
+    return { id, label: (o && o.name) || short(id), kind: o ? o.kind : 'unknown', ns: '', listed: false, selected: false, nextSelected: '', bytes: o ? o.bytes : 0, hasMap: true };
+  }
+
+  // ---------------------------------------------------------------- deleting items (here and, through the app, on the tablet)
+  async function startDelete(ids) {
+    if (!latest()) { toast('Chỉ xóa được khi đang xem "Bản mới nhất trên server", không xóa trong bản sao lưu cũ.', true); return; }
+    const items = ids.map(itemInfo);
+    const { devices } = await api('GET', '/sync/devices');
+    const refs = items.flatMap((i) => (S.refs.get(i.id) || []).map((r) => ({ ...r, id: i.id })));
+    const targets = devices.length
+      ? el('p', {}, 'Máy tính bảng nhận lệnh: ', devices.map((d) => `${d.name} (${d.online ? 'đang kết nối' : 'đang ngắt, sẽ nhận khi app chạy lại'})`).join('; '))
+      : el('p', { class: 'warnbox strong' }, 'Server chưa biết thiết bị nào, nên chỉ xóa được trên server. Máy tính bảng sẽ KHÔNG bị xóa.');
+    const list = el('ul', {}, items.map((i) => el('li', {},
+      el('b', {}, i.label), ` — ${KIND_VN[i.kind] || 'Không rõ'} · `, el('span', { class: 'mono' }, `map|${i.id}`), ` · ${fmtBytes(i.bytes)}`,
+      i.listed ? el('div', { class: 'muted' }, `đang nằm trong danh sách list|${i.ns}: sẽ bị bỏ khỏi danh sách`) : el('div', { class: 'muted' }, 'mục mồ côi: không nằm trong danh sách nào'),
+      i.selected ? el('div', { class: 'warnbox strong' }, i.nextSelected ? `⚠ Đang là bản được chọn trong app. Sau khi xóa, danh sách sẽ chọn «${i.nextSelected}».` : '⚠ Đang là bản được chọn và là bản duy nhất của loại này: sau khi xóa danh sách sẽ trống, không còn bản nào được chọn.') : null)));
+    const first = await showModal({
+      title: `Xóa ${items.length} mục?`, tone: 'warn',
+      body: [list,
+        el('h2', {}, 'Việc sẽ xảy ra'),
+        el('ol', {},
+          el('li', {}, 'Server: cắt các mục trên khỏi ', el('span', { class: 'mono' }, CACHE_FILE), ' ngay bây giờ. Bản trước được giữ trong lịch sử của file (10 bản gần nhất).'),
+          el('li', {}, `Máy tính bảng: app KeyMap Sync nhận lệnh trong khoảng 15 giây (khi app đang mở hoặc đang bật Tự đẩy), tự sửa file ${CACHE_FILE} trên máy, `
+            + 'sau khi chép file cũ vào Documents/FTKeymapSync/backup/<thời gian>/databases/. Không hỏi lại trên máy.')),
+        targets,
+        el('p', { class: 'warnbox' }, '⚠ Hãy ĐÓNG HẲN Gamwing trên máy tính bảng trước. Nếu Gamwing đang chạy nó có thể ghi đè lại file và mục bị xóa sẽ hiện lại; app sẽ kiểm tra lại sau vài giây và báo ở đây nếu điều đó xảy ra.'),
+        el('p', { class: 'muted' }, 'Không xóa các dòng khác: '
+          + (refs.length ? `${refs.length} dòng ghi id này ở ${REFS_FILE} (${refs.map((r) => `document|…|${short(r.id)}`).join(', ')}) vẫn được giữ; ` : '')
+          + 'bản chép dạng .json (nếu có) ở Documents/Gamwing/keymap_cache cũng không bị xóa. Gamwing có thể tải lại mục nếu nó đồng bộ lại từ server keymap của nó.')],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'next', label: 'Tiếp tục…', primary: true }],
+    });
+    if (first !== 'next') return;
+    const last = await showModal({
+      title: `Xác nhận lần cuối: xóa vĩnh viễn ${items.length} mục?`, tone: 'error',
+      body: [el('p', {}, 'Bạn sắp xóa ', items.map((i) => `«${i.label}»`).join(', '), ' khỏi server VÀ khỏi máy tính bảng.'),
+        el('p', { class: 'warnbox strong' }, 'Trên máy tính bảng không có nút hoàn tác: chỉ lấy lại được từ file cũ app đã chép vào Documents/FTKeymapSync/backup. Trên server còn bản cũ trong lịch sử của file.')],
+      actions: [{ id: 'cancel', label: 'Hủy, giữ lại' }, { id: 'go', label: `Xóa vĩnh viễn ${items.length} mục`, danger: true }],
+    });
+    if (last !== 'go') return;
+    try {
+      const r = await api('POST', '/cache/delete', { file: CACHE_FILE, ids, etag: S.data.file.etag, labels: items.map((i) => i.label) });
+      toast(`Đã xóa trên server${r.command.targets ? `; đã gửi lệnh tới ${r.command.targets} thiết bị` : '; chưa có thiết bị nào để gửi lệnh'}.`);
+    } catch (e) {
+      if (e.status === 409) { toast('File vừa được cập nhật ở nơi khác (có thể app vừa đồng bộ). Đã tải lại, hãy kiểm tra rồi xóa lại.', true); }
+      else throw e;
+    }
+    S.sel = null;
+    await refresh();
+  }
+
+  const deleteButton = (ids, label = 'Xóa') => el('button', {
+    class: 'btn small danger', disabled: !latest(), title: latest() ? 'Xóa trên server và trên máy tính bảng' : 'Chỉ xóa được ở "Bản mới nhất trên server"',
+    onclick: guard((e) => { e.stopPropagation(); return startDelete(ids); }),
+  }, label);
+
+  // ---------------------------------------------------------------- the commands left for the tablet
+  const CMD_VN = { pending: 'Chờ máy tính bảng nhận', done: 'Đã xóa trên máy tính bảng', attention: 'Cần xem lại', server_only: 'Chỉ xóa trên server (chưa có thiết bị nào)', expired: 'Hết hạn, máy tính bảng không nhận được' };
+
+  // what one device answered (or "not yet")
+  function resultLine(t, r) {
+    if (!r) return el('div', { class: 'muted' }, `${t.name || t.id}: chưa nhận`);
+    const bits = [`đã xóa ${r.removed.length}`];
+    if (r.missing.length) bits.push(`${r.missing.length} không còn trên máy`);
+    if (r.skipped.length) bits.push(`bỏ qua ${r.skipped.length} (${r.skipped.map((s) => s.reason).join('; ')})`);
+    if (r.reappeared.length) bits.push(`⚠ ${r.reappeared.length} mục HIỆN LẠI sau khi xóa: Gamwing có thể đã ghi đè file, hãy đóng Gamwing rồi xóa lại`);
+    if (r.error) bits.push(`lỗi: ${r.error}`);
+    return el('div', { class: r.reappeared.length || r.error ? 'bad' : 'muted' }, `${t.name || t.id} · ${clockDateTime(r.at)}: ${bits.join(', ')}`);
+  }
+
+  function commandRow(c) {
+    const tone = c.status === 'done' ? 'ok' : c.status === 'pending' || c.status === 'server_only' ? '' : 'warn';
+    const names = (c.labels && c.labels.length ? c.labels : c.ids.map(short)).join(', ');
+    const status = el('td', {}, el('span', { class: `tag ${tone}` }, CMD_VN[c.status] || c.status), c.targets.map((t) => resultLine(t, c.results[t.id])));
+    return el('tr', {}, el('td', { class: 'mono' }, clockDateTime(c.created_at)), el('td', {}, names), status);
+  }
+
+  function commandsNode() {
+    const cmds = S.cmds.slice(0, 5);
+    if (!cmds.length) return el('div', {});
+    return el('div', { class: 'card' }, el('h2', {}, 'Lệnh xóa gần đây'),
+      el('p', { class: 'muted' }, 'App KeyMap Sync nhận lệnh khi gửi nhịp 15 giây (cần app đang mở hoặc đang bật Tự đẩy).'),
+      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['Lúc', 'Mục', 'Trạng thái'].map((h) => el('th', {}, h)))), el('tbody', {}, cmds.map(commandRow))));
+  }
+
+  function pollCommands(slot) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    if (!S.cmds.some((c) => c.status === 'pending')) return;
+    pollTimer = setInterval(async () => {
+      if (!active || document.querySelector('.modal')) return;
+      await loadCommands();
+      if (slot.isConnected) slot.replaceChildren(commandsNode());
+      if (!S.cmds.some((c) => c.status === 'pending')) { clearInterval(pollTimer); pollTimer = null; }
+    }, 4000);
   }
 
   // ---------------------------------------------------------------- list of what the file holds
@@ -62,26 +202,29 @@
     const flags = [];
     if (!it.hasMap) flags.push(el('span', { class: 'tag warn', title: 'Có trong danh sách nhưng không có nội dung' }, 'thiếu nội dung'));
     if (it.nameMismatch) flags.push(el('span', { class: 'tag warn', title: `Tên trong danh sách: ${it.listName}\nTên trong dữ liệu: ${it.dataName}` }, 'tên lệch'));
+    if (S.refs.has(it.id)) flags.push(el('span', { class: 'tag', title: S.refs.get(it.id).map((r) => `${REFS_FILE} › ${r.entry}`).join('\n') }, `có ở ${REFS_FILE}`));
     const label = it.dataName || it.listName || '(không tên)';
     return el('tr', { class: `pick${S.sel && S.sel.id === it.id ? ' active' : ''}`, onclick: it.hasMap ? () => open({ id: it.id, kind, ns, label }) : undefined },
       el('td', { class: 'star', title: it.id === selectedId ? 'Đang được chọn trong app' : '' }, it.id === selectedId ? '★' : ''),
       el('td', {}, label, it.listName && it.dataName && it.listName !== it.dataName ? el('div', { class: 'muted' }, `danh sách: ${it.listName}`) : null),
-      el('td', { class: 'mono', title: it.id }, short(it.id)), el('td', { class: 'mono' }, it.addTime || '—'),
-      el('td', { class: 'num' }, it.hasMap ? fmtBytes(it.bytes) : '—'), el('td', {}, flags));
+      sourceCell(it.id), el('td', { class: 'mono' }, it.addTime || '—'),
+      el('td', { class: 'num' }, it.hasMap ? fmtBytes(it.bytes) : '—'), el('td', {}, flags), el('td', { class: 'act' }, deleteButton([it.id])));
   }
 
-  const head = () => ['', 'Tên', 'ID', 'Ngày', 'Dung lượng', 'Ghi chú'].map((h) => el('th', {}, h)); // new elements each time: a node has only one parent
+  // new elements each time: a node has only one parent
+  const head = () => ['', 'Tên', 'Nằm ở (file › mục)', 'Ngày', 'Dung lượng', 'Ghi chú', ''].map((h) => el('th', {}, h));
 
   function listView() {
     const a = S.data.analysis;
     const cards = a.namespaces.map((n) => el('div', { class: 'card' },
-      el('h2', {}, `${KIND_VN[n.kind]} `, el('span', { class: 'tag' }, n.ns)),
-      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, head())), el('tbody', {}, n.items.length ? n.items.map((it) => itemRow(it, n.kind, n.ns, n.selected)) : el('tr', {}, el('td', { colspan: 6, class: 'muted' }, 'Danh sách trống.'))))));
-    const orphan = a.orphans.length ? el('div', { class: 'card' }, el('h2', {}, `Mục mồ côi (${a.orphans.length})`),
-      el('p', { class: 'muted' }, 'Có nội dung nhưng không nằm trong danh sách nào. Loại được đoán từ nội dung. Vẫn xem được như bình thường.'),
-      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['Loại', 'Tên', 'ID', 'Dung lượng'].map((h) => el('th', {}, h)))),
+      el('h2', {}, `${KIND_VN[n.kind]} `, el('span', { class: 'tag' }, n.ns)), folderLine(),
+      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, head())), el('tbody', {}, n.items.length ? n.items.map((it) => itemRow(it, n.kind, n.ns, n.selected)) : el('tr', {}, el('td', { colspan: 7, class: 'muted' }, 'Danh sách trống.'))))));
+    const orphan = a.orphans.length ? el('div', { class: 'card' },
+      el('div', { class: 'row' }, el('h2', {}, `Mục mồ côi (${a.orphans.length})`), deleteButton(a.orphans.map((o) => o.id), `Xóa cả ${a.orphans.length} mục mồ côi`)),
+      el('p', { class: 'muted' }, 'Có nội dung nhưng không nằm trong danh sách nào. Loại được đoán từ nội dung. Vẫn xem được như bình thường.'), folderLine(),
+      el('table', { class: 'stack' }, el('thead', {}, el('tr', {}, ['Loại', 'Tên', 'Nằm ở (file › mục)', 'Dung lượng', ''].map((h) => el('th', {}, h)))),
         el('tbody', {}, a.orphans.map((o) => el('tr', { class: `pick${S.sel && S.sel.id === o.id ? ' active' : ''}`, onclick: () => open({ id: o.id, kind: o.kind, ns: '', label: o.name || short(o.id) }) },
-          el('td', {}, KIND_VN[o.kind]), el('td', {}, o.name || el('span', { class: 'muted' }, '(không tên)')), el('td', { class: 'mono', title: o.id }, short(o.id)), el('td', { class: 'num' }, fmtBytes(o.bytes))))))) : null;
+          el('td', {}, KIND_VN[o.kind]), el('td', {}, o.name || el('span', { class: 'muted' }, '(không tên)')), sourceCell(o.id), el('td', { class: 'num' }, fmtBytes(o.bytes)), el('td', { class: 'act' }, deleteButton([o.id]))))))) : null;
     return [...cards, orphan];
   }
 
@@ -96,17 +239,29 @@
   // ---------------------------------------------------------------- one item
   function draw() {
     if (!S.data) return el('div', {}, headCard());
-    if (!S.sel) return el('div', {}, headCard(), listView());
+    const slot = el('div', {});
+    slot.append(commandsNode());
+    pollCommands(slot);
+    if (!S.sel) return el('div', {}, headCard(), slot, listView());
     const doc = S.data.analysis.docs.get(S.sel.id);
     const back = el('button', { class: 'btn', onclick: () => { S.sel = null; redraw(); } }, '← Danh sách');
-    const title = el('div', { class: 'card' }, el('div', { class: 'row' }, back, el('h2', {}, `${KIND_VN[S.sel.kind]}: ${S.sel.label}`)),
-      el('p', { class: 'muted mono' }, `${S.sel.id}${S.sel.ns ? ` · ${S.sel.ns}` : ''} · nguồn: ${S.src ? `sao lưu ngày ${S.src}` : 'bản mới nhất'}`));
+    const src = CX.sourceOf(S.data.parsed, S.sel.id);
+    const refs = S.refs.get(S.sel.id) || [];
+    const title = el('div', { class: 'card' }, el('div', { class: 'row' }, back, el('h2', {}, `${KIND_VN[S.sel.kind]}: ${S.sel.label}`), deleteButton([S.sel.id], 'Xóa mục này')),
+      el('dl', { class: 'kv' },
+        el('dt', {}, 'ID'), el('dd', { class: 'mono' }, S.sel.id),
+        el('dt', {}, 'File XML'), el('dd', { class: 'mono' }, CACHE_FILE),
+        el('dt', {}, 'Mục trong file'), el('dd', { class: 'mono' }, src.mapEntry || '— (không có nội dung map|…)'),
+        el('dt', {}, 'Danh sách'), el('dd', { class: 'mono' }, src.listEntry || '— (không nằm trong danh sách nào: mục mồ côi)'),
+        el('dt', {}, 'Thư mục trên máy'), el('dd', { class: 'mono' }, folderOf() || '— (chưa rõ: sẽ có sau lần đẩy kế tiếp của app 2.0)'),
+        el('dt', {}, `Còn được ghi ở ${REFS_FILE}`), el('dd', { class: 'mono' }, refs.length ? refs.map((r) => `${r.entry} = ${r.ns}`).join('; ') : '—'),
+        el('dt', {}, 'Nguồn đang xem'), el('dd', {}, S.src ? `sao lưu ngày ${S.src}` : 'bản mới nhất trên server')));
     if (!doc) return el('div', {}, title, el('p', { class: 'bad' }, 'Nội dung bị hỏng (không phải JSON hợp lệ).'));
     let body;
     if (S.sel.kind === 'recoil') body = recoilView(doc);
     else if ((S.sel.kind === 'keymap' || S.sel.kind === 'recognition') && Array.isArray(doc.components)) body = layoutView(S.sel.kind, doc);
     else body = summaryView(doc);
-    return el('div', {}, title, body);
+    return el('div', {}, title, slot, body);
   }
 
   const describe = (v) => (Array.isArray(v) ? `mảng ${v.length} phần tử` : v && typeof v === 'object' ? `đối tượng ${Object.keys(v).length} khóa` : JSON.stringify(v));
@@ -317,6 +472,6 @@
     // called when the tab opens: fetches the file again, then returns the page
     async view() { active = true; S.sel = null; await load(); return draw(); },
     // same file, same page, after a leave-and-return from another tab
-    leave() { active = false; if (lay.bg.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
+    leave() { active = false; clearInterval(pollTimer); pollTimer = null; if (lay.bg.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
   };
 })();
