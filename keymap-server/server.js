@@ -10,6 +10,7 @@ const { createAdmin } = require('./admin');
 const { DailyBackups } = require('./backup');
 const { DatabasesStore } = require('./databases');
 const { Devices } = require('./devices');
+const { Commands } = require('./commands');
 
 function loadConfig(env = process.env) {
   const list = (v) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []);
@@ -57,11 +58,12 @@ function createServer(cfg = loadConfig()) {
   const clock = cfg.clock || Date.now; // tests can pass a fake clock
   const devices = new Devices({ file: path.join(cfg.dataDir, 'devices.json'), clock });
   const databases = new DatabasesStore({ dir: path.join(cfg.dataDir, 'databases'), clock });
+  const commands = new Commands({ file: path.join(cfg.dataDir, 'commands.json'), clock });
   const backups = new DailyBackups({
     dir: path.join(cfg.dataDir, 'backups'), tz: cfg.backupTz, keepDays: cfg.backupKeepDays, clock,
     buildExtra: () => databases.all(),
   });
-  const admin = createAdmin({ cfg, devices, backups, databases, readBody });
+  const admin = createAdmin({ cfg, devices, backups, databases, commands, readBody });
 
   const handler = async (req, res) => {
     try {

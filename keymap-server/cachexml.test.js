@@ -125,3 +125,82 @@ test('entryValue: the text of one entry by name (for the JSON diff of a map)', (
   assert.equal(C.entryValue(p, `map|${id('a')}`), j(keymapDoc));
   assert.equal(C.entryValue(p, 'nope'), undefined);
 });
+
+// ---------------------------------------------------------------- removing items from the cache file
+const entryNames = (xml) => C.parse(xml).entries.map((e) => e.name);
+
+test('escapeXml escapes the five characters the way Android writes them', () => {
+  assert.equal(C.escapeXml(`a&b<c>"d'e`), 'a&amp;b&lt;c&gt;&quot;d&apos;e');
+});
+
+test('removeItems: an orphan map goes away and nothing else changes, byte for byte', () => {
+  const xml = cache();
+  const r = C.removeItems(xml, [id('b')]);
+  assert.deepEqual([r.removedMaps, r.lists, r.missing, r.warnings], [[id('b')], [], [], []]);
+  assert.equal(r.text, xml.split('\n').filter((line) => !line.includes(`<string name="map|${id('b')}">`)).join('\n'));
+  assert.deepEqual(entryNames(r.text), entryNames(xml).filter((n) => n !== `map|${id('b')}`));
+  assert.ok(!/\n\s*\n/.test(r.text), 'no blank line is left behind');
+});
+
+test('removeItems: a listed item leaves its map and its list entry; the selection moves to the first one left', () => {
+  const r = C.removeItems(cache(), [id('c')]);
+  assert.deepEqual(r.removedMaps, [id('c')]);
+  assert.deepEqual(r.lists, [{ ns: RC_NS, removed: [id('c')], selectedBefore: id('c'), selectedAfter: id('d') }]);
+  const a = C.analyze(C.parse(r.text));
+  const rc = a.namespaces.find((n) => n.ns === RC_NS);
+  assert.deepEqual([rc.selected, rc.items.map((i) => i.id)], [id('d'), [id('d')]]);
+  assert.ok(!a.docs.has(id('c')));
+  assert.deepEqual(a.namespaces.find((n) => n.ns === KM_NS).items.map((i) => i.id), [id('a')], 'the other lists are untouched');
+});
+
+test('removeItems: removing an item that is not selected keeps the selection; a listed item without a map is removed from the list only', () => {
+  const r = C.removeItems(cache(), [id('d')]);
+  assert.deepEqual(r.removedMaps, []);
+  assert.deepEqual(r.lists, [{ ns: RC_NS, removed: [id('d')], selectedBefore: id('c'), selectedAfter: id('c') }]);
+  assert.deepEqual(C.analyze(C.parse(r.text)).namespaces.find((n) => n.ns === RC_NS).items.map((i) => i.id), [id('c')]);
+});
+
+test('removeItems: the last item of a list leaves an empty list without a selection', () => {
+  const r = C.removeItems(cache(), [id('e')]);
+  const ai = C.analyze(C.parse(r.text)).namespaces.find((n) => n.ns === AI_NS);
+  assert.deepEqual([ai.items, ai.selected], [[], '']);
+  assert.deepEqual(r.lists[0], { ns: AI_NS, removed: [id('e')], selectedBefore: id('e'), selectedAfter: '' });
+  assert.ok(!JSON.parse(C.parse(r.text).entries.find((e) => e.name === `list|${AI_NS}`).value).hasOwnProperty('selected'));
+});
+
+test('removeItems: several ids at once, unknown ids are reported, a second run changes nothing', () => {
+  const r = C.removeItems(cache(), [id('b'), id('c'), id('9')]);
+  assert.deepEqual([r.removedMaps.sort(), r.missing], [[id('b'), id('c')].sort(), [id('9')]]);
+  const again = C.removeItems(r.text, [id('b'), id('c')]);
+  assert.deepEqual([again.text === r.text, again.removedMaps, again.missing.sort()], [true, [], [id('b'), id('c')].sort()]);
+});
+
+test('removeItems: names with quotes, ampersands and apostrophes survive the rewrite of a list', () => {
+  const tricky = prefs(
+    str(`list|${KM_NS}`, j({ selected: id('1'), items: [{ id: id('1'), name: 'x', meta: j({ name: `A "q" & <b> 'c'` }) }, { id: id('2'), name: 'y', meta: j({ name: 'Cái khác' }) }] })),
+    str(`map|${id('1')}`, j(keymapDoc)), str(`map|${id('2')}`, j(keymapDoc)),
+  );
+  const r = C.removeItems(tricky, [id('2')]);
+  const a = C.analyze(C.parse(r.text));
+  assert.equal(a.namespaces[0].items[0].listName, `A "q" & <b> 'c'`);
+  assert.equal(a.namespaces[0].selected, id('1'));
+  assert.ok(!r.text.includes("'c'"), 'an apostrophe is written as &apos; like Android does');
+});
+
+test('removeItems: a damaged list is left alone with a warning, the map is still removed; bad ids are refused', () => {
+  const broken = prefs(str(`list|${KM_NS}`, '{not json'), str(`map|${id('1')}`, j(keymapDoc)));
+  const r = C.removeItems(broken, [id('1')]);
+  assert.deepEqual(r.removedMaps, [id('1')]);
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0], /list\|com\.vng\.pubgmobile/);
+  for (const bad of ['', '../x', 'a b', 'a/b', 'x'.repeat(200), 5, null]) assert.throws(() => C.removeItems(cache(), [bad]), /id không hợp lệ/, String(bad));
+  assert.throws(() => C.removeItems('<html/>', [id('1')]), /SharedPreferences/);
+});
+
+test('describeItem: where an item lives, for the web page', () => {
+  const p = C.parse(cache());
+  assert.deepEqual(C.sourceOf(p, id('c')), { mapEntry: `map|${id('c')}`, listEntry: `list|${RC_NS}`, hasMap: true });
+  assert.deepEqual(C.sourceOf(p, id('b')), { mapEntry: `map|${id('b')}`, listEntry: '', hasMap: true });
+  assert.deepEqual(C.sourceOf(p, id('d')), { mapEntry: '', listEntry: `list|${RC_NS}`, hasMap: false });
+  assert.deepEqual(C.sourceOf(p, id('9')), { mapEntry: '', listEntry: '', hasMap: false });
+});

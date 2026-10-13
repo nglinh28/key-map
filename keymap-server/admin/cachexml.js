@@ -31,6 +31,9 @@
     try { return String.fromCodePoint(cp); } catch { return all; }
   });
 
+  // the five characters Android escapes when it writes a string value
+  const escapeXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
   const BAD = (why) => new Error(`Không phải file SharedPreferences hợp lệ: ${why}`);
   const ENTRY = /<(string|int|long|float|boolean|set)\s+name="([^"]*)"([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/g;
 
@@ -154,5 +157,79 @@
     return undefined;
   }
 
-  return { parse, analyze, diffEntries, entryValue, kindOf, guessKind };
+  // ---------------------------------------------------------------- editing the file as text (everything else stays byte for byte)
+  const ITEM_ID = /^[A-Za-z0-9._-]{1,128}$/;
+
+  // where <string name="…">…</string> sits in the text, or null
+  function stringSpan(xml, name) {
+    const open = `<string name="${escapeXml(name)}">`;
+    const i = xml.indexOf(open);
+    if (i < 0) return null;
+    const j = xml.indexOf('</string>', i + open.length);
+    return j < 0 ? null : { start: i, inner: i + open.length, innerEnd: j, end: j + '</string>'.length };
+  }
+
+  // Deletes items from gamwing_keymap_cache.xml: their map|<id> entry, and their place in the list|<namespace> they are listed in.
+  // A list whose selected item goes away selects the first item left (no selection when the list becomes empty).
+  // Returns { text, removedMaps, lists: [{ ns, removed, selectedBefore, selectedAfter }], missing, warnings }; ids found nowhere are "missing".
+  function removeItems(xml, ids) {
+    parse(xml); // refuses anything that is not a preferences file
+    const wanted = [...new Set(ids)];
+    for (const x of wanted) if (typeof x !== 'string' || !ITEM_ID.test(x)) throw new Error(`id không hợp lệ: ${typeof x === 'string' ? x : JSON.stringify(x)}`);
+    let text = xml;
+    const removedMaps = [];
+    for (const x of wanted) {
+      const span = stringSpan(text, `map|${x}`);
+      if (!span) continue;
+      let start = span.start;
+      while (start > 0 && (text[start - 1] === ' ' || text[start - 1] === '\t')) start--;
+      if (start > 0 && text[start - 1] === '\n') start--; // the whole line, so no blank line is left
+      text = text.slice(0, start) + text.slice(span.end);
+      removedMaps.push(x);
+    }
+    const lists = [];
+    const warnings = [];
+    const inLists = new Set();
+    for (const e of parse(text).entries) {
+      if (e.tag !== 'string' || !e.name.startsWith('list|')) continue;
+      const parsed = tryJson(e.value);
+      if (!parsed.ok || !isObj(parsed.value)) {
+        warnings.push(`${e.name}: JSON hỏng nên không sửa được danh sách này`);
+        continue;
+      }
+      const obj = parsed.value;
+      const items = Array.isArray(obj.items) ? obj.items : [];
+      const gone = wanted.filter((x) => items.some((it) => isObj(it) && it.id === x));
+      for (const x of gone) inLists.add(x);
+      if (!gone.length) continue;
+      const kept = items.filter((it) => !(isObj(it) && gone.includes(it.id)));
+      const before = typeof obj.selected === 'string' ? obj.selected : '';
+      obj.items = kept;
+      let after = before;
+      if (gone.includes(before)) {
+        const first = kept.find((it) => isObj(it) && typeof it.id === 'string');
+        after = first ? first.id : '';
+        if (after) obj.selected = after; else delete obj.selected;
+      }
+      const span = stringSpan(text, e.name);
+      text = text.slice(0, span.inner) + escapeXml(JSON.stringify(obj)) + text.slice(span.innerEnd);
+      lists.push({ ns: e.name.slice(5), removed: gone, selectedBefore: before, selectedAfter: after });
+    }
+    const missing = wanted.filter((x) => !removedMaps.includes(x) && !inLists.has(x));
+    return { text, removedMaps, lists, missing, warnings };
+  }
+
+  // Where an item is stored: its map|<id> entry and the list|<ns> entry that lists it ('' when there is none).
+  function sourceOf(parsed, id) {
+    const mapEntry = parsed.entries.some((e) => e.tag === 'string' && e.name === `map|${id}`) ? `map|${id}` : '';
+    let listEntry = '';
+    for (const e of parsed.entries) {
+      if (e.tag !== 'string' || !e.name.startsWith('list|')) continue;
+      const r = tryJson(e.value);
+      if (r.ok && isObj(r.value) && Array.isArray(r.value.items) && r.value.items.some((it) => isObj(it) && it.id === id)) { listEntry = e.name; break; }
+    }
+    return { mapEntry, listEntry, hasMap: Boolean(mapEntry) };
+  }
+
+  return { parse, analyze, diffEntries, entryValue, kindOf, guessKind, escapeXml, removeItems, sourceOf };
 });

@@ -13,6 +13,10 @@ const path = require('node:path');
 const PKG_VERSION = require('./package.json').version;
 const { DAY_RE } = require('./backup');
 const { DEVICE_ID_RE } = require('./devices');
+const CacheXml = require('./admin/cachexml');
+
+const CACHE_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const MAX_DELETE_IDS = 200;
 
 const MAX_ADMIN_BODY = 64 * 1024 * 1024; // a 24 MB file can grow to about twice that once it is escaped into JSON
 const PAGE_DIR = path.join(__dirname, 'admin');
@@ -61,7 +65,7 @@ const safeDecode = (s) => {
   try { return decodeURIComponent(s); } catch { return s; }
 };
 
-function createAdmin({ cfg, devices, backups, databases, readBody }) {
+function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
   const pageCache = new Map();
 
   function json(res, status, body, extra = {}) {
@@ -101,6 +105,41 @@ function createAdmin({ cfg, devices, backups, databases, readBody }) {
   const validFiles = (files) => Array.isArray(files) && files.every((f) => f && typeof f.name === 'string' && typeof f.text === 'string');
   const snapshotNow = () => { try { backups.snapshot(); } catch (e) { console.error('backup failed:', e.message); } };
 
+  // What a device pushes is stored as it is, except that items the web page deleted (and the device has not yet confirmed) stay deleted.
+  function withoutDeleted(files, deviceId) {
+    const pending = commands.pendingFor(deviceId).filter((c) => c.type === 'delete_cache_items');
+    if (!pending.length) return files;
+    return files.map((f) => {
+      const ids = pending.filter((c) => c.file === f.name).flatMap((c) => c.ids);
+      if (!ids.length) return f;
+      try { return { ...f, text: CacheXml.removeItems(f.text, ids).text }; } catch { return f; }
+    });
+  }
+
+  // POST /admin/api/cache/delete { file, ids, etag }: cuts items out of the keymap cache on the server now and leaves a command for the tablets.
+  async function deleteCacheItems(req, res) {
+    const body = await jsonBody(req);
+    const name = typeof body.file === 'string' ? body.file : 'gamwing_keymap_cache.xml';
+    const ids = body.ids;
+    if (!Array.isArray(ids) || !ids.length || ids.length > MAX_DELETE_IDS || ids.some((x) => typeof x !== 'string' || !CACHE_ID_RE.test(x))) return err(res, 400, 'Invalid ids');
+    const current = databases.read(name);
+    if (!current) return err(res, 404, 'File not found');
+    if (typeof body.etag !== 'string' || body.etag !== current.etag) return json(res, 409, { error: 'Conflict', etag: current.etag });
+    let cut;
+    try { cut = CacheXml.removeItems(current.text, ids); } catch (e) { return err(res, 400, e.message); }
+    if (!cut.removedMaps.length && !cut.lists.length) return err(res, 404, 'Item not found');
+    backups.actor = 'Giao diện web';
+    const saved = databases.update(name, cut.text, current.etag);
+    if (saved.status !== 200) return json(res, saved.status, { error: saved.error, ...(saved.etag ? { etag: saved.etag } : {}) });
+    snapshotNow();
+    const targets = devices.list().map((d) => ({ id: d.id, name: d.name }));
+    const command = commands.create({ type: 'delete_cache_items', file: name, ids: [...cut.removedMaps, ...cut.lists.flatMap((l) => l.removed)], labels: Array.isArray(body.labels) ? body.labels : [], targets });
+    return json(res, 200, {
+      ok: true, etag: saved.etag, removedMaps: cut.removedMaps, lists: cut.lists, missing: cut.missing, warnings: cut.warnings,
+      command: { id: command.id, targets: command.targets.length },
+    });
+  }
+
   async function api(req, res, url) {
     const p = url.pathname;
     const method = req.method;
@@ -123,7 +162,8 @@ function createAdmin({ cfg, devices, backups, databases, readBody }) {
       if (typeof id !== 'string' || !DEVICE_ID_RE.test(id)) return err(res, 400, 'Invalid device id');
       const device = devices.hello(id, body, remoteOf(req));
       backups.ensureToday();
-      return json(res, 200, { ok: true, now: new Date().toISOString(), online: devices.onlineCount(), web: { sessions: devices.webSessions() }, device });
+      const pending = commands.pendingFor(id).map((c) => ({ id: c.id, type: c.type, file: c.file, ids: c.ids }));
+      return json(res, 200, { ok: true, now: new Date().toISOString(), online: devices.onlineCount(), web: { sessions: devices.webSessions() }, device, commands: pending });
     }
     if (p === '/admin/api/sync/devices' && method === 'GET') {
       return json(res, 200, { now: new Date().toISOString(), web: { sessions: devices.webSessions() }, devices: devices.list() });
@@ -136,6 +176,14 @@ function createAdmin({ cfg, devices, backups, databases, readBody }) {
       const session = body && body.session;
       if (typeof session !== 'string' || !DEVICE_ID_RE.test(session)) return err(res, 400, 'Invalid session');
       return json(res, 200, { ok: true, sessions: devices.presence(session) });
+    }
+    // ---- deleting items of the keymap cache (the web page asks, the tablet app does the same on its side)
+    if (p === '/admin/api/cache/delete' && method === 'POST') return deleteCacheItems(req, res);
+    if (p === '/admin/api/cache/commands' && method === 'GET') return json(res, 200, { commands: commands.list() });
+    if ((m = /^\/admin\/api\/sync\/commands\/([^/]+)\/result$/.exec(p)) && method === 'POST') {
+      if (!who) return err(res, 400, 'Invalid device id');
+      const body = await jsonBody(req);
+      return commands.report(safeDecode(m[1]), who.id, body) ? json(res, 200, { ok: true }) : err(res, 404, 'Command not found');
     }
     // ---- daily backups
     if (p === '/admin/api/sync/backups' && method === 'GET') {
@@ -163,7 +211,7 @@ function createAdmin({ cfg, devices, backups, databases, readBody }) {
       const files = body && body.files;
       if (!validFiles(files)) return err(res, 400, 'Body must be {"files":[{"name":"…","text":"…"}]}');
       backups.actor = who ? (who.name || who.id) : 'Ứng dụng đồng bộ'; // recorded in the manifest of today's backup
-      const result = databases.put(files, { folder: body.folder, device: backups.actor });
+      const result = databases.put(who ? withoutDeleted(files, who.id) : files, { folder: body.folder, device: backups.actor });
       if (who) devices.recordPush(who.id, result);
       if (result.saved > 0) snapshotNow(); else backups.ensureToday();
       return json(res, 200, { saved: result.saved, unchanged: result.unchanged, skipped: result.skipped, changed: result.changed });

@@ -1,0 +1,83 @@
+'use strict';
+// Commands the web page leaves for the phone app (today only: delete items of gamwing_keymap_cache.xml).
+// The app picks them up in the answer to its heartbeat, does the work on the tablet and reports the result back.
+//   * a command is for the devices the server knew when it was made; it stays pending until each of them has reported;
+//   * a pending command is also applied by the server to what a targeted device pushes (so an old copy cannot bring the items back);
+//   * commands older than 14 days are not handed out any more; the newest 50 are kept.
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+
+const EXPIRES_MS = 14 * 24 * 3600 * 1000;
+const KEEP = 50;
+const ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+
+const cleanText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : '');
+const cleanIds = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && ID_RE.test(x)).slice(0, 200) : []);
+
+class Commands {
+  constructor({ file, clock = Date.now }) {
+    this.file = file;
+    this.clock = clock;
+    this.items = [];
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(saved.commands)) this.items = saved.commands;
+    } catch { /* first run, or an unreadable file: start empty */ }
+  }
+
+  save() {
+    const tmp = `${this.file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ commands: this.items }));
+    fs.renameSync(tmp, this.file);
+  }
+
+  expired(c) { return this.clock() - Date.parse(c.created_at) > EXPIRES_MS; }
+
+  // targets: [{ id, name }]; labels: names to show for the ids
+  create({ type, file, ids, labels = [], targets = [], by = 'Giao diện web' }) {
+    const c = {
+      id: `cmd_${crypto.randomBytes(8).toString('hex')}`, type, file, ids: cleanIds(ids), labels: labels.map((l) => cleanText(l, 120)).slice(0, 200),
+      created_at: new Date(this.clock()).toISOString(), created_by: cleanText(by, 60), targets: targets.map((t) => ({ id: t.id, name: cleanText(t.name, 60) })), results: {},
+    };
+    this.items.unshift(c);
+    this.items.length = Math.min(this.items.length, KEEP);
+    this.save();
+    return c;
+  }
+
+  // what the device still has to do
+  pendingFor(deviceId) {
+    return this.items.filter((c) => !this.expired(c) && c.targets.some((t) => t.id === deviceId) && !Object.hasOwn(c.results, deviceId));
+  }
+
+  // The result of one device. Returns the command, or null when the command or the device is unknown.
+  report(id, deviceId, result = {}) {
+    const c = this.items.find((x) => x.id === id);
+    if (!c || !c.targets.some((t) => t.id === deviceId)) return null;
+    const r = result && typeof result === 'object' ? result : {};
+    c.results[deviceId] = {
+      at: new Date(this.clock()).toISOString(),
+      removed: cleanIds(r.removed), missing: cleanIds(r.missing), reappeared: cleanIds(r.reappeared),
+      skipped: (Array.isArray(r.skipped) ? r.skipped : []).filter((s) => s && typeof s === 'object' && typeof s.id === 'string' && ID_RE.test(s.id))
+        .map((s) => ({ id: s.id, reason: cleanText(s.reason, 200) })).slice(0, 200),
+      error: cleanText(r.error, 300), backup: cleanText(r.backup, 300),
+    };
+    this.save();
+    return c;
+  }
+
+  status(c) {
+    if (!c.targets.length) return 'server_only';
+    const answered = c.targets.filter((t) => Object.hasOwn(c.results, t.id));
+    if (answered.some((t) => { const r = c.results[t.id]; return r.error || r.reappeared.length || r.skipped.length; })) return 'attention';
+    if (answered.length === c.targets.length) return 'done';
+    return this.expired(c) ? 'expired' : 'pending';
+  }
+
+  list() {
+    return this.items.map((c) => ({ ...c, status: this.status(c) }));
+  }
+}
+
+module.exports = { Commands };
