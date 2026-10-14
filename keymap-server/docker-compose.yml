@@ -20,6 +20,13 @@ services:
       # Múi giờ tính ngày cho thư mục sao lưu theo ngày; BACKUP_KEEP_DAYS=0 nghĩa là giữ hết
       BACKUP_TZ: "${BACKUP_TZ:-Asia/Ho_Chi_Minh}"
       BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-0}"
+      # AI gợi ý các mốc độ giật (điểm cuối tương thích OpenAI). Điền trong file ".env" cạnh file này (không commit). Để trống = tắt AI
+      AI_BASE_URL: "${AI_BASE_URL:-}"
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_MODEL: "${AI_MODEL:-auto}"
+      AI_TIMEOUT_MS: "${AI_TIMEOUT_MS:-120000}"
+      # Số yêu cầu AI chạy song song khi tạo nhiều tổ hợp (1-8). Đo trên cổng model miễn phí: 3-4 là hợp lý, nhiều hơn chỉ bị đẩy sang model chậm hơn
+      AI_CONCURRENCY: "${AI_CONCURRENCY:-3}"
     volumes:
       - ftdata:/data
 

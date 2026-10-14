@@ -12,6 +12,8 @@ const { DatabasesStore } = require('./databases');
 const { Devices } = require('./devices');
 const { Commands } = require('./commands');
 
+const { loadAiConfig } = require('./ai');
+
 function loadConfig(env = process.env) {
   const list = (v) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []);
   return {
@@ -26,6 +28,8 @@ function loadConfig(env = process.env) {
     // daily backups: the day changes at midnight in this time zone; 0 = keep every day
     backupTz: env.BACKUP_TZ || 'Asia/Ho_Chi_Minh',
     backupKeepDays: Math.max(0, Math.floor(Number(env.BACKUP_KEEP_DAYS || 0)) || 0),
+    // AI that suggests the points of a recoil combination (OpenAI-compatible endpoint); off unless both url and key are set
+    ai: loadAiConfig(env),
   };
 }
 

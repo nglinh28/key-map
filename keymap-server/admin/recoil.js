@@ -104,15 +104,20 @@
         distinct: new Set(copies.map((e) => JSON.stringify(e.recoilValue))).size, baseMissing: false, notes: [],
       };
     }
+    return { source: 'computed', ...computedFor(idx, o), copies: 0, distinct: 0 };
+  }
+
+  // What the app computes WITHOUT an own entry: the bare standing curve of the gun + scope times the coefficients of the accessories
+  // and the posture. Ignores an own entry of this combination, so it is also the reference to compare an own entry against.
+  function computedFor(idx, o) {
+    const { weapon, scope } = o;
+    if (ZERO_WEAPONS.has(weapon)) return { curve: zeroCurve(), multiplier: null, parts: [], baseMissing: false, notes: ['Súng này luôn dùng đường cong 0 trong app.'] };
     const base = idx.map.get(keyOf(weapon, scope, 0, 0, 0, 0));
     const baseCurve = base ? base[base.length - 1].recoilValue : null;
     const f = factors(coefficientsFor(idx, weapon, scope), o);
     const notes = ['Hệ số ghép theo ý định của code (JADX làm rối nhánh tay cầm ngón cái/laser và tư thế): suy ra.'];
     if (!baseCurve) notes.push('Không có đường cong nền (không phụ kiện, đứng) cho súng + scope này: app dùng 0.');
-    return {
-      source: 'computed', curve: baseCurve ? scale(baseCurve, f.total) : zeroCurve(), multiplier: f.total, parts: f.parts,
-      copies: 0, distinct: 0, baseMissing: !baseCurve, notes,
-    };
+    return { curve: baseCurve ? scale(baseCurve, f.total) : zeroCurve(), multiplier: f.total, parts: f.parts, baseMissing: !baseCurve, notes };
   }
 
   function curveStats(curve) {
@@ -129,6 +134,269 @@
       if (Array.isArray(block[key])) return { key, data: block[key] };
     }
     return { key: 'recoil_data', data: doc.recoil_data };
+  }
+
+  // ---------------------------------------------------------------- editing (the web page changes ONE dataset of ONE item)
+  const isZeroWeapon = (weapon) => ZERO_WEAPONS.has(weapon);
+
+  // ---------------------------------------------------------------- which accessories a gun takes
+  // Source: the official Tencent data of 和平精英 (kho vũ khí: every accessory with the guns it fits, and each gun's own list), checked against the
+  // table the user supplied; docs/PhuKien_Sung_PUBG_Mobile.xlsx has the comparison. The REAL DATA of the app cannot tell: 62 of the 70 guns carry the
+  // very same template of combinations, whatever the gun. Guns that no source covers have no rule (nothing is refused for them).
+  // Names differ from the app's lists, so some of it has no counterpart and is treated as "not taken":
+  //   Angled grip = HORIZONTAL; Tactical Stock and the plain stock of the UZI = GENERAL; Cheek Pad, Bullet Loops, Quiver, Choke, Duckbill: no entry in the app;
+  //   ERGONOMIC grip, BRAKE, EXTENDER, BRAKE_NEW muzzles and GENERAL_NEW stock are in no source.
+  // On hold: Mosin, M1014, MP5K, P90, AMR (one secondary source each): see the workbook.
+  // M249 follows the official data (scopes only, like the DP28 and MG3): no grip, muzzle or stock.
+  // To change a rule, edit ATTACHMENT_RULES (the tests check every name against the enums).
+  const ZOOM = { hippie: 0, X1: 1, X2: 2, X3: 3, X4: 4, X6: 6, X8: 8, X63: 6, X84: 8, tactic: 8, tactic_84: 8, LPVO: 6, LPVO_61: 6 }; // the highest magnification of each scope entry
+  const MZ3 = ['COMPENSATOR', 'FLASH_HIDER', 'SUPPRESSOR'];
+  const SUPP = ['SUPPRESSOR'];
+  const GR5 = ['VERTICAL', 'HORIZONTAL', 'THUMB', 'HALF', 'LIGHT'];
+  const GR6 = ['VERTICAL', 'HORIZONTAL', 'THUMB', 'HALF', 'LIGHT', 'LASER']; // Tencent puts the laser sight in the grip slot
+  const GR4 = ['VERTICAL', 'HALF', 'LIGHT', 'LASER'];
+  const GRV = ['VERTICAL'];
+  const TACTICAL = ['GENERAL'];
+  const SOURCES = { official: 'chính thức 和平精英 (Tencent)', appmedia: 'AppMedia, PUBG Mobile toàn cầu 2022', user: 'bảng do người dùng cung cấp' };
+  const rule = (muzzles, grips, stocks, maxZoom, source, note) => ({ muzzles, grips, stocks, maxZoom, source, note });
+  const ATTACHMENT_RULES = {
+    // assault rifles (Tencent)
+    AKM: rule(MZ3, [], [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    M16: rule(MZ3, [], TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: có; ống ngắm đến 6x'),
+    M416: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
+    Scar: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    Groza: rule(SUPP, [], [], 6, 'official', 'nòng: giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    AUG: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    QBZ: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    M762: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    MK47: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
+    G36C: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    // submachine guns (Tencent)
+    UZI: rule(MZ3, [], TACTICAL, 1, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: có; ống ngắm chỉ Red Dot/Holo'),
+    Thomson: rule(SUPP, GRV, [], 1, 'official', 'nòng: giảm thanh; tay cầm: đứng; báng: không; ống ngắm chỉ Red Dot/Holo'),
+    UMP45: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    Vector: rule(MZ3, GR4, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: đứng, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
+    Bison: rule(MZ3, [], [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    // designated marksman rifles (Tencent)
+    VSS: rule([], [], [], 0, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm không lắp được; ngoài danh sách của app: cheek pad'),
+    SKS: rule(MZ3, GR6, [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    MK14: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    Mini14: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x'),
+    SLR: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    QBU: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x'),
+    // sniper rifles (Tencent)
+    AWM: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    Kar98K: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: bullet loops, cheek pad'),
+    M24: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    Win94: rule([], [], [], 0, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm không lắp được; ngoài danh sách của app: bullet loops'),
+    // shotguns (Tencent)
+    S12K: rule(MZ3, [], [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x; ngoài danh sách của app: duckbill'),
+    S1897: rule([], [], [], 0, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm không lắp được; ngoài danh sách của app: bullet loops, choke, duckbill'),
+    S686: rule([], [], [], 0, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm không lắp được; ngoài danh sách của app: bullet loops, choke'),
+    DBS: rule([], [], [], 6, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    // light machine guns (Tencent)
+    M249: rule([], [], [], 6, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm đến 6x (bản toàn cầu có báng chiến thuật, 和平精英 thì không)'),
+    DP28: rule([], [], [], 6, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    MG3: rule([], [], [], 6, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm đến 6x'),
+    // other (Tencent)
+    CrossBow: rule([], [], [], 6, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm đến 6x; ngoài danh sách của app: quiver'),
+    // not in the Tencent data
+    ACE32: rule(MZ3, GR5, [], 6, 'user', 'như M416 nhưng không có báng, ống ngắm đến 6x (bảng người dùng; chưa có nguồn đối chiếu)'),
+    FAMAS: rule(MZ3, [], [], 6, 'appmedia', 'nòng, ống ngắm đến 6x; không tay cầm, không báng'),
+    MK12: rule(MZ3, [], [], 8, 'appmedia', 'nòng, ống ngắm đến 8x; không tay cầm, không báng'),
+  };
+
+  const attachCache = new Map();
+  const toSet = (list, names) => new Set(names.map((n) => { const i = list.indexOf(n); if (i < 0) throw new Error(`Unknown accessory ${n}`); return i; }));
+  // -> { name, grips:Set, muzzles:Set, stocks:Set (enum indexes), maxZoom, source, sourceLabel, note } or null when the table does not mention the gun
+  function attachmentsFor(weapon) {
+    const name = WEAPONS[weapon];
+    const r = name && ATTACHMENT_RULES[name];
+    if (!r) return null;
+    if (!attachCache.has(name)) attachCache.set(name, { name, grips: toSet(GRIPS, r.grips), muzzles: toSet(MUZZLES, r.muzzles), stocks: toSet(STOCKS, r.stocks), maxZoom: r.maxZoom, source: r.source, sourceLabel: SOURCES[r.source] || r.source, note: r.note });
+    return attachCache.get(name);
+  }
+
+  // Problems with fitting these accessories on this gun at this scope: [{ slot: 'grip'|'muzzle'|'stock'|'scope', reason }] (empty = fine, or no rule)
+  function comboProblems(weapon, scope, { grip = 0, muzzle = 0, stock = 0 } = {}) {
+    const a = attachmentsFor(weapon);
+    if (!a) return [];
+    const gun = weaponLabel(weapon);
+    const out = [];
+    const check = (slot, set, value, labels, slotVn) => {
+      if (!value || set.has(value)) return;
+      if (!set.size) out.push({ slot, reason: `${gun} không hỗ trợ ${slotVn} (theo tài liệu phụ kiện).` });
+      else out.push({ slot, reason: `${slotVn} "${labels[value]}" không nằm trong các ${slotVn} ${gun} hỗ trợ (${[...set].map((i) => labels[i]).join(', ')}).` });
+    };
+    check('grip', a.grips, grip, LABELS.GRIPS, 'tay cầm');
+    check('muzzle', a.muzzles, muzzle, LABELS.MUZZLES, 'đầu nòng');
+    check('stock', a.stocks, stock, LABELS.STOCKS, 'báng');
+    const zoom = ZOOM[SCOPES[scope]];
+    if (a.maxZoom != null && zoom != null && zoom > a.maxZoom) out.push({ slot: 'scope', reason: `${gun} chỉ lắp được ống ngắm tối đa ${a.maxZoom}x; "${LABELS.SCOPES[scope]}" lớn hơn.` });
+    return out;
+  }
+
+  // One line telling what the gun takes (null = the table does not mention it).
+  function describeAttachments(weapon) {
+    const a = attachmentsFor(weapon);
+    if (!a) return null;
+    const list = (set, labels) => (set.size ? [...set].map((i) => labels[i]).join(', ') : 'không hỗ trợ');
+    return `Đầu nòng: ${list(a.muzzles, LABELS.MUZZLES)} · Tay cầm: ${list(a.grips, LABELS.GRIPS)} · Báng: ${list(a.stocks, LABELS.STOCKS)} · Ống ngắm: ${a.maxZoom == null ? 'không giới hạn trong tài liệu' : `tối đa ${a.maxZoom}x`}`;
+  }
+
+  const MAX_POINTS = 10000;
+
+  // A curve typed on the page -> { ok, curve } with numbers sorted by time, or { ok:false, error }.
+  // Only finite numbers are accepted: Infinity/NaN would be written as null by JSON.stringify and break the app.
+  function checkCurve(curve) {
+    if (!Array.isArray(curve) || !curve.length) return { ok: false, error: 'Đường cong phải có ít nhất 1 mốc.' };
+    if (curve.length > MAX_POINTS) return { ok: false, error: `Đường cong có quá nhiều mốc (tối đa ${MAX_POINTS}).` };
+    const out = [];
+    for (let i = 0; i < curve.length; i++) {
+      const p = curve[i];
+      if (!Array.isArray(p) || p.length !== 2) return { ok: false, error: `Mốc #${i + 1}: cần đúng 2 giá trị (thời gian, giá trị).` };
+      const [t, v] = p.map((x) => (typeof x === 'string' && x.trim() === '' ? NaN : Number(x))); // Number(null) and Number('') are 0: not a number the user typed
+      if (p[0] === null || p[1] === null) return { ok: false, error: `Mốc #${i + 1}: thiếu giá trị.` };
+      if (!Number.isFinite(t) || t < 0) return { ok: false, error: `Mốc #${i + 1}: thời gian phải là số hữu hạn, không âm.` };
+      if (!Number.isFinite(v)) return { ok: false, error: `Mốc #${i + 1}: giá trị phải là số hữu hạn.` };
+      out.push([t, v]);
+    }
+    return { ok: true, curve: out.sort((a, b) => a[0] - b[0]) };
+  }
+
+  const sameKey = (e, o) => Boolean(e) && e.scope === o.scope && e.grip === o.grip && e.muzzle === o.muzzle && e.stock === o.stock && e.gesture === o.gesture;
+  const clone = (doc) => JSON.parse(JSON.stringify(doc));
+
+  // Sets the curve of one combination in the dataset that pickDataset(doc, mode) shows (a copy is returned, doc is not changed).
+  // The app keeps the LAST entry of a key, so that one is changed; a combination without an entry gets a new one.
+  function applyCurveEdit(doc, mode, o, curve, opts) {
+    const ed = curveEditor(doc, mode);
+    const r = ed.apply(o, curve, opts);
+    return { doc: ed.doc, key: ed.key, created: r.created, copies: r.copies };
+  }
+
+  // The same for MANY combinations: the document is copied once, then each apply(o, curve) changes the copy (the copy of a big document is
+  // the slow part, so a few hundred combinations must not copy it a few hundred times). apply throws like applyCurveEdit does.
+  // -> { doc (the copy, changed as the edits go), key, apply(o, curve, { allowUnsupported }) -> { created, copies } }
+  function curveEditor(doc, mode) {
+    const next = clone(doc);
+    const ds = pickDataset(next, mode);
+    if (!ds) throw new Error('Mục này không có recoil_data.');
+    return {
+      doc: next,
+      key: ds.key,
+      apply(o, curve, { allowUnsupported = false } = {}) {
+        const checked = checkCurve(curve);
+        if (!checked.ok) throw new Error(checked.error);
+        if (isZeroWeapon(o.weapon)) throw new Error('Súng này luôn dùng đường cong 0 trong app: sửa ở đây không có tác dụng.');
+        const group = ds.data[o.weapon];
+        if (!group || typeof group !== 'object') throw new Error(`Bộ dữ liệu ${ds.key} chưa có nhóm dữ liệu cho súng này (nhóm ${o.weapon}); không tự tạo nhóm trống.`);
+        if (!Array.isArray(group.v)) group.v = [];
+        const matches = group.v.filter((e) => sameKey(e, o));
+        if (matches.length) matches[matches.length - 1].recoilValue = checked.curve;
+        else if (!allowUnsupported && comboProblems(o.weapon, o.scope, o).length) throw new Error(comboProblems(o.weapon, o.scope, o).map((p) => p.reason).join(' '));
+        else group.v.push({ scope: o.scope, grip: o.grip, muzzle: o.muzzle, stock: o.stock, gesture: o.gesture, recoilValue: checked.curve });
+        return { created: !matches.length, copies: matches.length };
+      },
+    };
+  }
+
+  // Deletes the own entries (all copies) of one combination: the app then computes the curve from the coefficients again.
+  function removeEntry(doc, mode, o) {
+    const next = clone(doc);
+    const ds = pickDataset(next, mode);
+    if (!ds) throw new Error('Mục này không có recoil_data.');
+    const group = ds.data[o.weapon];
+    let removed = 0;
+    if (group && Array.isArray(group.v)) {
+      const kept = group.v.filter((e) => !sameKey(e, o));
+      removed = group.v.length - kept.length;
+      group.v = kept;
+    }
+    return { doc: next, key: ds.key, removed };
+  }
+
+  // ---------------------------------------------------------------- checking the entries against the table of accessories
+  // The own entries (keys) of a dataset that the table says cannot exist: a grip on the M249, a muzzle on a gun that has none, a 16x scope on a
+  // gun that stops at 6x. Guns the table does not mention have no rule, so none of their entries is reported.
+  // -> [{ weapon, scope, grip, muzzle, stock, gesture, copies, problems }] in gun, scope, posture order
+  function auditEntries(idx) {
+    const out = [];
+    for (const [key, list] of idx.map) {
+      const [weapon, scope, grip, muzzle, stock, gesture] = key.split('|').map(Number);
+      const problems = comboProblems(weapon, scope, { grip, muzzle, stock });
+      if (problems.length) out.push({ weapon, scope, grip, muzzle, stock, gesture, copies: list.length, problems });
+    }
+    return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
+  }
+
+  // Deletes the own entries (every copy of each key) of many combinations in one go: the copy is made once, not once per combination.
+  // list: [{ weapon, scope, grip, muzzle, stock, gesture }]. -> { doc, key, removed (entries), keys (combinations that had one) }
+  function removeEntries(doc, mode, list) {
+    const next = clone(doc);
+    const ds = pickDataset(next, mode);
+    if (!ds) throw new Error('Mục này không có recoil_data.');
+    const byGun = new Map();
+    for (const o of list) {
+      if (!byGun.has(o.weapon)) byGun.set(o.weapon, new Set());
+      byGun.get(o.weapon).add(`${o.scope}|${o.grip}|${o.muzzle}|${o.stock}|${o.gesture}`);
+    }
+    let removed = 0;
+    const hit = new Set();
+    for (const [weapon, keys] of byGun) {
+      const group = ds.data[weapon];
+      if (!group || !Array.isArray(group.v)) continue;
+      group.v = group.v.filter((e) => {
+        const k = `${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
+        if (!keys.has(k)) return true;
+        removed++;
+        hit.add(`${weapon}|${k}`);
+        return false;
+      });
+    }
+    return { doc: next, key: ds.key, removed, keys: hit.size };
+  }
+
+  // ---------------------------------------------------------------- points the page adds or recomputes
+  // A new point, and every point after an edited one, continues from the point before it (cumulative: each from the previous):
+  //   time  + 450..678 ms (whole milliseconds);
+  //   value + 1.02..1.35 ("up"), or - 1.02..1.35 ("down"), or one of the two at random ("random"); the step has two decimals.
+  // rnd() is Math.random by default; tests pass their own.
+  const STEP = Object.freeze({ time: Object.freeze([450, 678]), value: Object.freeze([1.02, 1.35]) });
+  const DIRECTIONS = ['up', 'down', 'random'];
+  const stepTime = (t, rnd = Math.random) => t + STEP.time[0] + Math.floor(rnd() * (STEP.time[1] - STEP.time[0] + 1));
+  const stepDelta = (rnd = Math.random) => Math.round((STEP.value[0] + rnd() * (STEP.value[1] - STEP.value[0])) * 100) / 100;
+  const stepValue = (v, rnd = Math.random, dir = 'up') => {
+    const delta = stepDelta(rnd);
+    const down = dir === 'down' || (dir === 'random' && rnd() < 0.5);
+    return Number((down ? v - delta : v + delta).toFixed(6)); // only float noise is removed
+  };
+  const nextPoint = (curve, rnd = Math.random, dir = 'up') => {
+    const last = Array.isArray(curve) && curve.length ? curve[curve.length - 1] : null;
+    return last ? [stepTime(last[0], rnd), stepValue(last[1], rnd, dir)] : [0, 0];
+  };
+  // After the point at `index` was edited: recompute that column (0 = time, 1 = value) of every later point, each from the one before.
+  // The other column is left alone. Changes the array; returns how many points changed.
+  function cascadeFrom(curve, index, col, rnd = Math.random, dir = 'up') {
+    if (!Array.isArray(curve) || !Number.isInteger(index) || index < 0 || (col !== 0 && col !== 1)) return 0;
+    let n = 0;
+    for (let i = index + 1; i < curve.length; i++) {
+      curve[i][col] = col === 0 ? stepTime(curve[i - 1][0], rnd) : stepValue(curve[i - 1][1], rnd, dir);
+      n++;
+    }
+    return n;
+  }
+
+  // ---------------------------------------------------------------- combinations
+  const comboKey = (o) => `${o.weapon}|${o.scope}|${o.gesture}|${o.grip}|${o.muzzle}|${o.stock}`;
+  // Is this combination already in the list? { kind: 'exact' (has its own entry in the file) | 'custom' (added on the page, not saved yet)
+  // | 'default' (the none/none/none row is always listed), copies } or null when it is new. customKeys: Set of comboKey strings.
+  function findDuplicateCombo(idx, customKeys, o) {
+    const own = idx.map.get(keyOf(o.weapon, o.scope, o.grip, o.muzzle, o.stock, o.gesture));
+    if (own) return { kind: 'exact', copies: own.length };
+    if (customKeys && customKeys.has(comboKey(o))) return { kind: 'custom', copies: 0 };
+    if (!o.grip && !o.muzzle && !o.stock) return { kind: 'default', copies: 0 };
+    return null;
   }
 
   // How much data a weapon has: entries total, per posture and per scope (distinct keys, not copies).
@@ -158,5 +426,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, weaponLabel, coefLabel, indexData, resolve, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, comboKey, findDuplicateCombo };
 });

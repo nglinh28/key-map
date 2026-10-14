@@ -4,3 +4,5 @@ node_modules
 harness.js
 .git
 README.md
+.env
+*.helpers.js

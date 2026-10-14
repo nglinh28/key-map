@@ -204,3 +204,18 @@ test('describeItem: where an item lives, for the web page', () => {
   assert.deepEqual(C.sourceOf(p, id('d')), { mapEntry: '', listEntry: `list|${RC_NS}`, hasMap: false });
   assert.deepEqual(C.sourceOf(p, id('9')), { mapEntry: '', listEntry: '', hasMap: false });
 });
+
+test('replaceMapItem: updates one map entry, keeps everything else unchanged', () => {
+  const orig = cache();
+  const updatedDoc = { ...keymapDoc, updated: true, customProp: 'hello & <world>' };
+  const newXml = C.replaceMapItem(orig, id('a'), updatedDoc);
+  const parsed = C.parse(newXml);
+  const aVal = JSON.parse(parsed.entries.find((e) => e.name === `map|${id('a')}`).value);
+  assert.deepEqual(aVal, updatedDoc);
+  // other entries remain identical
+  const bVal = JSON.parse(parsed.entries.find((e) => e.name === `map|${id('b')}`).value);
+  assert.deepEqual(bVal, { ...keymapDoc, version: 'old' });
+  // throws on missing or invalid id
+  assert.throws(() => C.replaceMapItem(orig, 'missing-id', updatedDoc), /map\|missing-id không tồn tại/);
+  assert.throws(() => C.replaceMapItem(orig, '../bad/id', updatedDoc), /id không hợp lệ/);
+});

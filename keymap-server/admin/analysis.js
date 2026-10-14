@@ -1,33 +1,78 @@
 'use strict';
 // Tab "Phân tích cache": reads gamwing_keymap_cache.xml from the server and shows what is inside it.
-// Key maps and AI recognition maps are drawn on a screen, recoil configs are analysed per gun (read-only).
+// Key maps and AI recognition maps are drawn on a screen; recoil configs are analysed per gun and their curves can be edited
+// (recoil.js checks and applies the edit; replaceMapItem in cachexml.js writes the one item back, the rest of the file byte for byte).
 // Items can be deleted: from the file on the server at once, and on the tablet by the app (a command it picks up).
 (() => {
-  const { $, el, svgEl, icon, fmtBytes, short, textBytes, clockDateTime, toast, api, guard, showModal, badge, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, copyText, labelStacked } = window.Ui;
+  const { $, el, svgEl, icon, pageHead: head, fmtBytes, short, textBytes, clockDateTime, toast, api, guard, showModal, badge, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, copyText, labelStacked } = window.Ui;
   const CX = window.CacheXml;
   const LL = window.LayoutLib;
   const RL = window.RecoilLib;
+  const TF = window.TableFilter;
+  const FU = window.FilterUi;
   const CACHE_FILE = 'gamwing_keymap_cache.xml';
   const REFS_FILE = 'ft_map_server_v1.xml'; // also writes the ids of the documents it knows
   const KIND_VN = { keymap: 'Sơ đồ phím', recognition: 'Nhận diện AI', recoil: 'Độ giật / Cấu hình', unknown: 'Không rõ' };
 
   // data: the loaded file and its analysis; pick: the row selected in the list (shown in the inspector);
   // sel: the item opened in the viewer { id, kind, ns, label }; refs: id -> where else the id is written
+  const AUTO_KEY = 'ftAdminAutoStep';
+  const loadAutoStep = () => { try { return localStorage.getItem(AUTO_KEY) !== 'off'; } catch { return true; } };
+  const vn = (n) => String(n).replace('.', ','); // 1.02 -> 1,02
+  let aiStatusP = null; // { enabled, model } of the AI on the server, asked once
+  const aiStatus = () => (aiStatusP || (aiStatusP = api('GET', '/ai/status').catch(() => ({ enabled: false, model: '' }))));
+  const DIR_KEY = 'ftAdminStepDir';
+  const loadStepDir = () => { try { const d = localStorage.getItem(DIR_KEY); return RL.DIRECTIONS.includes(d) ? d : 'up'; } catch { return 'up'; } };
+  const DIR_VN = { up: 'Tăng (+)', down: 'Giảm (−)', random: 'Tăng hoặc giảm (ngẫu nhiên)' };
+  const stepHint = () => `Mốc mới và các mốc sau nối tiếp mốc đứng trước, cộng dồn: thời gian +${RL.STEP.time[0]}–${RL.STEP.time[1]} ms; giá trị +${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Tăng) hoặc −${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Giảm).`;
+
   const S = { src: '', days: [], data: null, error: '', pick: '', sel: null, refs: new Map(), cmds: [], pending: '' };
   const lay = { screenId: null, origin: 'topleft', custom: { w: 2960, h: 1848 }, bg: { url: null, opacity: 0.5 }, selected: null };
-  const rc = { mode: 'touch', weapon: RL.WEAPONS.indexOf('AUG'), scope: 1, gesture: 0, showAll: false, picked: null, docId: null, idx: null };
+  const rc = { mode: 'touch', weapon: RL.WEAPONS.indexOf('AUG'), scope: 1, gesture: 0, showAll: false, picked: null, docId: null, idx: null, editCurve: null, editKey: '', dirty: false, bad: new Set(), autoStep: loadAutoStep(), stepDir: loadStepDir(), sugg: null, filters: {}, sort: null, drafts: new Map(), bulk: null, fresh: false, freshBase: null, itemId: '' }; // drafts: recoilKey -> { curve, source } points made for an added combination, not saved yet; bulk: the "AI tạo mốc" run // filters / sort: the Excel-like filter buttons of the combinations table // bad: boxes ("row:col") holding something that is not a finite number
 
   let active = false; // false once another tab is open: a slow reload must not draw over it
   let pollTimer = null;
-  const redraw = () => {
+  // Draws the page again. The height of the old page is held while it is swapped for the new one, so the scroll position does not jump and
+  // the page does not flash; smooth = a short cross-fade (after a save), where the browser can do it.
+  const redraw = ({ smooth = false } = {}) => {
     if (!active) return;
     const y = window.scrollY;
     const app = $('#app');
-    app.replaceChildren(draw());
-    labelStacked(app);
-    window.scrollTo(0, y);
+    app.style.minHeight = `${app.offsetHeight}px`;
+    const swap = () => {
+      app.replaceChildren(draw());
+      labelStacked(app);
+      window.scrollTo(0, y);
+    };
+    const release = () => requestAnimationFrame(() => { app.style.minHeight = ''; });
+    const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (smooth && !calm && document.startViewTransition) {
+      try { document.startViewTransition(swap).finished.then(release, release); return; } catch { /* the plain swap below */ }
+    }
+    swap();
+    release();
   };
   const latest = () => S.src === '';
+
+  // Leaving a curve that was changed but not saved: ask once, with the same dialog as everything else. true = go on.
+  async function discardOk() {
+    if (!rc.dirty) return true;
+    if (rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase) return true; // an added combination nobody has touched: nothing to lose
+    if (rc.fresh && rc.editKey && rc.editCurve) {
+      // an added combination keeps what was done to it ("Lưu tất cả" writes it with the others): nothing is lost by leaving
+      const prev = rc.drafts.get(rc.editKey);
+      rc.drafts.set(rc.editKey, { curve: rc.editCurve, source: prev ? prev.source : 'edit' });
+      return true;
+    }
+    const ok = await showModal({
+      title: 'Bỏ thay đổi chưa lưu?', tone: 'warn',
+      body: el('p', {}, 'Các thay đổi chưa lưu của đường cong độ giật sẽ mất.'),
+      actions: [{ id: 'stay', label: 'Ở lại' }, { id: 'drop', label: 'Bỏ thay đổi', danger: true }],
+    });
+    if (ok !== 'drop') return false;
+    rc.bad.clear();
+    return true;
+  }
 
   async function loadRefs(day) {
     S.refs = new Map();
@@ -112,18 +157,19 @@
       el('b', {}, i.label), ` — ${KIND_VN[i.kind] || 'Không rõ'} · `, el('span', { class: 'mono' }, `map|${i.id}`), ` · ${fmtBytes(i.bytes)}`,
       el('div', { class: 'muted' }, i.listed ? `đang nằm trong danh sách list|${i.ns}: sẽ bị bỏ khỏi danh sách` : 'mục mồ côi: không nằm trong danh sách nào'),
       i.selected ? alert('danger', el('span', {}, i.nextSelected ? `Đang là bản được chọn trong app. Sau khi xóa, danh sách sẽ chọn «${i.nextSelected}».` : 'Đang là bản được chọn và là bản duy nhất của loại này: sau khi xóa danh sách sẽ trống, không còn bản nào được chọn.')) : null)));
-    const what = el('details', { class: 'disclosure', open: true }, el('summary', {}, 'Việc sẽ xảy ra'),
+    const what = el('details', { class: 'disclosure' }, el('summary', {}, 'Việc sẽ xảy ra và những gì không bị xóa'),
       el('div', { class: 'disclosure-body' }, el('ol', {},
         el('li', {}, 'Server: cắt các mục trên khỏi ', el('span', { class: 'mono' }, CACHE_FILE), ' ngay bây giờ. Bản trước được giữ trong lịch sử của file (10 bản gần nhất).'),
-        el('li', {}, `Máy tính bảng: app KeyMap Sync nhận lệnh trong khoảng 15 giây (khi app đang mở hoặc đang bật Tự đẩy), tự sửa file ${CACHE_FILE} trên máy, `
-          + 'sau khi chép file cũ vào Documents/FTKeymapSync/backup/<thời gian>/databases/. Không hỏi lại trên máy.'))));
+        el('li', {}, `Máy tính bảng: app KeyMap Sync nhận lệnh trong khoảng 15 giây (khi app đang bật Chạy ngầm), tự sửa file ${CACHE_FILE} trên máy, `
+          + 'sau khi chép file cũ vào Documents/FTKeymapSync/backup/<thời gian>/databases/. Không hỏi lại trên máy.')),
+        el('p', { class: 'muted text-sm' }, 'Không xóa các dòng khác: '
+          + (refs.length ? `${refs.length} dòng ghi id này ở ${REFS_FILE} (${refs.map((r) => `document|…|${short(r.id)}`).join(', ')}) vẫn được giữ; ` : '')
+          + 'bản chép dạng .json (nếu có) ở Documents/Gamwing/keymap_cache cũng không bị xóa. Gamwing có thể tải lại mục nếu nó đồng bộ lại từ server keymap của nó.')));
     const first = await showModal({
       title: `Xóa ${items.length} mục?`, tone: 'warn', step: 'Bước 1/2 · Kiểm tra',
-      body: [list, what, targets,
+      body: [list, targets,
         alert('warn', el('span', {}, 'Hãy ĐÓNG HẲN Gamwing trên máy tính bảng trước. Nếu Gamwing đang chạy nó có thể ghi đè lại file và mục bị xóa sẽ hiện lại; app sẽ kiểm tra lại sau vài giây và báo ở đây nếu điều đó xảy ra.')),
-        el('p', { class: 'muted' }, 'Không xóa các dòng khác: '
-          + (refs.length ? `${refs.length} dòng ghi id này ở ${REFS_FILE} (${refs.map((r) => `document|…|${short(r.id)}`).join(', ')}) vẫn được giữ; ` : '')
-          + 'bản chép dạng .json (nếu có) ở Documents/Gamwing/keymap_cache cũng không bị xóa. Gamwing có thể tải lại mục nếu nó đồng bộ lại từ server keymap của nó.')],
+        what],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'next', label: 'Tiếp tục…', primary: true }],
     });
     if (first !== 'next') return;
@@ -176,10 +222,10 @@
 
   function commandsNode() {
     const cmds = S.cmds.slice(0, 5);
+    if (!cmds.length) return null;
     return el('section', { class: 'card', 'aria-label': 'Lệnh xóa gần đây' }, el('h2', {}, 'Lệnh xóa gần đây'),
-      cmds.length ? el('ol', { class: 'timeline' }, cmds.map(commandItem))
-        : emptyState('clock', 'Chưa có lệnh nào', 'Khi bạn xóa một mục, lệnh gửi cho máy tính bảng sẽ hiện ở đây.'),
-      cmds.length ? el('p', { class: 'muted' }, 'App KeyMap Sync nhận lệnh khi gửi nhịp 15 giây (cần app đang mở hoặc đang bật Tự đẩy).') : null);
+      el('ol', { class: 'timeline' }, cmds.map(commandItem)),
+      el('p', { class: 'muted text-sm' }, 'App KeyMap Sync nhận lệnh khi gửi nhịp 15 giây (cần app đang bật Chạy ngầm).'));
   }
 
   function pollCommands(slot) {
@@ -189,7 +235,7 @@
     pollTimer = setInterval(async () => {
       if (!active || document.querySelector('.modal')) return;
       await loadCommands();
-      if (slot.isConnected) slot.replaceChildren(commandsNode());
+      if (slot.isConnected) slot.replaceChildren(...[commandsNode()].filter(Boolean));
       if (!S.cmds.some((c) => c.status === 'pending')) { clearInterval(pollTimer); pollTimer = null; }
     }, 4000);
   }
@@ -204,16 +250,22 @@
 
   function pageHead() {
     const d = S.data;
-    const srcLabel = el('span', { class: 'muted' }, 'Nguồn:');
-    const refreshBtn = el('button', { type: 'button', class: 'btn small', onclick: guard(refresh) }, icon('refresh'), 'Tải lại');
-    if (!d) return el('div', { class: 'page-head' }, el('h1', {}, 'Phân tích cache'), srcLabel, sourceControl(), refreshBtn);
+    const refreshBtn = el('button', { type: 'button', class: 'btn', onclick: guard(refresh) }, icon('refresh'), 'Tải lại');
+    if (!d) return head('Phân tích cache', 'Đang đọc file keymap của Gamwing…', sourceControl(), refreshBtn);
     const a = d.analysis;
     const total = a.namespaces.reduce((n, x) => n + x.items.length, 0);
-    return el('div', {},
-      el('div', { class: 'page-head' }, el('h1', {}, 'Phân tích cache'), srcLabel, sourceControl(), refreshBtn,
-        el('div', { class: 'summary' }, badge(fmtBytes(d.file.bytes ?? textBytes(d.file.text))), badge(`${total} mục`), badge(`${a.orphans.length} mồ côi`, a.orphans.length ? 'warn' : 'neutral'))),
-      el('p', { class: 'muted' }, el('span', { class: 'mono' }, CACHE_FILE), ' · thư mục trên máy tính bảng: ', el('span', { class: 'mono' }, folderOf() || NO_FOLDER),
-        d.file.updated_at ? ` · cập nhật ${clockDateTime(d.file.updated_at)}` : ''));
+    const sub = el('span', { class: 'meta' }, el('span', {}, `${total} mục`), el('span', {}, fmtBytes(d.file.bytes ?? textBytes(d.file.text))),
+      d.file.updated_at ? el('span', {}, `cập nhật ${clockDateTime(d.file.updated_at)}`) : null,
+      a.orphans.length ? badge(`${a.orphans.length} mục mồ côi`, 'warn') : null);
+    return head('Phân tích cache', sub, sourceControl(), refreshBtn);
+  }
+
+  // The file on the server was changed on this page and the tablet does not have it yet: the server refuses other copies from the tablet meanwhile.
+  function webEditNode() {
+    const w = S.data && S.data.file && S.data.file.web_edit;
+    if (!w || !latest()) return null;
+    return alert('warn', el('span', {}, `Bản trên server là bản sửa trên web lúc ${clockDateTime(w.at)}; máy tính bảng chưa có. Server KHÔNG nhận bản khác của file này từ máy cho tới khi máy khôi phục đúng bản này (app: "Khôi phục theo ngày…" → hôm nay). `,
+      el('button', { type: 'button', class: 'btn small', onclick: guard(() => window.Ui.acceptDeviceCopy(CACHE_FILE, refresh)) }, 'Chấp nhận bản từ máy')));
   }
 
   function warningsNode() {
@@ -224,12 +276,13 @@
     if (a.missingMaps.length) warns.push(`${a.missingMaps.length} mục có trong danh sách nhưng thiếu nội dung (map|…).`);
     if (mismatches) warns.push(`${mismatches} mục có tên trong danh sách khác với tên trong dữ liệu.`);
     for (const p of a.problems) warns.push(p.message);
-    return warns.length ? alert('warn', el('div', {}, warns.map((w) => el('div', {}, w)))) : alert('ok', el('span', {}, 'Không thấy bất thường giữa danh sách và nội dung.'));
+    return warns.length ? alert('warn', el('div', {}, warns.map((w) => el('div', {}, w)))) : null;
   }
 
-  const colHead = () => ['Tên và nơi lưu', 'Dung lượng', 'Ghi chú', ''].map((h, i) => el('th', { class: i === 0 ? 'col-name' : i === 1 ? 'col-size' : '' }, h)); // new elements each time: a node has only one parent
+  const colHead = () => ['Tên', 'Dung lượng', ''].map((h, i) => el('th', { class: i === 0 ? 'col-name' : i === 1 ? 'col-size num' : '' }, h)); // new elements each time: a node has only one parent
 
   function openItem(it) {
+    if (rc.itemId !== it.id) { rc.itemId = it.id; rc.drafts.clear(); rc.customCombos = new Set(); } // added combinations and drafts belong to one item
     S.sel = { id: it.id, kind: it.kind, ns: it.ns, label: it.label };
     lay.selected = null;
     rc.picked = null;
@@ -238,29 +291,28 @@
   }
 
   function itemRow(it) {
-    const src = CX.sourceOf(S.data.parsed, it.id);
     const pickIt = () => { S.pick = it.id; redraw(); };
     const menu = menuButton([
       { label: 'Mở phân tích', icon: 'layers', disabled: !it.hasMap, onclick: () => openItem(it) },
       { label: 'Sao chép ID', icon: 'copy', onclick: () => copyText(it.id, 'Đã sao chép ID') },
       { label: 'Sao chép tên mục (map|…)', icon: 'copy', onclick: () => copyText(`map|${it.id}`, 'Đã sao chép tên mục') },
+      { separator: true },
+      { label: 'Xóa mục này…', icon: 'trash', danger: true, disabled: !latest(), onclick: () => guard(() => startDelete([it.id]))() },
     ], { label: `Thao tác với ${it.label}` });
+    const sub = [it.addTime ? it.addTime.slice(0, 10) : null, it.nameMismatch ? `tên trong danh sách: ${it.listName}` : null, !it.listed ? 'không nằm trong danh sách nào' : null].filter(Boolean).join(' · ');
     return el('tr', { class: `pick${S.pick === it.id ? ' active' : ''}`, tabindex: '0', 'aria-selected': S.pick === it.id ? 'true' : 'false',
       onclick: pickIt, ondblclick: () => { if (it.hasMap) openItem(it); },
       onkeydown: (e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickIt(); } } },
       el('td', { class: 'col-name' }, el('div', { class: 'name-cell' },
-        el('span', { class: 'name' }, el('span', {}, it.label), it.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null),
-        it.nameMismatch ? el('span', { class: 'sub' }, `danh sách: ${it.listName}`) : null,
-        el('span', { class: 'sub mono', title: `${CACHE_FILE} › ${src.mapEntry || '(không có mục map|)'}` }, `${CACHE_FILE} › ${src.mapEntry ? `map|${short(it.id)}` : '(thiếu map|…)'}`),
-        el('span', { class: 'sub' }, src.listEntry ? `trong danh sách ${src.listEntry}` : `không nằm trong danh sách nào · ${KIND_VN[it.kind] || 'Không rõ'} (đoán từ nội dung)`),
-        it.addTime ? el('span', { class: 'sub mono' }, it.addTime) : null)),
+        el('span', { class: 'name' }, el('span', {}, it.label), it.selected ? badge('Đang dùng', 'ok', { dot: true, title: 'Bản này đang được chọn trong app' }) : null),
+        sub ? el('span', { class: 'sub' }, sub) : null)),
       el('td', { class: 'num col-size' }, it.hasMap ? fmtBytes(it.bytes) : '—'),
-      el('td', {}, el('div', { class: 'flags' }, itemFlags(it))),
-      el('td', { class: 'act' }, deleteButton([it.id]), ' ', menu));
+      el('td', { class: 'act' },
+        it.hasMap ? el('button', { type: 'button', class: 'btn small hover-actions', onclick: (e) => { e.stopPropagation(); openItem(it); } }, 'Mở') : null, menu));
   }
 
   function groupRow(title, ns, count, extra) {
-    return el('tr', { class: 'group' }, el('td', { colspan: 4 }, el('div', { class: 'row' }, el('span', {}, title), ns ? el('span', { class: 'mono muted' }, ns) : null, badge(String(count)), extra || null)));
+    return el('tr', { class: 'group' }, el('td', { colspan: 3 }, el('div', { class: 'row' }, el('span', { title: ns || undefined }, title), badge(String(count)), extra || null)));
   }
 
   function listCard() {
@@ -268,7 +320,7 @@
     const body = [];
     for (const n of a.namespaces) {
       body.push(groupRow(KIND_VN[n.kind], n.ns, n.items.length));
-      if (!n.items.length) body.push(el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Danh sách trống.')));
+      if (!n.items.length) body.push(el('tr', {}, el('td', { colspan: 3, class: 'muted' }, 'Danh sách trống.')));
       for (const it of n.items) body.push(itemRow(itemInfo(it.id)));
     }
     if (a.orphans.length) {
@@ -287,22 +339,24 @@
       const refs = S.refs.get(it.id) || [];
       const copyBtn = (text, label) => el('button', { type: 'button', class: 'btn icon small ghost', title: label, 'aria-label': label, onclick: () => copyText(text) }, icon('copy'));
       parts.push(el('section', { class: 'card' },
-        el('div', { class: 'row' }, el('h2', {}, it.label), badge(KIND_VN[it.kind] || 'Không rõ', 'accent'), it.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null),
+        el('h2', {}, it.label),
+        el('div', { class: 'row' }, badge(KIND_VN[it.kind] || 'Không rõ', 'accent'), it.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null, ...itemFlags(it).filter((b) => !b.textContent.startsWith('có ở'))),
         el('dl', { class: 'kv' },
-          el('dt', {}, 'ID'), el('dd', { class: 'mono' }, it.id, ' ', copyBtn(it.id, 'Sao chép ID')),
-          el('dt', {}, 'File XML'), el('dd', { class: 'mono' }, CACHE_FILE),
-          el('dt', {}, 'Mục trong file'), el('dd', { class: 'mono' }, src.mapEntry || '— (không có nội dung map|…)'),
-          el('dt', {}, 'Danh sách'), el('dd', { class: 'mono' }, src.listEntry || '— (không nằm trong danh sách nào: mục mồ côi)'),
-          el('dt', {}, 'Thư mục trên máy tính bảng'), el('dd', { class: 'mono' }, folderOf() || NO_FOLDER),
-          el('dt', {}, `Còn được ghi ở ${REFS_FILE}`), el('dd', { class: 'mono' }, refs.length ? refs.map((r) => `${r.entry} = ${r.ns}`).join('; ') : '—'),
           el('dt', {}, 'Dung lượng'), el('dd', {}, it.hasMap ? fmtBytes(it.bytes) : '—'),
-          it.addTime ? [el('dt', {}, 'Ngày'), el('dd', { class: 'mono' }, it.addTime)] : null),
-        el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn primary', disabled: !it.hasMap, onclick: () => openItem(it) }, icon('layers'), 'Mở phân tích')),
-        el('div', { class: 'danger-zone' }, el('h3', {}, 'Vùng nguy hiểm'),
-          el('span', { class: 'muted' }, 'Xóa mục này khỏi server và khỏi máy tính bảng (qua app KeyMap Sync). Có hai bước xác nhận.'),
-          el('div', {}, deleteButton([it.id], 'Xóa mục này…', 'btn danger')))));
+          it.addTime ? [el('dt', {}, 'Ngày'), el('dd', {}, it.addTime)] : null),
+        el('div', { class: 'row mt-4' },
+          el('button', { type: 'button', class: 'btn primary', disabled: !it.hasMap, onclick: () => openItem(it) }, icon('layers'), 'Mở phân tích'),
+          deleteButton([it.id], 'Xóa…', 'btn danger')),
+        el('details', { class: 'disclosure' }, el('summary', {}, 'Nơi lưu (chi tiết kỹ thuật)'),
+          el('div', { class: 'disclosure-body' }, el('dl', { class: 'kv' },
+            el('dt', {}, 'ID'), el('dd', { class: 'mono' }, it.id, ' ', copyBtn(it.id, 'Sao chép ID')),
+            el('dt', {}, 'File XML'), el('dd', { class: 'mono' }, CACHE_FILE),
+            el('dt', {}, 'Mục trong file'), el('dd', { class: 'mono' }, src.mapEntry || '— (không có nội dung map|…)'),
+            el('dt', {}, 'Danh sách'), el('dd', { class: 'mono' }, src.listEntry || '— (không nằm trong danh sách nào: mục mồ côi)'),
+            el('dt', {}, 'Thư mục trên máy tính bảng'), el('dd', { class: 'mono' }, folderOf() || NO_FOLDER),
+            el('dt', {}, `Còn được ghi ở ${REFS_FILE}`), el('dd', { class: 'mono' }, refs.length ? refs.map((r) => `${r.entry} = ${r.ns}`).join('; ') : '—'))))));
     } else {
-      parts.push(el('section', { class: 'card' }, emptyState('layers', 'Chọn một mục trong danh sách', 'để xem nó nằm ở đâu (file, mục, thư mục trên máy) và các thao tác.')));
+      parts.push(el('section', { class: 'card' }, emptyState('layers', 'Chọn một mục trong danh sách', 'để xem chi tiết và mở phân tích.')));
     }
     parts.push(slot);
     return el('aside', { class: 'inspector', 'aria-label': 'Chi tiết mục đang chọn' }, parts);
@@ -315,11 +369,11 @@
       return el('div', {}, pageHead(), S.error ? alert('danger', el('span', {}, S.error)) : skeleton('split'));
     }
     const slot = el('div', {});
-    slot.append(commandsNode());
+    slot.append(...[commandsNode()].filter(Boolean));
     pollCommands(slot);
     if (!S.sel) {
       setCrumbs([{ label: 'Phân tích cache' }]);
-      return el('div', {}, pageHead(), warningsNode(), el('div', { class: 'split' }, listCard(), inspectorNode(slot)));
+      return el('div', {}, pageHead(), webEditNode(), warningsNode(), el('div', { class: 'split' }, listCard(), inspectorNode(slot)));
     }
     return viewerPage(slot);
   }
@@ -327,14 +381,27 @@
   function viewerPage(slot) {
     const doc = S.data.analysis.docs.get(S.sel.id);
     const info = itemInfo(S.sel.id);
-    const back = () => { S.sel = null; redraw(); };
+    const back = async () => {
+      if (!(await discardOk())) return;
+      rc.dirty = false;
+      rc.editCurve = null;
+      S.sel = null;
+      redraw();
+    };
     setCrumbs([{ label: 'Phân tích cache', onclick: back }, { label: KIND_VN[S.sel.kind] || 'Không rõ', onclick: back }, { label: S.sel.label }]);
     const src = CX.sourceOf(S.data.parsed, S.sel.id);
     const refs = S.refs.get(S.sel.id) || [];
-    const head = el('section', { class: 'card' },
+    const viewHead = el('div', { class: 'view-head' },
       el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn small', onclick: back }, icon('back'), 'Danh sách'), el('h2', {}, S.sel.label), badge(KIND_VN[S.sel.kind] || 'Không rõ', 'accent'),
-        info && info.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null, !S.src ? null : badge(`sao lưu ngày ${S.src}`), deleteButton([S.sel.id], 'Xóa mục này…', 'btn small danger')),
-      el('details', { class: 'disclosure' }, el('summary', {}, 'Nơi lưu của mục này'),
+        info && info.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null, !S.src ? null : badge(`sao lưu ngày ${S.src}`),
+        el('span', { class: 'spacer' }),
+        menuButton([
+          { label: 'Lịch sử & khôi phục', icon: 'history', onclick: guard(() => (window.Ui.restoreFromHistory ? window.Ui.restoreFromHistory(CACHE_FILE, async () => { rc.dirty = false; rc.editCurve = null; rc.idx = null; await refresh(); }) : null)) },
+          { label: 'Sao chép ID', icon: 'copy', onclick: () => copyText(S.sel.id, 'Đã sao chép ID') },
+          { separator: true },
+          { label: 'Xóa mục này…', icon: 'trash', danger: true, disabled: !latest(), onclick: guard(() => startDelete([S.sel.id])) },
+        ], { label: 'Thao tác với mục này' })),
+      el('details', { class: 'disclosure flat' }, el('summary', {}, 'Nơi lưu của mục này'),
         el('div', { class: 'disclosure-body' }, el('dl', { class: 'kv' },
           el('dt', {}, 'ID'), el('dd', { class: 'mono' }, S.sel.id),
           el('dt', {}, 'File XML'), el('dd', { class: 'mono' }, CACHE_FILE),
@@ -342,12 +409,12 @@
           el('dt', {}, 'Danh sách'), el('dd', { class: 'mono' }, src.listEntry || '— (không nằm trong danh sách nào: mục mồ côi)'),
           el('dt', {}, 'Thư mục trên máy'), el('dd', { class: 'mono' }, folderOf() || NO_FOLDER),
           el('dt', {}, `Còn được ghi ở ${REFS_FILE}`), el('dd', { class: 'mono' }, refs.length ? refs.map((r) => `${r.entry} = ${r.ns}`).join('; ') : '—')))));
-    if (!doc) return el('div', {}, head, alert('danger', el('span', {}, 'Nội dung bị hỏng (không phải JSON hợp lệ).')), slot);
+    if (!doc) return el('div', {}, viewHead, alert('danger', el('span', {}, 'Nội dung bị hỏng (không phải JSON hợp lệ).')), slot);
     let body;
     if (S.sel.kind === 'recoil') body = recoilView(doc);
     else if ((S.sel.kind === 'keymap' || S.sel.kind === 'recognition') && Array.isArray(doc.components)) body = layoutView(S.sel.kind, doc);
     else body = summaryView(doc);
-    return el('div', {}, head, body, slot);
+    return el('div', {}, viewHead, webEditNode(), body, slot);
   }
 
   const describe = (v) => (Array.isArray(v) ? `mảng ${v.length} phần tử` : v && typeof v === 'object' ? `đối tượng ${Object.keys(v).length} khóa` : JSON.stringify(v));
@@ -451,7 +518,7 @@
   const sourceTag = (r) => {
     if (r.source === 'exact') return el('span', { class: 'tag ok' }, 'Có mục riêng');
     if (r.source === 'zero') return el('span', { class: 'tag' }, 'Luôn 0');
-    return el('span', { class: 'tag warn' }, r.baseMissing ? 'Nền thiếu → 0' : `Tính ×${r.multiplier.toFixed(3)}`);
+    return el('span', { class: r.baseMissing ? 'tag warn' : 'tag' }, r.baseMissing ? 'Nền thiếu → 0' : `Tính ×${r.multiplier.toFixed(3)}`);
   };
 
   function chart(curve) {
@@ -478,81 +545,1518 @@
     return svg;
   }
 
+  function getAccessorySpecs(ixIdx, weapon, scope) {
+    const coef = RL.coefficientsFor(ixIdx, weapon, scope) || {};
+    const grips = RL.GRIPS.map((raw, i) => {
+      const key = RL.GRIP_COEF ? RL.GRIP_COEF[raw] : null;
+      const factor = key && typeof coef[key] === 'number' ? coef[key] : 1;
+      return { index: i, raw, label: RL.LABELS.GRIPS[i], key, factor };
+    });
+    const muzzles = RL.MUZZLES.map((raw, i) => {
+      const key = RL.MUZZLE_COEF ? RL.MUZZLE_COEF[raw] : null;
+      const factor = key && typeof coef[key] === 'number' ? coef[key] : 1;
+      return { index: i, raw, label: RL.LABELS.MUZZLES[i], key, factor };
+    });
+    const stocks = RL.STOCKS.map((raw, i) => {
+      const key = RL.STOCK_COEF ? RL.STOCK_COEF[raw] : null;
+      const factor = key && typeof coef[key] === 'number' ? coef[key] : 1;
+      return { index: i, raw, label: RL.LABELS.STOCKS[i], key, factor };
+    });
+    return { grips, muzzles, stocks, coef };
+  }
+
+  function optWithBadge(kind, i, coef) {
+    if (i === 0 && NONE_KINDS.has(kind)) return el('span', { class: 'faint', title: 'None (không gắn)' }, '—');
+    const label = RL.LABELS[kind][i];
+    const raw = RL[kind][i];
+    let key = null;
+    if (kind === 'GRIPS') key = RL.GRIP_COEF ? RL.GRIP_COEF[raw] : null;
+    else if (kind === 'MUZZLES') key = RL.MUZZLE_COEF ? RL.MUZZLE_COEF[raw] : null;
+    else if (kind === 'STOCKS') key = RL.STOCK_COEF ? RL.STOCK_COEF[raw] : null;
+    const factor = key && coef && typeof coef[key] === 'number' ? coef[key] : null;
+    if (factor != null && factor !== 1) {
+      return el('span', { title: `${raw} · Hệ số: ${factor.toFixed(4)}` }, label, el('span', { class: 'coef' }, `×${factor.toFixed(2)}`));
+    }
+    return el('span', { title: raw }, label);
+  }
+
+  async function showComboModal(ix, initialCombo = null) {
+    if (!rc.customCombos) rc.customCombos = new Set();
+    const specs = getAccessorySpecs(ix.idx, rc.weapon, rc.scope);
+    // what the gun takes (RecoilLib.attachmentsFor): other options stay in the list but are greyed out; the one being edited stays choosable
+    const att = RL.attachmentsFor(rc.weapon);
+    const slotKey = { grip: 'grips', muzzle: 'muzzles', stock: 'stocks' };
+    const refused = (slot, index) => Boolean(att) && index > 0 && !att[slotKey[slot]].has(index) && !(initialCombo && initialCombo[slot] === index);
+    const optionNode = (slot, o, current, factorText) => el('option', { value: o.index, selected: o.index === current, disabled: refused(slot, o.index) }, `${o.label}${factorText}${refused(slot, o.index) ? ' — súng này không hỗ trợ' : ''}`);
+    let curGrip = initialCombo ? initialCombo.grip : 0;
+    let curMuzzle = initialCombo ? initialCombo.muzzle : 0;
+    let curStock = initialCombo ? initialCombo.stock : 0;
+
+    const gripSelect = el('select', { 'aria-label': 'Tay cầm' });
+    specs.grips.forEach((g) => {
+      const factorText = g.factor !== 1 ? ` (×${g.factor.toFixed(3)})` : g.index === 0 ? ' (mặc định)' : '';
+      gripSelect.append(optionNode('grip', g, curGrip, factorText));
+    });
+
+    const muzzleSelect = el('select', { 'aria-label': 'Nòng' });
+    specs.muzzles.forEach((m) => {
+      const factorText = m.factor !== 1 ? ` (×${m.factor.toFixed(3)})` : m.index === 0 ? ' (mặc định)' : '';
+      muzzleSelect.append(optionNode('muzzle', m, curMuzzle, factorText));
+    });
+
+    const stockSelect = el('select', { 'aria-label': 'Báng' });
+    specs.stocks.forEach((st) => {
+      const factorText = st.factor !== 1 ? ` (×${st.factor.toFixed(3)})` : st.index === 0 ? ' (mặc định)' : '';
+      stockSelect.append(optionNode('stock', st, curStock, factorText));
+    });
+
+    const refPreviewBox = el('div', { class: 'meta ref-preview' });
+
+    // Is the chosen combination already in the list? Then it is not added a second time: the existing one is opened.
+    const dupOf = () => {
+      if (initialCombo && initialCombo.grip === curGrip && initialCombo.muzzle === curMuzzle && initialCombo.stock === curStock) return null; // "edit" and nothing changed
+      return RL.findDuplicateCombo(ix.idx, rc.customCombos, { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: curGrip, muzzle: curMuzzle, stock: curStock });
+    };
+    const DUP_TEXT = { exact: 'đã có mục riêng trong file', custom: 'đã được thêm vào danh sách (chưa lưu)', default: 'là hàng mặc định, luôn có sẵn trong danh sách' };
+    const dupBox = el('div', { role: 'status', 'aria-live': 'polite' });
+    const scopeProblem = RL.comboProblems(rc.weapon, rc.scope, {}).find((p) => p.slot === 'scope');
+    const attBox = att
+      ? el('details', { class: 'disclosure flat' }, el('summary', {}, `Phụ kiện ${RL.weaponLabel(rc.weapon)} lắp được`), el('div', { class: 'disclosure-body muted text-sm' }, `Theo ${att.sourceLabel}: ${RL.describeAttachments(rc.weapon)}`))
+      : el('p', { class: 'muted text-sm' }, `Chưa có quy tắc phụ kiện cho ${RL.weaponLabel(rc.weapon)} (tài liệu không nhắc tới): mọi lựa chọn đều được phép.`);
+    const scopeBox = scopeProblem && !initialCombo ? alert('warn', el('span', {}, `${scopeProblem.reason} Không thêm tổ hợp mới ở ống ngắm này.`)) : null;
+    const wantSuggest = el('input', { type: 'checkbox', checked: true });
+    const suggestRow = initialCombo ? null : el('label', { class: 'auto-step' }, wantSuggest, el('span', {}, 'Tính các mốc ngay: server và AI chạy song song, rồi bạn chọn một kết quả'));
+    const paintDup = () => {
+      const d = dupOf();
+      dupBox.replaceChildren(...(d ? [alert('warn', el('span', {}, `Tổ hợp này ${DUP_TEXT[d.kind]}. Sẽ không thêm bản trùng: bấm nút bên dưới để mở tổ hợp đó.`))] : []));
+    };
+
+    function updateRef() {
+      curGrip = Number(gripSelect.value);
+      curMuzzle = Number(muzzleSelect.value);
+      curStock = Number(stockSelect.value);
+      paintDup();
+      const r = RL.resolve(ix.idx, { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: curGrip, muzzle: curMuzzle, stock: curStock });
+      const st = RL.curveStats(r.curve);
+
+      const partsText = r.parts.length ? r.parts.map((p) => `${p.label} ${Number(p.value.toFixed(3))}`).join(' × ') : '1.000';
+      const multText = r.multiplier != null ? ` = ×${r.multiplier.toFixed(4)}` : '';
+
+      // one quiet line: where the curve comes from, and its numbers
+      refPreviewBox.replaceChildren(
+        sourceTag(r),
+        el('span', { title: partsText + multText }, `hệ số ${r.multiplier != null ? `×${r.multiplier.toFixed(3)}` : '—'}`),
+        el('span', {}, `t=0: ${num(st.v0)} → ${num(st.vEnd)}`),
+        el('span', {}, `${st.duration} ms · ${st.points} mốc`));
+    }
+
+    gripSelect.onchange = updateRef;
+    muzzleSelect.onchange = updateRef;
+    stockSelect.onchange = updateRef;
+    updateRef();
+
+    const ok = await showModal({
+      title: initialCombo ? 'Sửa tổ hợp phụ kiện' : 'Thêm tổ hợp phụ kiện & tham chiếu độ giật',
+      body: [
+        el('p', { class: 'muted' }, `${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]}`),
+        el('div', { class: 'fields-3' },
+          el('label', { class: 'field' }, 'Tay cầm', gripSelect),
+          el('label', { class: 'field' }, 'Nòng', muzzleSelect),
+          el('label', { class: 'field' }, 'Báng', stockSelect)
+        ),
+        refPreviewBox,
+        attBox,
+        scopeBox,
+        dupBox,
+        suggestRow
+      ],
+      actions: [
+        { id: 'cancel', label: 'Hủy' },
+        { id: 'apply', label: initialCombo ? 'Cập nhật & Mở chi tiết' : 'Thêm & Mở chi tiết', primary: true }
+      ]
+    });
+
+    if (ok !== 'apply') return;
+    if (!initialCombo) {
+      const problems = RL.comboProblems(rc.weapon, rc.scope, { grip: curGrip, muzzle: curMuzzle, stock: curStock });
+      if (problems.length) { toast(problems.map((p) => p.reason).join(' '), true); return; }
+    }
+    if (!(await discardOk())) return; // the curve on the right has unsaved changes
+
+    const dup = dupOf();
+    if (dup) toast(`Tổ hợp này ${DUP_TEXT[dup.kind]}: không thêm bản trùng, đã mở tổ hợp đó.`);
+    else rc.customCombos.add(RL.comboKey({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: curGrip, muzzle: curMuzzle, stock: curStock }));
+    rc.picked = { grip: curGrip, muzzle: curMuzzle, stock: curStock };
+    rc.editCurve = null;
+    rc.dirty = false;
+    rc.bad.clear();
+    redraw();
+    if (!dup && !initialCombo && wantSuggest.checked) {
+      try { await suggestPoints({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: curGrip, muzzle: curMuzzle, stock: curStock }); } catch (e) { toast(e.message, true); }
+    }
+  }
+
+  async function showAccessoryReferenceModal(ix) {
+    const specs = getAccessorySpecs(ix.idx, rc.weapon, rc.scope);
+
+    let selG = rc.picked ? rc.picked.grip : 0;
+    let selM = rc.picked ? rc.picked.muzzle : 0;
+    let selSt = rc.picked ? rc.picked.stock : 0;
+
+    const refBox = el('div', { class: ' text-xs ' });
+
+    function refreshSummary() {
+      const r = RL.resolve(ix.idx, { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: selG, muzzle: selM, stock: selSt });
+      const st = RL.curveStats(r.curve);
+      const label = `Tay cầm: ${specs.grips[selG].label} · Nòng: ${specs.muzzles[selM].label} · Báng: ${specs.stocks[selSt].label}`;
+      const multText = r.multiplier != null ? `×${r.multiplier.toFixed(4)}` : '1.000';
+
+      refBox.replaceChildren(
+        el('div', { class: 'flex items-center justify-between font-semibold' },
+          el('span', {}, label),
+          sourceTag(r)
+        ),
+        el('div', { class: 'grid gap-2 ' },
+          el('div', {}, el('span', { class: ' block ' }, 'Tổng hệ số:'), multText),
+          el('div', {}, el('span', { class: ' block ' }, 'Giá trị t=0:'), num(st.v0)),
+          el('div', {}, el('span', { class: ' block ' }, 'Giá trị cuối:'), num(st.vEnd)),
+          el('div', {}, el('span', { class: ' block ' }, 'Thời lượng:'), `${st.duration} ms (${st.points} mốc)`)
+        )
+      );
+    }
+
+    function renderTable(title, list, selectedIdx, onPick) {
+      const rows = list.map((item) => {
+        const factorClass = item.factor < 1 ? 'text-emerald-600 dark:text-emerald-400 font-bold' : item.factor > 1 ? 'text-amber-600 font-bold' : 'text-slate-400';
+        const reduction = item.factor !== 1 ? `${item.factor < 1 ? 'Giảm' : 'Tăng'} ${Math.abs((1 - item.factor) * 100).toFixed(1)}%` : 'Giữ nguyên';
+        const isCurrent = item.index === selectedIdx;
+        return el('tr', { class: `${isCurrent ? ' ' : ''} ` },
+          el('td', { class: 'num text-xs ' }, item.index),
+          el('td', { class: 'font-medium text-xs' }, item.label),
+          el('td', { class: 'mono text-xs ' }, item.raw),
+          el('td', { class: `num text-xs ${factorClass}` }, item.factor !== 1 ? `×${item.factor.toFixed(4)}` : '1.000'),
+          el('td', { class: 'text-xs ' }, reduction),
+          el('td', { class: 'act ' }, el('button', {
+            type: 'button',
+            class: `btn small${isCurrent ? ' primary' : ''}`,
+            onclick: () => onPick(item.index)
+          }, isCurrent ? 'Đang chọn' : 'Chọn'))
+        );
+      });
+
+      return el('div', { class: '' },
+        el('h3', { class: 'text-sm font-semibold mb-2 ' }, title),
+        el('div', { class: 'table-wrap overflow-x-auto ' },
+          el('table', { class: 'w-full text-xs' },
+            el('thead', { class: ' ' }, el('tr', {},
+              el('th', { class: ' ' }, '#'),
+              el('th', {}, 'Tên phụ kiện'),
+              el('th', {}, 'Mã hệ thống (Enum)'),
+              el('th', { class: '' }, 'Hệ số'),
+              el('th', {}, 'Tác dụng'),
+              el('th', { class: ' ' }, '')
+            )),
+            el('tbody', {}, rows)
+          )
+        )
+      );
+    }
+
+    const container = el('div', { class: ' ' });
+
+    function renderModalContent() {
+      container.replaceChildren(
+        el('p', { class: 'text-xs ' }, `Danh sách các trường của Tay cầm, Nòng, Báng và hệ số tương ứng đối với ${RL.weaponLabel(rc.weapon)} · ${RL.LABELS.SCOPES[rc.scope]}. Bấm "Chọn" ở từng trường để xem tham chiếu ngược lại giá trị độ giật:`),
+        renderTable('1. Các trường Tay cầm (GRIPS)', specs.grips, selG, (i) => { selG = i; refreshSummary(); renderModalContent(); }),
+        renderTable('2. Các trường Nòng (MUZZLES)', specs.muzzles, selM, (i) => { selM = i; refreshSummary(); renderModalContent(); }),
+        renderTable('3. Các trường Báng (STOCKS)', specs.stocks, selSt, (i) => { selSt = i; refreshSummary(); renderModalContent(); }),
+        refBox
+      );
+    }
+
+    refreshSummary();
+    renderModalContent();
+
+    const ok = await showModal({
+      title: 'Danh sách các trường phụ kiện & Tham chiếu hệ số',
+      body: container,
+      actions: [
+        { id: 'cancel', label: 'Đóng' },
+        { id: 'apply', label: 'Áp dụng tổ hợp này & Mở chi tiết', primary: true }
+      ]
+    });
+
+    if (ok === 'apply') {
+      if (!rc.customCombos) rc.customCombos = new Set();
+      const comboKey = `${rc.weapon}|${rc.scope}|${rc.gesture}|${selG}|${selM}|${selSt}`;
+      rc.customCombos.add(comboKey);
+      rc.picked = { grip: selG, muzzle: selM, stock: selSt };
+      rc.editCurve = null;
+      rc.dirty = false;
+      redraw();
+    }
+  }
+
+  // ---------------------------------------------------------------- combinations the page suggests adding
+  // Faint rows under the combinations table. The server finds them (similar guns that own a combination this gun does not, and kinds of
+  // combination where the coefficient curve is usually wrong); a little later the AI orders them and says why. Each row has a button that
+  // adds it at once; "Thêm tổ hợp" and the last row stay for adding by hand. The rows are updated in place, never by redrawing the page,
+  // so typing in the curve boxes is not interrupted.
+  const MAX_GHOST = 6; // shown at first; "Hiện thêm" shows the rest of the missing combinations (up to MAX_GHOST_ALL)
+  const MAX_GHOST_ALL = 300;
+  const comboId = (c) => `${c.grip}|${c.muzzle}|${c.stock}`;
+  const SRC_COMPUTED = 'Tính từ hệ số'; // the "Nguồn" of a combination without an own entry: every suggestion is one
+  // The accessories the table filter lets through, as the indexes the server knows (a column without a ticked list = any); null = no filter.
+  function filterConstraints() {
+    const out = {};
+    for (const [slot, col, kind] of [['grips', 'grip', 'GRIPS'], ['muzzles', 'muzzle', 'MUZZLES'], ['stocks', 'stock', 'STOCKS']]) {
+      const f = rc.filters[col];
+      if (f && f.values) out[slot] = RL.LABELS[kind].map((_, i) => i).filter((i) => f.values.has(optText(kind, i)));
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  // a suggestion as the table's filters see it (same columns and values as a row of the table)
+  const candVals = (c) => ({
+    grip: optText('GRIPS', c.grip), muzzle: optText('MUZZLES', c.muzzle), stock: optText('STOCKS', c.stock), source: SRC_COMPUTED,
+    v0: c.stats ? Number(c.stats.v0.toFixed(2)) : null, vEnd: c.stats ? Number(c.stats.vEnd.toFixed(2)) : null, duration: c.stats ? c.stats.duration : null, points: c.stats ? c.stats.points : null,
+  });
+  const candValue = (m, col) => m.vals[col];
+  const suggKey = () => `${S.data.file.etag}|${S.sel.id}|${rc.mode}|${rc.weapon}|${rc.scope}|${rc.gesture}|${JSON.stringify(filterConstraints())}`;
+
+  function startSuggestions() {
+    const key = suggKey();
+    if (rc.sugg && rc.sugg.key === key) return rc.sugg;
+    stopSuggestions();
+    const st = { key, status: 'loading', cands: [], missing: [], showMore: false, ai: { status: 'idle', model: '', reason: '', rank: new Map() }, aiEnabled: false, runAi: null, ac: new AbortController(), paint: null, timer: null };
+    rc.sugg = st;
+    if (!latest()) { st.status = 'none'; return st; } // a backup day: the server only knows the latest file
+    // with a filter on the table the server picks its candidates inside it, and the AI is told what the user filtered
+    const constraints = filterConstraints();
+    const body = { id: S.sel.id, mode: rc.mode, combo: { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture }, ...(constraints ? { filter: constraints } : {}) };
+    const paint = () => { if (rc.sugg === st && st.paint) st.paint(); };
+    // asks the AI to order the candidates; regenerate = "AI tạo lại": a fresh opinion (the old order stays if it fails)
+    st.runAi = (regenerate) => {
+      if (rc.sugg !== st || st.ai.status === 'loading') return;
+      st.ac = new AbortController();
+      st.ai.status = 'loading';
+      paint();
+      api('POST', '/ai/rank-combos', regenerate ? { ...body, regenerate: true } : body, { signal: st.ac.signal }).then((a) => {
+        if (rc.sugg !== st) return;
+        if (a.ok) { st.ai.status = 'ok'; st.ai.model = a.model || ''; st.ai.rank = new Map(a.ranking.map((x) => [comboId(x), x])); } else { st.ai.status = 'fail'; st.ai.reason = a.reason || ''; }
+        paint();
+      }).catch((e) => { if (rc.sugg === st) { st.ai.status = 'fail'; st.ai.reason = e.message || 'Không gọi được AI.'; paint(); } });
+    };
+    api('POST', '/recoil/combo-suggestions', body).then(async (r) => {
+      if (rc.sugg !== st) return;
+      st.cands = r.ok ? r.candidates : [];
+      st.missing = r.ok ? (r.missing || r.candidates) : []; // every combination the gun can still take, not only the best few
+      st.status = st.cands.length ? 'ok' : 'none';
+      paint();
+      if (st.status !== 'ok') return;
+      const status = await aiStatus();
+      if (!status.enabled || rc.sugg !== st) return;
+      st.aiEnabled = true;
+      paint();
+      // a short wait, so flipping through scopes, postures and filters does not send a request for each one
+      st.timer = setTimeout(() => st.runAi(false), 600);
+    }).catch(() => { if (rc.sugg === st) { st.status = 'none'; paint(); } });
+    return st;
+  }
+  function stopSuggestions() {
+    if (!rc.sugg) return;
+    clearTimeout(rc.sugg.timer);
+    rc.sugg.ac.abort(); // drops a question to the AI that is still waiting
+    rc.sugg = null;
+  }
+
+  // Adds a suggested combination to the list as if it was added by hand, and opens it.
+  async function addSuggested(c) {
+    if (!(await discardOk())) return;
+    if (!rc.customCombos) rc.customCombos = new Set();
+    rc.customCombos.add(RL.comboKey({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock }));
+    rc.picked = { grip: c.grip, muzzle: c.muzzle, stock: c.stock };
+    rc.editCurve = null;
+    rc.dirty = false;
+    rc.bad.clear();
+    redraw();
+    toast('Đã thêm tổ hợp. Bấm "Tính mốc (server + AI)" để tính các mốc cho nó.');
+  }
+
+  // Adds EVERY suggested combination (the whole list, not only the few shown) to the table as new ones: no points yet, nothing saved.
+  // "AI tạo mốc" then makes the points and "Lưu tất cả" writes them.
+  async function addAllSuggested(list) {
+    if (!list.length) return;
+    if (list.length > 40) {
+      const go = await showModal({
+        title: `Thêm ${list.length} tổ hợp?`, tone: 'warn',
+        body: el('p', {}, 'Mỗi tổ hợp sẽ thành một dòng mới (chưa lưu). Sau đó "AI tạo mốc" hỏi AI từng tổ hợp một nên có thể lâu; bạn dừng được bất cứ lúc nào.'),
+        actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Thêm ${list.length} tổ hợp`, primary: true }],
+      });
+      if (go !== 'go') return;
+    }
+    if (!(await discardOk())) return;
+    if (!rc.customCombos) rc.customCombos = new Set();
+    let added = 0;
+    for (const c of list) {
+      const key = RL.comboKey({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock });
+      if (!rc.customCombos.has(key)) { rc.customCombos.add(key); added++; }
+    }
+    rc.picked = null;
+    rc.editCurve = null;
+    rc.dirty = false;
+    rc.bad.clear();
+    redraw();
+    toast(`Đã thêm ${added} tổ hợp vào danh sách (chưa lưu). Bấm "AI tạo mốc" để tạo mốc cho chúng, rồi "Lưu tất cả".`);
+  }
+
+  // listedKeys: the combinations already in the table (they are not suggested again). The block sits under the table, outside the part that
+  // scrolls sideways, so the button is always in view. The few best candidates come first (the AI's order); "Hiện thêm" shows all the others
+  // the gun can still take, and "Thêm tất cả" adds them all.
+  function ghostList(ix, listedKeys, model) {
+    const st = startSuggestions();
+    const box = el('div', { class: 'ghost-list', role: 'region', 'aria-label': 'Gợi ý thêm tổ hợp' });
+    const paint = () => {
+      const rank = (c) => (st.ai.rank.has(comboId(c)) ? st.ai.rank.get(comboId(c)).rank : 99);
+      const candKeys = new Set(st.cands.map(comboId));
+      const extra = st.missing.filter((c) => !candKeys.has(comboId(c)));
+      // the same filters as the table; ordered like the table when it is sorted, otherwise by the AI's ranking (then the rest in the server's order)
+      const filtered = (list) => TF.applyFilters(list.filter((c) => !listedKeys.has(comboId(c))).map((c) => ({ c, vals: candVals(c) })), rc.filters, candValue);
+      const everyMissing = filtered([...st.cands, ...extra]).map((m) => m.c);
+      const pool = filtered(st.showMore ? [...st.cands, ...extra] : st.cands);
+      const open = st.cands.filter((c) => !listedKeys.has(comboId(c)));
+      const ordered = rc.sort ? TF.sortRows(pool, rc.sort, candValue) : pool.sort((x, y) => rank(x.c) - rank(y.c));
+      const shown = ordered.map((m) => m.c).slice(0, st.showMore ? MAX_GHOST_ALL : MAX_GHOST);
+      const addAllBtn = () => el('button', {
+        type: 'button', class: 'btn small', disabled: !everyMissing.length,
+        title: 'Thêm vào danh sách mọi tổ hợp súng này lắp được mà chưa có mục riêng (theo bộ lọc của bảng). Chưa lưu gì.',
+        onclick: guard(() => addAllSuggested(everyMissing)),
+      }, icon('plus'), `Thêm tất cả (${everyMissing.length})`);
+      const unsaved = pendingSaves().length;
+      if (!shown.length) {
+        // said only when the filter is what left nothing (suggestions that are already rows of the table are not "hidden by the filter")
+        const byFilter = TF.countActive(rc.filters) > 0 && (st.status === 'none' || (st.status === 'ok' && open.length > 0) || (st.missing.length > 0 && !everyMissing.length));
+        box.replaceChildren(
+          ...(byFilter && st.status !== 'loading' ? [el('div', { class: 'ghost-head' }, 'Không có gợi ý nào khớp bộ lọc của bảng. ', el('button', { type: 'button', class: 'btn small', onclick: () => { rc.filters = {}; rc.sort = null; redraw(); } }, icon('x'), 'Xóa bộ lọc'))] : []),
+          ...(everyMissing.length || unsaved ? [el('div', { class: 'ghost-head' },
+            el('span', {}, everyMissing.length ? `Còn ${everyMissing.length} tổ hợp súng này lắp được mà chưa có mục riêng${unsaved ? ` · ${unsaved} tổ hợp chưa lưu` : ''}` : `${unsaved} tổ hợp chưa lưu`),
+            el('span', { class: 'head-actions' }, everyMissing.length ? addAllBtn() : null, saveAllButton(model)))] : []));
+        return;
+      }
+      const aiNote = st.ai.status === 'loading' ? ' · AI đang xem…' : st.ai.status === 'ok' ? ` · AI (${st.ai.model || 'auto'}) đã xếp hạng` : st.ai.status === 'fail' ? ` · AI: ${st.ai.reason}` : '';
+      const items = shown.map((c) => {
+        const ai = st.ai.rank.get(comboId(c));
+        const why = [
+          c.gap ? `${c.gap.n}/${c.gap.of} súng tương tự có (${c.gap.names.slice(0, 3).join(', ')})` : c.seenIn ? `${c.seenIn} súng tương tự có` : null,
+          c.expectedError != null ? `hệ số thường lệch ~${Math.round(c.expectedError * 100)}% với loại này` : null,
+        ].filter(Boolean).join(' · ');
+        const name = `tay cầm: ${optText('GRIPS', c.grip)} · nòng: ${optText('MUZZLES', c.muzzle)} · báng: ${optText('STOCKS', c.stock)}`;
+        return el('div', { class: 'ghost-item' },
+          el('div', { class: 'ghost-text' },
+            el('div', { class: 'ghost-combo' }, name, c.multiplier != null ? el('span', { class: 'muted' }, ` ×${Number(c.multiplier.toFixed(3))}`) : null, ' ', el('span', { class: 'tag' }, 'gợi ý'), ai ? el('span', { class: 'tag ai-tag', title: ai.reason }, `AI #${ai.rank}`) : null),
+            el('div', { class: 'ghost-why' }, why || 'tổ hợp chưa có mục riêng'),
+            ai && ai.reason ? el('div', { class: 'ghost-ai' }, `AI: ${ai.reason}`) : null),
+          el('button', { type: 'button', class: 'btn small', title: 'Thêm tổ hợp này vào danh sách và mở nó', onclick: guard(() => addSuggested(c)) }, icon('plus'), 'Thêm'));
+      });
+      const hidden = everyMissing.length - shown.length;
+      const busy = st.ai.status === 'loading';
+      const regen = el('button', {
+        type: 'button', class: 'btn small', disabled: !st.aiEnabled || busy,
+        title: !st.aiEnabled ? 'AI chưa được bật (cần AI_API_KEY trong .env của server)' : busy ? 'AI đang xem…' : 'Hỏi AI xếp hạng lại các gợi ý này (theo bộ lọc hiện tại)',
+        onclick: () => st.runAi(true),
+      }, icon('sparkles'), 'AI tạo lại');
+      box.replaceChildren(
+        el('div', { class: 'ghost-head' }, el('span', {}, `Gợi ý thêm tổ hợp (chưa có mục riêng)${TF.countActive(rc.filters) ? ' · theo bộ lọc của bảng' : ''}${aiNote}`), el('span', { class: 'head-actions' }, addAllBtn(), regen, saveAllButton(model))),
+        ...items,
+        hidden > 0 || st.showMore ? el('div', { class: 'ghost-more' }, el('button', { type: 'button', class: 'btn small ghost', onclick: () => { st.showMore = !st.showMore; paint(); } }, st.showMore ? 'Thu gọn' : `Hiện thêm ${hidden} tổ hợp còn thiếu`)) : null,
+        el('div', { class: 'ghost-manual' }, el('button', { type: 'button', class: 'btn small', onclick: () => showComboModal(ix) }, icon('plus'), 'Hoặc thêm một tổ hợp khác bằng tay…')));
+    };
+    st.paint = paint;
+    paint();
+    return box;
+  }
+
   function recoilView(doc) {
     const ix = recoilIndex(doc);
-    const modeSel = el('select', { 'aria-label': 'Bộ dữ liệu', onchange: (e) => { rc.mode = e.target.value; rc.picked = null; redraw(); } },
+    const modeSel = el('select', { 'aria-label': 'Bộ dữ liệu', onchange: async (e) => {
+      if (!(await discardOk())) { e.target.value = rc.mode; return; }
+      rc.mode = e.target.value; rc.picked = null; rc.editCurve = null; rc.dirty = false; redraw();
+    } },
       Object.entries(MODE_VN).map(([m, label]) => el('option', { value: m, selected: m === rc.mode }, label)));
-    const headRow = el('div', { class: 'row' }, el('label', {}, 'Bộ dữ liệu: '), modeSel);
-    if (!ix.ds) return el('div', { class: 'card' }, headRow, el('p', {}, 'Bản này không có trường recoil_data.'));
+    const field = (label, control) => el('label', { class: 'numfield' }, label, control);
+    if (!ix.ds) return el('div', { class: 'card' }, el('div', { class: 'row' }, field('Bộ dữ liệu', modeSel)), el('p', {}, 'Bản này không có trường recoil_data.'));
     const sums = ix.sums;
-    const weaponSel = el('select', { 'aria-label': 'Súng', onchange: (e) => { rc.weapon = Number(e.target.value); rc.picked = null; redraw(); } },
+    const weaponSel = el('select', { 'aria-label': 'Súng', onchange: async (e) => {
+      if (!(await discardOk())) { e.target.value = rc.weapon; return; }
+      rc.weapon = Number(e.target.value); rc.picked = null; rc.editCurve = null; rc.dirty = false; redraw();
+    } },
       sums.map((s, w) => el('option', { value: w, selected: w === rc.weapon }, `${RL.weaponLabel(w)} — ${s.keys} khóa${s.entries > s.keys ? `, ${s.entries} mục` : ''}`)));
     const sum = sums[rc.weapon] || { keys: 0, entries: 0, byGesture: [0, 0, 0], byScope: [] };
-    const postureChips = el('div', { class: 'chips' }, POSTURE_VN.map((label, g) => el('button', { class: 'chip', 'aria-pressed': rc.gesture === g, onclick: () => { rc.gesture = g; rc.picked = null; redraw(); } }, `${label} (${sum.byGesture[g] || 0})`)));
-    const scopeChips = el('div', { class: 'chips' }, RL.SCOPES.map((raw, s) => el('button', { class: 'chip', title: raw, 'aria-pressed': rc.scope === s, onclick: () => { rc.scope = s; rc.picked = null; redraw(); } }, `${RL.LABELS.SCOPES[s]} (${sum.byScope[s] || 0})`)));
+    const postureSeg = segmented({
+      label: 'Tư thế',
+      options: POSTURE_VN.map((label, g) => ({ value: g, label: `${label} (${sum.byGesture[g] || 0})` })),
+      value: rc.gesture,
+      onchange: async (g) => { if (!(await discardOk())) return; rc.gesture = g; rc.picked = null; rc.editCurve = null; rc.dirty = false; redraw(); },
+    });
+    // the scopes the gun can take and has data for are the buttons; the others wait behind one line
+    const scopeChip = (s) => {
+      const problem = RL.comboProblems(rc.weapon, s, {})[0];
+      return el('button', { type: 'button', class: `chip${problem ? ' unsupported' : ''}`, title: problem ? problem.reason : RL.SCOPES[s], 'aria-pressed': rc.scope === s, onclick: async () => {
+        if (!(await discardOk())) return;
+        rc.scope = s; rc.picked = null; rc.editCurve = null; rc.dirty = false; redraw();
+      } }, `${RL.LABELS.SCOPES[s]} (${sum.byScope[s] || 0})`);
+    };
+    const mainScopes = RL.SCOPES.map((_, s) => s).filter((s) => rc.scope === s || ((sum.byScope[s] || 0) > 0 && !RL.comboProblems(rc.weapon, s, {}).length));
+    const otherScopes = RL.SCOPES.map((_, s) => s).filter((s) => !mainScopes.includes(s));
 
+    const specs = getAccessorySpecs(ix.idx, rc.weapon, rc.scope);
+    const coef = specs.coef;
+
+    if (!rc.customCombos) rc.customCombos = new Set();
+    const currPrefix = `${rc.weapon}|${rc.scope}|${rc.gesture}|`;
     let combos = RL.exactCombos(ix.idx, rc.weapon, rc.scope, rc.gesture);
+    for (const key of rc.customCombos) {
+      if (key.startsWith(currPrefix)) {
+        const [, , , g, m, st] = key.split('|').map(Number);
+        if (!combos.some((c) => c.grip === g && c.muzzle === m && c.stock === st)) {
+          combos.push({ grip: g, muzzle: m, stock: st, custom: true });
+        }
+      }
+    }
     if (rc.showAll) {
       combos = [];
-      for (let g = 0; g < RL.GRIPS.length; g++) for (let m = 0; m < RL.MUZZLES.length; m++) for (let st = 0; st < RL.STOCKS.length; st++) combos.push({ grip: g, muzzle: m, stock: st });
+      // every combination the gun can take, plus the ones it already has an own entry for (those stay visible, whatever the table says)
+      for (let g = 0; g < RL.GRIPS.length; g++) {
+        for (let m = 0; m < RL.MUZZLES.length; m++) {
+          for (let st = 0; st < RL.STOCKS.length; st++) {
+            const has = ix.idx.map.has(`${rc.weapon}|${rc.scope}|${g}|${m}|${st}|${rc.gesture}`);
+            if (has || !RL.comboProblems(rc.weapon, rc.scope, { grip: g, muzzle: m, stock: st }).length) combos.push({ grip: g, muzzle: m, stock: st });
+          }
+        }
+      }
     } else if (!combos.some((c) => !c.grip && !c.muzzle && !c.stock)) combos.unshift({ grip: 0, muzzle: 0, stock: 0 });
+    const zero = RL.isZeroWeapon(rc.weapon);
     const comboOf = (c) => ({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock });
-    const rows = combos.map((c) => {
+    // what the filter buttons of the table work on: one entry per combination with the value of each column
+    const sourceName = (r) => (r.source === 'exact' ? 'Có mục riêng' : r.source === 'zero' ? 'Luôn 0' : SRC_COMPUTED);
+    const model = combos.map((c) => {
       const r = RL.resolve(ix.idx, comboOf(c));
-      const st = RL.curveStats(r.curve);
-      const active = rc.picked && rc.picked.grip === c.grip && rc.picked.muzzle === c.muzzle && rc.picked.stock === c.stock;
-      return el('tr', { class: `pick${active ? ' active' : ''}`, onclick: () => { rc.picked = c; redraw(); } },
-        el('td', {}, opt('GRIPS', c.grip)), el('td', {}, opt('MUZZLES', c.muzzle)), el('td', {}, opt('STOCKS', c.stock)),
-        el('td', {}, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
-        el('td', { class: 'num' }, num(st.v0)), el('td', { class: 'num' }, num(st.vEnd)), el('td', { class: 'num' }, `${st.duration} ms`), el('td', { class: 'num' }, st.points));
+      const draft = rc.drafts.get(recoilKey(comboOf(c)));
+      const st = RL.curveStats(draft ? draft.curve : r.curve);
+      return { c, r, st, draft, vals: { grip: optText('GRIPS', c.grip), muzzle: optText('MUZZLES', c.muzzle), stock: optText('STOCKS', c.stock), source: sourceName(r), v0: Number(st.v0.toFixed(2)), vEnd: Number(st.vEnd.toFixed(2)), duration: st.duration, points: st.points } };
     });
-    const table = el('table', {}, el('thead', {}, el('tr', {}, ['Tay cầm', 'Nòng', 'Báng', 'Nguồn', 'Giá trị t=0', 'Giá trị cuối', 'Thời lượng', 'Mốc'].map((h) => el('th', {}, h)))),
-      el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', { colspan: 8, class: 'muted' }, 'Không có tổ hợp nào.'))));
-    const left = el('div', {},
-      el('div', { class: 'card' }, headRow,
-        el('div', { class: 'row' }, el('label', {}, 'Súng: '), weaponSel, el('span', { class: 'muted' }, `${ix.ds.key} · ${sum.keys} khóa, ${sum.entries} mục`)),
-        el('div', { class: 'muted' }, 'Tư thế'), postureChips, el('div', { class: 'muted' }, 'Ống ngắm (số khóa có dữ liệu)'), scopeChips,
-        el('label', { class: 'row' }, el('input', { type: 'checkbox', checked: rc.showAll, onchange: (e) => { rc.showAll = e.target.checked; redraw(); } }), 'Hiện mọi tổ hợp, kể cả tổ hợp tính từ hệ số')),
-      el('div', { class: 'card' }, el('h2', {}, `${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]}`), table,
-        el('p', { class: 'muted' }, 'Bấm một dòng để xem đường cong chi tiết. Đơn vị của "giá trị" chưa xác định. Thời gian tính từ lúc bắt đầu bắn.')));
-    return el('div', { class: 'layout' }, left, el('div', {}, rc.picked ? recoilDetail(ix, comboOf(rc.picked)) : el('div', { class: 'card muted' }, 'Bấm một dòng trong bảng để xem đường cong chi tiết.')));
+    const cellValue = (m, col) => m.vals[col];
+    const visible = TF.sortRows(TF.applyFilters(model, rc.filters, cellValue), rc.sort, cellValue);
+    const filtered = TF.countActive(rc.filters) > 0;
+    const setView = ({ filters, sort }) => { rc.filters = filters; rc.sort = sort; redraw(); };
+    const clearFilters = () => { rc.filters = {}; rc.sort = null; redraw(); };
+    const rows = visible.map(({ c, r, st, draft }) => {
+      const active = rc.picked && rc.picked.grip === c.grip && rc.picked.muzzle === c.muzzle && rc.picked.stock === c.stock;
+
+      const editBtn = zero ? null : el('button', {
+        type: 'button',
+        class: 'btn icon small ghost',
+        title: 'Sửa tổ hợp này',
+        onclick: (e) => { e.stopPropagation(); showComboModal(ix, c); }
+      }, icon('pencil'));
+
+      let delBtn = null;
+      if (zero) {
+        delBtn = null; // the app always uses a zero curve for this gun: nothing to edit or delete
+      } else if (r.source === 'exact') {
+        delBtn = el('button', {
+          type: 'button',
+          class: 'btn icon small ghost',
+          title: 'Xóa mục riêng (quay về tính theo hệ số)',
+          onclick: (e) => { e.stopPropagation(); deleteRecoil(ix, comboOf(c)); }
+        }, icon('trash'));
+      } else if (c.custom) {
+        delBtn = el('button', {
+          type: 'button',
+          class: 'btn icon small ghost',
+          title: 'Bỏ khỏi danh sách',
+          onclick: (e) => {
+            e.stopPropagation();
+            rc.customCombos.delete(`${rc.weapon}|${rc.scope}|${rc.gesture}|${c.grip}|${c.muzzle}|${c.stock}`);
+            if (active) rc.picked = null;
+            redraw();
+          }
+        }, icon('x'));
+      }
+
+      return el('tr', { class: `pick${active ? ' active' : ''}`, onclick: async () => {
+        if (!(await discardOk())) return;
+        rc.picked = c;
+        rc.editCurve = null;
+        rc.dirty = false;
+        redraw();
+      } },
+        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
+        el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
+        el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
+        el('td', { 'data-label': 'Nguồn' }, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
+        el('td', { class: 'num', 'data-label': 'Giá trị t=0' }, num(st.v0)),
+        el('td', { class: 'num', 'data-label': 'Giá trị cuối' }, num(st.vEnd)),
+        el('td', { class: 'num', 'data-label': 'Thời lượng' }, `${st.duration} ms`),
+        el('td', { class: 'num', 'data-label': 'Mốc' }, st.points),
+        el('td', { class: 'act' }, el('div', { class: 'row-btns hover-actions' }, editBtn, delBtn)));
+    });
+
+    const fh = (label, col, o = {}) => el('th', { 'aria-sort': FU.ariaSort(rc.sort, col), }, FU.header({ label, col, rows: model, valueOf: cellValue, filters: rc.filters, sort: rc.sort, onChange: setView, ...o }));
+    const table = el('table', { class: 'combo-table' },
+      el('thead', {}, el('tr', {}, [
+        fh('Tay cầm', 'grip'),
+        fh('Nòng', 'muzzle'),
+        fh('Báng', 'stock'),
+        fh('Nguồn', 'source'),
+        fh('Giá trị t=0', 'v0', { numeric: true, checklist: false }),
+        fh('Giá trị cuối', 'vEnd', { numeric: true, checklist: false }),
+        fh('Thời lượng', 'duration', { numeric: true }),
+        fh('Mốc', 'points', { numeric: true }),
+        el('th', {})
+      ])),
+      el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', { colspan: 9, class: 'muted' }, filtered ? el('span', {}, 'Không có tổ hợp nào khớp bộ lọc. ', el('button', { type: 'button', class: 'btn small', onclick: clearFilters }, 'Xóa bộ lọc')) : 'Không có tổ hợp nào.'))));
+    const ghosts = ghostList(ix, new Set(combos.map((c) => comboId(c))), model);
+
+    const addComboBtn = el('button', {
+      type: 'button',
+      class: 'btn primary small',
+      disabled: zero,
+      title: zero ? 'Súng này luôn dùng đường cong 0 trong app' : undefined,
+      onclick: () => showComboModal(ix)
+    }, icon('plus'), 'Thêm tổ hợp');
+
+    const refFieldsBtn = el('button', {
+      type: 'button',
+      class: 'btn small ghost',
+      onclick: () => showAccessoryReferenceModal(ix)
+    }, icon('layers'), 'Danh sách trường & hệ số');
+
+    const aiBtn = el('button', {
+      type: 'button', class: 'btn small', 'data-bulk': 'ai', disabled: zero || !latest() || (!rc.bulk && !aiTargets().length),
+      title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
+      onclick: guard(() => aiCreateAll()),
+    }, icon(rc.bulk ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, bulkLabel()));
+    const fillBtn = el('button', {
+      type: 'button', class: 'btn small', disabled: zero || !latest() || Boolean(rc.bulk),
+      title: 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
+      onclick: guard(() => fillGun(ix)),
+    }, icon('layers'), 'Tạo đủ cho cả súng');
+    const saveAllBtn = saveAllButton(model);
+    rc.model = model;
+    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, saveAllBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
+    const audit = auditOf(ix);
+    const mine = audit.filter((e) => e.weapon === rc.weapon);
+    const auditBtn = el('button', {
+      type: 'button', class: `btn small ${audit.length ? '' : 'ghost'}`, onclick: guard(() => showAuditModal(ix)),
+      title: audit.length ? 'Liệt kê các mục riêng không đúng bảng phụ kiện chuẩn (cả các súng khác) và chọn xóa' : 'Mọi mục riêng đều đúng bảng phụ kiện chuẩn',
+    }, icon(audit.length ? 'alert' : 'check'), `Kiểm tra theo chuẩn${audit.length ? ` (${audit.length})` : ''}`);
+    const auditNote = mine.length ? alert('warn', el('span', {}, `${RL.weaponLabel(rc.weapon)} có ${mine.length} mục riêng không đúng chuẩn phụ kiện (${[...new Set(mine.flatMap((e) => e.problems.map((p) => SLOT_VN[p.slot])))].join(', ')}). `,
+      el('button', { type: 'button', class: 'btn small', onclick: guard(() => showAuditModal(ix)) }, 'Xem và xóa'))) : null;
+    const rule = RL.describeAttachments(rc.weapon);
+    const selectors = el('div', { class: 'card' },
+      el('div', { class: 'row selector-row' }, field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), auditBtn, refFieldsBtn),
+      el('div', { class: 'muted text-sm mb-2' }, 'Ống ngắm'),
+      el('div', { class: 'chips' }, mainScopes.map(scopeChip)),
+      el('details', { class: 'disclosure flat' }, el('summary', {}, `Ống ngắm khác (${otherScopes.length}) và phụ kiện ${RL.weaponLabel(rc.weapon)} lắp được`),
+        el('div', { class: 'disclosure-body' },
+          otherScopes.length ? el('div', { class: 'chips' }, otherScopes.map(scopeChip)) : null,
+          el('p', { class: 'muted text-sm', title: rule ? `Nguồn: ${RL.attachmentsFor(rc.weapon).sourceLabel}. Bảng nằm ở admin/recoil.js (ATTACHMENT_RULES), tra cứu chi tiết ở docs/PhuKien_Sung_PUBG_Mobile.xlsx.` : undefined },
+            rule ? `${rule}. Chỉ ảnh hưởng việc THÊM tổ hợp mới và gợi ý của server/AI; các mục riêng đã có trong file không bị đổi.` : 'Chưa có quy tắc phụ kiện cho súng này: mọi lựa chọn đều được phép.'))));
+
+    const list = el('div', { class: 'recoil-list-col min-w-0' },
+      el('div', { class: 'card' },
+        el('div', { class: 'row' }, el('h2', {}, 'Tổ hợp phụ kiện'),
+          el('span', { class: 'muted', title: filtered ? `Đang lọc: ${TF.describe(rc.filters, { grip: 'Tay cầm', muzzle: 'Nòng', stock: 'Báng', source: 'Nguồn', v0: 'Giá trị t=0', vEnd: 'Giá trị cuối', duration: 'Thời lượng', points: 'Mốc' })}` : undefined }, filtered ? `${visible.length}/${model.length}` : String(model.length)),
+          filtered || rc.sort ? el('button', { type: 'button', class: 'btn small ghost', onclick: clearFilters }, icon('x'), `Xóa bộ lọc${filtered ? ` (${TF.countActive(rc.filters)})` : ''}`) : null,
+          addComboBtn),
+        auditNote,
+        bulkRow,
+        el('label', { class: 'row auto-step' },
+          el('input', { type: 'checkbox', checked: rc.showAll, onchange: (e) => { rc.showAll = e.target.checked; redraw(); } }),
+          'Hiện cả tổ hợp tính từ hệ số'),
+        el('div', { class: 'table-wrap' }, table),
+        ghosts,
+        el('p', { class: 'muted text-xs' }, 'Bấm một dòng để xem và sửa đường cong; bút để đổi phụ kiện của tổ hợp.')));
+    const detail = rc.picked ? el('div', { class: 'recoil-detail-col' }, recoilDetail(ix, comboOf(rc.picked))) : null;
+    return el('div', {}, selectors, el('div', { class: `layout recoil-layout${detail ? '' : ' single'}` }, list, detail));
+  }
+
+  const comboText = (o) => `${RL.weaponLabel(o.weapon)} · ${POSTURE_VN[o.gesture]} · ${RL.LABELS.SCOPES[o.scope]} · tay cầm: ${optText('GRIPS', o.grip)} · nòng: ${optText('MUZZLES', o.muzzle)} · báng: ${optText('STOCKS', o.stock)}`;
+
+  // the key of a combination (its own gun, scope and posture when it has them: combinations of the whole gun are not only the ones shown)
+  const recoilKey = (o) => `${o.weapon ?? rc.weapon}|${o.scope ?? rc.scope}|${o.gesture ?? rc.gesture}|${o.grip}|${o.muzzle}|${o.stock}|${rc.mode}`;
+
+  // Asks the server and the AI at the same time for the points of a combination, shows both, and puts the one the user picks into the
+  // editor as an unsaved change. Returns true when points were put in.
+  async function suggestPoints(o) {
+    if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return false; }
+    if (RL.isZeroWeapon(o.weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để tính.', true); return false; }
+    const status = await aiStatus();
+    const res = await window.SuggestUi.compare({
+      label: comboText(o),
+      body: { id: S.sel.id, mode: rc.mode, combo: { weapon: o.weapon, scope: o.scope, gesture: o.gesture, grip: o.grip, muzzle: o.muzzle, stock: o.stock } },
+      ai: status,
+      current: rc.editCurve && rc.editKey === recoilKey(o) ? rc.editCurve : null,
+    });
+    if (!res) return false;
+    if (!(await discardOk())) return false; // the editor has unsaved changes that these points would replace
+    rc.picked = { grip: o.grip, muzzle: o.muzzle, stock: o.stock };
+    rc.editKey = recoilKey(o);
+    rc.editCurve = res.curve;
+    rc.dirty = true;
+    rc.fresh = isNewCombo(o, RL.resolve(rc.idx.idx, o));
+    rc.freshBase = null;
+    rc.bad.clear();
+    redraw();
+    toast(`Đã điền ${res.curve.length} mốc từ kết quả của ${res.source === 'ai' ? 'AI' : 'server'} (chưa lưu).`);
+    return true;
+  }
+
+  // Writes the changed item back into the file on the server. The edit is applied to the item as the server holds it NOW
+  // (a conflict reloads the page first), and the file is written with the etag that was read together with it.
+  // stage(step, percent, text) says how far it is (a progress bar listens); onSaved() runs once the server has the file.
+  // The page then updates from what it just wrote: no second download of the file and no empty page in between.
+  async function putRecoilItem(updatedDoc, done, stage = () => {}, onSaved = () => {}) {
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+    stage(1, 50, 'Đang tạo file XML…');
+    await frame();
+    let newXml;
+    try {
+      newXml = CX.replaceMapItem(S.data.file.text, S.sel.id, updatedDoc);
+    } catch (e) {
+      toast(`Lỗi khi tạo XML: ${e.message}`, true);
+      return false;
+    }
+    stage(2, 60, `Đang gửi ${fmtBytes(textBytes(newXml))} lên server…`);
+    await frame();
+    let saved;
+    try {
+      saved = await api('PUT', `/sync/databases/${encodeURIComponent(CACHE_FILE)}`, { text: newXml, etag: S.data.file.etag });
+    } catch (err) {
+      if (err.status === 409) {
+        toast('File đã thay đổi trên server từ lúc bạn mở (có thể app vừa đồng bộ). Đã tải lại bản mới; kiểm tra rồi lưu lại.', true);
+        await refresh();
+        return false;
+      }
+      throw err;
+    }
+    stage(3, 92, 'Đang cập nhật trang…');
+    await frame();
+    toast(done);
+    onSaved();
+    rc.dirty = false;
+    rc.fresh = false;
+    rc.freshBase = null;
+    rc.editCurve = null;
+    rc.idx = null;
+    rc.bad.clear();
+    try {
+      const at = new Date().toISOString();
+      S.data.file = { ...S.data.file, text: newXml, etag: saved.etag, bytes: textBytes(newXml), updated_at: at, web_edit: { at } };
+      S.data.parsed = CX.parse(newXml);
+      S.data.analysis = CX.analyze(S.data.parsed);
+      redraw({ smooth: true });
+    } catch {
+      await refresh(); // the file is saved; if it cannot be read here, read it again from the server
+    }
+    return true;
+  }
+
+  async function saveRecoil(ix, o, curve) {
+    if (!latest()) { toast('Chỉ lưu được khi đang xem "Mới nhất", không lưu vào bản sao lưu cũ.', true); return; }
+    if (rc.bad.size) { toast('Có ô nhập không phải số hợp lệ. Sửa các ô viền đỏ trước khi lưu.', true); return; }
+    const checked = RL.checkCurve(curve);
+    if (!checked.ok) { toast(checked.error, true); return; }
+    const doc = S.data.analysis.docs.get(S.sel.id);
+    if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
+    let edit;
+    try { edit = RL.applyCurveEdit(doc, rc.mode, o, checked.curve); } catch (e) { toast(e.message, true); return; }
+
+    const ok = await showModal({
+      title: `Lưu thay đổi độ giật vào ${CACHE_FILE}?`,
+      body: [
+        el('p', {}, `Server sẽ lưu ${checked.curve.length} mốc của đường cong độ giật (bộ dữ liệu ${edit.key}) cho:`),
+        el('p', { class: 'mono font-semibold ' }, comboText(o)),
+        edit.created
+          ? alert('info', el('span', {}, 'Tổ hợp này đang được tính từ hệ số. Lưu sẽ tạo một mục riêng cho nó: từ đó đổi hệ số phụ kiện sẽ không còn ảnh hưởng tổ hợp này (xóa mục riêng để quay lại).'))
+          : edit.copies > 1 ? alert('info', el('span', {}, `Có ${edit.copies} mục trùng khóa; chỉ mục cuối (mục app dùng) được sửa.`)) : null,
+        el('p', {}, 'Bản hiện tại trên server sẽ được giữ trong lịch sử (tối đa 10 bản cũ để khôi phục).'),
+        alert('warn', window.Ui.webEditNote()),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: 'Lưu vào server', primary: true }],
+    });
+    if (ok !== 'save') return;
+    const savedKey = recoilKey(o);
+    await putRecoilItem(edit.doc, `Đã lưu thay đổi độ giật vào ${CACHE_FILE} trên server`, () => {}, () => { rc.drafts.delete(savedKey); if (rc.customCombos) rc.customCombos.delete(RL.comboKey(o)); });
+  }
+
+  async function deleteRecoil(ix, o) {
+    if (!latest()) { toast('Chỉ xóa được khi đang xem "Mới nhất", không xóa trong bản sao lưu cũ.', true); return; }
+    const doc = S.data.analysis.docs.get(S.sel.id);
+    if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
+    let edit;
+    try { edit = RL.removeEntry(doc, rc.mode, o); } catch (e) { toast(e.message, true); return; }
+    if (!edit.removed) { toast('Tổ hợp này không có mục riêng để xóa.'); return; }
+
+    const ok = await showModal({
+      title: 'Xóa mục riêng của tổ hợp này?',
+      tone: 'danger',
+      body: [
+        el('p', {}, `Bạn có chắc muốn xóa ${edit.removed > 1 ? `${edit.removed} mục riêng (trùng khóa)` : 'mục riêng'} của tổ hợp độ giật:`),
+        el('p', { class: 'mono font-semibold ' }, comboText(o)),
+        el('p', {}, 'Sau khi xóa, app sẽ quay về dùng đường cong tính từ hệ số (đường cong nền × hệ số phụ kiện). Bản cũ trên server sẽ được lưu trong lịch sử khôi phục.'),
+        alert('warn', window.Ui.webEditNote()),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'delete', label: 'Xóa mục riêng', danger: true }],
+    });
+    if (ok !== 'delete') return;
+    await putRecoilItem(edit.doc, 'Đã xóa mục riêng và lưu vào server');
+  }
+
+  // ---------------------------------------------------------------- "Kiểm tra theo chuẩn": own entries that the table of accessories says cannot exist
+  // (a grip on the M249, an 8x scope on a gun that stops at 6x). They are listed by gun; the user ticks what to delete (all of it with one box)
+  // and everything ticked goes in ONE write, with a bar that says how far it is. The copy on the server before is kept in the file's history.
+  const auditOf = (ix) => (ix.audit || (ix.audit = RL.auditEntries(ix.idx)));
+  const auditKey = (e) => `${e.weapon}|${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
+  const auditLine = (e) => `${RL.LABELS.SCOPES[e.scope]} · ${POSTURE_VN[e.gesture]} · ${comboLine(e)}`;
+  const SLOT_VN = { grip: 'tay cầm', muzzle: 'nòng', stock: 'báng', scope: 'ống ngắm' };
+
+  async function showAuditModal(ix) {
+    const all = auditOf(ix);
+    if (!all.length) { toast('Mọi mục riêng đều đúng chuẩn phụ kiện.'); return; }
+    const byGun = new Map();
+    for (const e of all) { if (!byGun.has(e.weapon)) byGun.set(e.weapon, []); byGun.get(e.weapon).push(e); }
+    const guns = [...byGun.keys()].sort((a, b) => (a === rc.weapon ? -1 : b === rc.weapon ? 1 : a - b)); // the gun being looked at first
+    const sel = new Set();
+    let ctl = null;
+
+    const allBox = el('input', { type: 'checkbox', id: 'audit-all' });
+    const counter = el('span', { class: 'muted' });
+    const deleteBtn = el('button', { type: 'button', class: 'btn danger-fill', disabled: true, onclick: () => ctl && ctl.close('delete') });
+    const sections = [];
+
+    const reasons = (list) => {
+      const n = {};
+      for (const e of list) for (const p of e.problems) n[p.slot] = (n[p.slot] || 0) + 1;
+      return Object.entries(n).map(([s, c]) => `${SLOT_VN[s]} ${c}`).join(', ');
+    };
+
+    function paintAll() {
+      for (const s of sections) s.paint();
+      const n = sel.size;
+      allBox.checked = n === all.length;
+      allBox.indeterminate = n > 0 && n < all.length;
+      counter.textContent = n ? `Đã chọn ${n}/${all.length} mục` : `${all.length} mục sai chuẩn`;
+      deleteBtn.replaceChildren(icon('trash'), `Xóa ${n} mục đã chọn`);
+      deleteBtn.disabled = n === 0;
+    }
+
+    for (const w of guns) {
+      const list = byGun.get(w);
+      const gunBox = el('input', { type: 'checkbox', 'aria-label': `Chọn mọi mục sai chuẩn của ${RL.weaponLabel(w)}` });
+      const body = el('div', { class: 'audit-items' });
+      const details = el('details', { class: 'audit-gun' });
+      const rows = new Map();
+      const section = {
+        paint() {
+          const n = list.filter((e) => sel.has(auditKey(e))).length;
+          gunBox.checked = n === list.length;
+          gunBox.indeterminate = n > 0 && n < list.length;
+          for (const [k, box] of rows) box.checked = sel.has(k);
+        },
+      };
+      gunBox.onchange = () => { for (const e of list) { if (gunBox.checked) sel.add(auditKey(e)); else sel.delete(auditKey(e)); } paintAll(); };
+      let built = false;
+      details.addEventListener('toggle', () => {
+        if (!details.open || built) return;
+        built = true; // the entries of a gun are drawn when it is opened (some guns have dozens)
+        body.replaceChildren(...list.map((e) => {
+          const k = auditKey(e);
+          const box = el('input', { type: 'checkbox', checked: sel.has(k), onchange: () => { if (box.checked) sel.add(k); else sel.delete(k); paintAll(); } });
+          rows.set(k, box);
+          return el('label', { class: 'audit-item' }, box, el('span', {}, auditLine(e), el('span', { class: 'muted' }, ` — ${e.problems.map((p) => SLOT_VN[p.slot]).join(', ')}${e.copies > 1 ? ` · ${e.copies} bản trùng` : ''}`)));
+        }));
+      });
+      details.append(el('summary', {}, el('span', { class: 'audit-name' }, RL.weaponLabel(w)), el('span', { class: 'muted' }, ` ${list.length} mục: ${reasons(list)}`)),
+        el('div', { class: 'disclosure-body' }, el('p', { class: 'muted text-sm' }, RL.describeAttachments(w) || ''), body));
+      sections.push(section);
+      section.node = el('div', { class: 'audit-row' }, gunBox, details);
+    }
+    allBox.onchange = () => { sel.clear(); if (allBox.checked) for (const e of all) sel.add(auditKey(e)); paintAll(); };
+    paintAll();
+
+    const choice = await showModal({
+      title: 'Kiểm tra theo chuẩn phụ kiện', tone: 'warn', className: 'wide',
+      body: [
+        el('p', {}, `${all.length} mục riêng (${new Set(all.map((e) => e.weapon)).size} súng) của bộ dữ liệu "${ix.ds.key}" không đúng bảng phụ kiện chuẩn: gắn phụ kiện hoặc ống ngắm mà súng đó không có. Đó là mục dư; app dùng đường cong theo hệ số khi một tổ hợp không có mục riêng.`),
+        el('label', { class: 'row audit-all' }, allBox, el('span', { class: 'font-semibold' }, 'Chọn tất cả mục dư'), counter),
+        el('div', { class: 'audit-list' }, sections.map((s) => s.node)),
+        el('div', { class: 'row' }, deleteBtn),
+      ],
+      actions: [{ id: 'close', label: 'Đóng' }],
+      onOpen: (c) => { ctl = c; },
+    });
+    if (choice !== 'delete' || !sel.size) return;
+    await deleteAudited(all.filter((e) => sel.has(auditKey(e))));
+  }
+
+  async function deleteAudited(list) {
+    if (!latest()) { toast('Chỉ xóa được khi đang xem "Mới nhất", không xóa trong bản sao lưu cũ.', true); return; }
+    if (!(await discardOk())) return;
+    const doc = S.data.analysis.docs.get(S.sel.id);
+    if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
+    const perGun = new Map();
+    for (const e of list) perGun.set(e.weapon, (perGun.get(e.weapon) || 0) + 1);
+    const lines = [...perGun].slice(0, 12).map(([w, n]) => el('li', {}, `${RL.weaponLabel(w)}: ${n} mục`));
+    const go = await showModal({
+      title: `Xóa ${list.length} mục riêng sai chuẩn?`, tone: 'error',
+      body: [
+        el('p', {}, `Sẽ xóa ${list.length} mục riêng (kể cả các bản trùng khóa) của ${perGun.size} súng khỏi bộ dữ liệu của mục này trên server:`),
+        el('ul', {}, lines),
+        perGun.size > lines.length ? el('p', { class: 'muted' }, `… và ${perGun.size - lines.length} súng nữa.`) : null,
+        el('p', { class: 'muted' }, 'Xóa một lần: bản hiện tại trên server được giữ một bản trong lịch sử (tối đa 10 bản cũ để khôi phục).'),
+        alert('warn', window.Ui.webEditNote()),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Xóa ${list.length} mục`, danger: true }],
+    });
+    if (go !== 'go') return;
+
+    const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} mục sai chuẩn…`, steps: ['Gom các mục cần xóa', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 10, detail: `Đang gom ${list.length} mục của ${perGun.size} súng…` });
+      await nextFrame();
+      const res = RL.removeEntries(doc, rc.mode, list);
+      bar.update({ step: 0, pct: 45, detail: `Đã gom ${res.removed} mục (${res.keys} tổ hợp)` });
+      const saved = await putRecoilItem(res.doc, `Đã xóa ${res.removed} mục sai chuẩn khỏi ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => {
+        rc.picked = null;
+        for (const e of list) rc.drafts.delete(recoilKey(e));
+      });
+      if (saved) await bar.finish(`Đã xóa ${res.removed} mục.`); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không xóa được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
+  }
+
+  // ---------------------------------------------------------------- everything unsaved in the list, at once
+  // "AI tạo mốc": the combinations added on this page get their points (the AI's, else the server's) as drafts; nothing is written.
+  // "Lưu tất cả": the drafts, the added combinations as they are, and the open one if it was edited, written in ONE go (so the history of
+  // the file keeps one old copy, not one per combination), with a bar that says what is being done.
+  const rcCombo = (c) => ({ weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock });
+  const isNewCombo = (o, r) => Boolean(rc.customCombos && rc.customCombos.has(RL.comboKey(o))) && r.source !== 'exact' && !RL.isZeroWeapon(o.weapon);
+  const comboLine = (o) => `tay cầm: ${optText('GRIPS', o.grip)} · nòng: ${optText('MUZZLES', o.muzzle)} · báng: ${optText('STOCKS', o.stock)}`;
+  const fullLine = (o) => `${RL.weaponLabel(o.weapon)} · ${RL.LABELS.SCOPES[o.scope]} · ${POSTURE_VN[o.gesture]} · ${comboLine(o)}`;
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+  // every added combination of this item that has no own entry yet, whatever its gun, scope or posture: [{ o, r, key }]
+  // (what "Lưu tất cả" saves and "AI tạo mốc" makes the points for is not only what the list shows now)
+  function pendingCombos() {
+    const out = [];
+    if (!rc.idx || !rc.customCombos) return out;
+    for (const k of rc.customCombos) {
+      const [weapon, scope, gesture, grip, muzzle, stock] = k.split('|').map(Number);
+      const o = { weapon, scope, gesture, grip, muzzle, stock };
+      const r = RL.resolve(rc.idx.idx, o);
+      if (isNewCombo(o, r)) out.push({ o, r, key: recoilKey(o) });
+    }
+    return out;
+  }
+
+  // [{ key, o, curve, how }] = what "Lưu tất cả" would write
+  function pendingSaves() {
+    const items = [];
+    for (const p of pendingCombos()) {
+      const open = rc.editKey === p.key && rc.editCurve;
+      const draft = rc.drafts.get(p.key);
+      items.push({ key: p.key, o: p.o, curve: open ? rc.editCurve : draft ? draft.curve : p.r.curve, how: draft ? ({ ai: 'AI', server: 'server', coef: 'theo hệ số' }[draft.source] || 'đã sửa') : open && rc.dirty && rc.freshBase && JSON.stringify(rc.editCurve) !== rc.freshBase ? 'đã sửa' : 'theo hệ số' });
+    }
+    // the open combination that already has an own entry and was edited
+    if (rc.picked && rc.dirty && rc.editCurve && rc.editKey === recoilKey(rcCombo(rc.picked)) && !items.some((i) => i.key === rc.editKey)) {
+      items.push({ key: rc.editKey, o: rcCombo(rc.picked), curve: rc.editCurve, how: 'đang sửa' });
+    }
+    return items;
+  }
+
+  // the added combinations that have no points of their own yet (and are not being edited by hand)
+  function aiTargets() {
+    return pendingCombos().filter((p) => !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
+  }
+
+  const bulkLabel = () => {
+    if (rc.bulk) return `Dừng (${rc.bulk.done}/${rc.bulk.total})`;
+    const n = aiTargets().length;
+    return `AI tạo mốc${n ? ` (${n})` : ''}`;
+  };
+
+  // the line and the bar under the buttons while the points are being made
+  function bulkBoxNodes() {
+    const b = rc.bulk;
+    if (!b) return [];
+    const bar = window.Ui.progressBar(b.total ? (b.done / b.total) * 100 : 0);
+    return [bar.node, el('span', {}, `Đang tạo mốc ${b.done}/${b.total} · AI ${b.ai} · server ${b.server}${b.failed ? ` · lỗi ${b.failed}` : ''}`)];
+  }
+
+  function paintBulk() {
+    const box = document.querySelector('.bulk-box');
+    if (box) box.replaceChildren(...bulkBoxNodes());
+    const label = document.querySelector('[data-bulk="ai"] .bulk-label');
+    if (label && rc.bulk) label.textContent = `Dừng (${rc.bulk.done}/${rc.bulk.total})`;
+  }
+
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  // how many AI questions this page keeps out at once: what the server allows (AI_CONCURRENCY), at most 4 (a free gateway answers slower models
+  // when it is pushed harder, so more threads do not make it faster)
+  const aiThreads = (status) => Math.max(1, Math.min(4, Number(status && status.concurrency) || 1));
+  async function runPool(items, size, fn) {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(size, items.length) }, async () => { while (next < items.length) { const item = items[next++]; await fn(item); } }));
+  }
+  // one question to the AI. "busy" (the server's slots are taken) and 429 / 5xx (the free endpoint asks to slow down) are waited out, up to 4 tries.
+  async function askAi(body, { signal, stopped = () => false } = {}) {
+    let last = null;
+    for (let attempt = 0; attempt < 4 && !stopped(); attempt++) {
+      try { last = await api('POST', '/ai/suggest-curve', body, { signal }); } catch (e) { return { ok: false, reason: e.message }; }
+      if (last.ok) return last;
+      const slowDown = /HTTP (429|5\d\d)/.test(last.reason || '');
+      if (!last.busy && !slowDown) return last;
+      await sleepMs(last.busy ? 1500 : 4000 * (attempt + 1));
+    }
+    return last || { ok: false, reason: 'Đã dừng.' };
+  }
+
+  async function aiCreateAll() {
+    if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
+    if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
+    const todo = aiTargets();
+    if (!todo.length) { toast('Không có tổ hợp mới nào cần tạo mốc. Thêm tổ hợp bằng "Thêm tổ hợp", "Thêm tất cả" hoặc "Tạo đủ cho cả súng".'); return; }
+    const status = await aiStatus();
+    const itemId = S.sel.id;
+    const ac = new AbortController();
+    rc.bulk = { ac, done: 0, total: todo.length, failed: 0, ai: 0, server: 0 };
+    redraw();
+    await runPool(todo, status.enabled ? aiThreads(status) : 6, async (m) => {
+      if (ac.signal.aborted || !active || !S.sel || S.sel.id !== itemId) return;
+      const o = m.o;
+      const body = { id: itemId, mode: rc.mode, combo: { weapon: o.weapon, scope: o.scope, gesture: o.gesture, grip: o.grip, muzzle: o.muzzle, stock: o.stock } };
+      const [srv, ai] = await Promise.all([
+        api('POST', '/recoil/suggest', body, { signal: ac.signal }).catch(() => null),
+        status.enabled ? askAi(body, { signal: ac.signal, stopped: () => ac.signal.aborted }) : Promise.resolve(null),
+      ]);
+      if (ac.signal.aborted) return;
+      let pick = null;
+      for (const [source, res] of [['ai', ai], ['server', srv]]) {
+        if (pick || !res || !res.ok) continue;
+        const checked = RL.checkCurve(res.curve);
+        if (checked.ok) pick = { source, curve: checked.curve };
+      }
+      if (pick) { rc.drafts.set(m.key, pick); rc.bulk[pick.source]++; } else rc.bulk.failed++;
+      rc.bulk.done++;
+      paintBulk();
+    });
+    const b = rc.bulk;
+    rc.bulk = null;
+    redraw();
+    if (b) toast(`${b.ac.signal.aborted ? 'Đã dừng. ' : ''}Đã tạo mốc cho ${b.ai + b.server}/${b.total} tổ hợp (AI ${b.ai}, server ${b.server}${b.failed ? `, lỗi ${b.failed}` : ''}). Chưa lưu: bấm "Lưu tất cả".`, b.failed > 0 && b.ai + b.server === 0);
+  }
+
+  function saveAllButton(model) {
+    const n = pendingSaves().length;
+    return el('button', {
+      type: 'button', class: 'btn small primary', 'data-save-all': '1', disabled: !latest() || !n || Boolean(rc.bulk),
+      title: n ? 'Lưu một lần mọi tổ hợp mới và tổ hợp đang sửa của mục này (cả các ống ngắm và tư thế khác)' : 'Không có tổ hợp nào chưa lưu',
+      onclick: guard(() => saveAll()),
+    }, icon('check'), el('span', { class: 'save-all-label' }, `Lưu tất cả${n ? ` (${n})` : ''}`));
+  }
+
+  // after a change that does not redraw the page (typing in the points): every "Lưu tất cả" button shows the new count
+  function paintSaveAll() {
+    if (!rc.model) return;
+    const n = pendingSaves().length;
+    for (const b of document.querySelectorAll('[data-save-all]')) {
+      b.disabled = !latest() || !n || Boolean(rc.bulk);
+      b.title = n ? 'Lưu một lần mọi tổ hợp mới và tổ hợp đang sửa của mục này (cả các ống ngắm và tư thế khác)' : 'Không có tổ hợp nào chưa lưu';
+      const label = b.querySelector('.save-all-label');
+      if (label) label.textContent = `Lưu tất cả${n ? ` (${n})` : ''}`;
+    }
+  }
+
+  async function saveAll() {
+    if (!latest()) { toast('Chỉ lưu được khi đang xem "Mới nhất", không lưu vào bản sao lưu cũ.', true); return; }
+    if (rc.bulk) { toast('Đang tạo mốc: đợi xong hoặc bấm "Dừng" rồi hãy lưu tất cả.', true); return; }
+    if (rc.bad.size) { toast('Có ô nhập không phải số hợp lệ. Sửa các ô viền đỏ trước khi lưu.', true); return; }
+    const items = pendingSaves();
+    if (!items.length) { toast('Không có gì chưa lưu.'); return; }
+    const doc = S.data.analysis.docs.get(S.sel.id);
+    if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
+    // everything is checked before anything is written: one bad curve stops the whole save
+    const plan = [];
+    for (const it of items) {
+      const checked = RL.checkCurve(it.curve);
+      if (!checked.ok) { toast(`${fullLine(it.o)}: ${checked.error}`, true); return; }
+      plan.push({ ...it, curve: checked.curve });
+    }
+    const places = new Set(plan.map((p) => `${p.o.weapon}|${p.o.scope}|${p.o.gesture}`)).size;
+    const guns = new Set(plan.map((p) => p.o.weapon)).size;
+    const bySource = {};
+    for (const p of plan) bySource[p.how] = (bySource[p.how] || 0) + 1;
+    const shown = plan.slice(0, 10);
+    const ok = await showModal({
+      title: `Lưu ${plan.length} tổ hợp vào ${CACHE_FILE}?`,
+      body: [
+        el('p', {}, `${plan.length} tổ hợp của ${guns} súng, ${places} cặp ống ngắm × tư thế, mỗi tổ hợp được ghi thành một mục riêng (tổ hợp đã có mục riêng thì được sửa). Nguồn mốc: ${Object.entries(bySource).map(([k, n]) => `${k} ${n}`).join(', ')}.`),
+        el('ul', {}, shown.map((p) => el('li', {}, fullLine(p.o), ' ', badge(p.how)))),
+        plan.length > shown.length ? el('p', { class: 'muted' }, `… và ${plan.length - shown.length} tổ hợp nữa.`) : null,
+        el('p', { class: 'muted' }, 'Ghi một lần: bản hiện tại trên server được giữ một bản trong lịch sử (tối đa 10 bản cũ để khôi phục).'),
+        alert('warn', window.Ui.webEditNote()),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: `Lưu ${plan.length} tổ hợp`, primary: true }],
+    });
+    if (ok !== 'save') return;
+
+    const bar = window.Ui.progressDialog({ title: `Đang lưu ${plan.length} tổ hợp…`, steps: ['Áp dụng từng tổ hợp', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 1, detail: 'Đang sao chép dữ liệu của mục này…' });
+      await nextFrame();
+      const editor = RL.curveEditor(doc, rc.mode); // one copy of the item for all the combinations
+      for (let i = 0; i < plan.length; i++) {
+        if (i % 10 === 0) { bar.update({ step: 0, pct: 2 + (i / plan.length) * 43, detail: `Tổ hợp ${i + 1}/${plan.length}: ${fullLine(plan[i].o)}` }); await nextFrame(); }
+        editor.apply(plan[i].o, plan[i].curve);
+      }
+      bar.update({ step: 0, pct: 45, detail: `Đã áp dụng ${plan.length}/${plan.length} tổ hợp` });
+      const saved = await putRecoilItem(editor.doc, `Đã lưu ${plan.length} tổ hợp vào ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => {
+        for (const p of plan) { rc.drafts.delete(p.key); if (rc.customCombos) rc.customCombos.delete(RL.comboKey(p.o)); }
+      });
+      if (saved) await bar.finish(`Đã lưu ${plan.length} tổ hợp.`); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không lưu được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
+  }
+
+  // ---------------------------------------------------------------- "Tạo đủ cho cả súng": every scope and every posture of the gun, in one go
+  // 1. the server says, for each scope the gun can take and each of the three postures, which combinations the gun can still take (the table of
+  //    accessories decides) and the page does not have yet; 2. the points are made: from similar guns where the server can, else the coefficient
+  //    curve, and the AI answers for the most important ones (it is slow); 3. everything is checked again (curves, the table, a second scan that
+  //    must find nothing new); 4. the combinations go into the list as unsaved ones. Then "Lưu tất cả" writes them in one go.
+  const FILL_POSTURES = [0, 1, 2];
+  const scopesOf = (weapon) => RL.SCOPES.map((_, s) => s).filter((s) => !RL.comboProblems(weapon, s, {}).some((p) => p.slot === 'scope'));
+  const priority = (m) => (m.gap ? 1000 + m.gap.support * 100 : 0) + (m.expectedError || 0) * 100;
+
+  async function scanGun(weapon, onStep = () => {}) {
+    const found = [];
+    const skipped = [];
+    const scopes = scopesOf(weapon);
+    const total = scopes.length * FILL_POSTURES.length;
+    let n = 0;
+    for (const scope of scopes) {
+      for (const gesture of FILL_POSTURES) {
+        onStep(++n, total, scope, gesture);
+        let r;
+        try { r = await api('POST', '/recoil/combo-suggestions', { id: S.sel.id, mode: rc.mode, combo: { weapon, scope, gesture } }); } catch (e) { skipped.push({ scope, gesture, reason: e.message }); continue; }
+        if (!r.ok) { skipped.push({ scope, gesture, reason: r.reason || '' }); continue; }
+        for (const m of r.missing || []) found.push({ weapon, scope, gesture, grip: m.grip, muzzle: m.muzzle, stock: m.stock, gap: m.gap, expectedError: m.expectedError });
+      }
+    }
+    return { found, skipped, scopes: scopes.length };
+  }
+
+  // is a curve believable next to the one the coefficients give? (start, end and duration within reach)
+  function plausible(curve, ref) {
+    if (!ref || !ref.length) return true;
+    const a = RL.curveStats(curve);
+    const b = RL.curveStats(ref);
+    const near = (x, y, tol) => (Math.abs(y) < 1e-9 ? Math.abs(x) < 1e-6 : Math.abs(x / y - 1) <= tol);
+    return near(a.v0, b.v0, 0.4) && near(a.vEnd, b.vEnd, 0.4) && near(a.duration, b.duration, 0.5);
+  }
+
+  async function fillGun(ix) {
+    if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
+    const weapon = rc.weapon;
+    if (RL.isZeroWeapon(weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để tạo.', true); return; }
+    if (rc.bulk || rc.filling) return;
+    if (!(await discardOk())) return;
+    rc.filling = true;
+    const gun = RL.weaponLabel(weapon);
+    try {
+      // ---- 1. scan (a quick pass: one request per scope and posture)
+      const scanBar = window.Ui.progressDialog({ title: `Đang quét ${gun}…`, steps: ['Quét các ống ngắm và tư thế'] });
+      let scan;
+      try {
+        scan = await scanGun(weapon, (n, total, scope, gesture) => scanBar.update({ step: 0, pct: (n / total) * 100, detail: `${RL.LABELS.SCOPES[scope]} · ${POSTURE_VN[gesture]} (${n}/${total})` }));
+      } finally { scanBar.close(); }
+      const have = rc.customCombos || new Set();
+      const todo = scan.found.filter((f) => !have.has(RL.comboKey(f)));
+      if (!todo.length) {
+        toast(scan.found.length ? `${gun}: mọi tổ hợp còn thiếu đã nằm trong danh sách (chưa lưu). Bấm "Lưu tất cả".` : `${gun}: đã đủ mọi tổ hợp theo bảng chuẩn, không còn gì để thêm.`);
+        return;
+      }
+
+      // ---- the question: how many for the AI
+      const status = await aiStatus();
+      const perScope = new Map();
+      for (const f of todo) { const k = f.scope; if (!perScope.has(k)) perScope.set(k, [0, 0, 0]); perScope.get(k)[f.gesture]++; }
+      const aiBox = el('input', { type: 'number', min: '0', max: String(todo.length), step: '1', value: String(status.enabled ? Math.min(10, todo.length) : 0), disabled: !status.enabled, 'aria-label': 'Số tổ hợp nhờ AI', class: 'fp-num' });
+      const go = await showModal({
+        title: `Tạo đủ tổ hợp cho ${gun}?`, tone: 'warn',
+        body: [
+          el('p', {}, `${gun} còn thiếu ${todo.length} tổ hợp trên ${scan.scopes} ống ngắm × 3 tư thế (theo bảng phụ kiện chuẩn).`),
+          el('ul', {}, [...perScope].map(([s, c]) => el('li', {}, `${RL.LABELS.SCOPES[s]}: đứng ${c[0]}, ngồi ${c[1]}, nằm ${c[2]}`))),
+          scan.skipped.length ? el('p', { class: 'muted' }, `Bỏ qua ${scan.skipped.length} cặp (không có đường cong nền của ống ngắm/tư thế đó): ${scan.skipped.slice(0, 6).map((s) => `${RL.LABELS.SCOPES[s.scope]} · ${POSTURE_VN[s.gesture]}`).join('; ')}${scan.skipped.length > 6 ? '…' : ''}.`) : null,
+          el('label', { class: 'field' }, status.enabled ? `Nhờ AI cho bao nhiêu tổ hợp quan trọng nhất? (mỗi tổ hợp khoảng 10–40 giây, chạy ${aiThreads(status)} luồng song song; 0 = không dùng AI)` : 'AI chưa được bật trên server: mốc do server tính', aiBox),
+          el('p', { class: 'muted text-sm' }, 'Mốc của các tổ hợp còn lại: server tính từ súng tương tự nếu có súng nào đã có mục riêng cho đúng tổ hợp đó, không thì lấy đường cong theo hệ số (đúng cái app đang dùng). Làm xong mọi thứ vẫn là bản nháp, chưa lưu; sau đó có bước kiểm tra lại.'),
+        ],
+        actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Tạo ${todo.length} tổ hợp`, primary: true }],
+      });
+      if (go !== 'go') return;
+      const aiLimit = status.enabled ? Math.max(0, Math.min(todo.length, Math.floor(Number(aiBox.value) || 0))) : 0;
+
+      // ---- 2. 3. 4.
+      const bar = window.Ui.progressDialog({ title: `Đang tạo ${todo.length} tổ hợp cho ${gun}…`, steps: ['Tính mốc (súng tương tự, hệ số)', 'AI tạo mốc', 'Kiểm tra lại', 'Thêm vào danh sách'] });
+      const made = new Map(); // comboKey -> { o, curve, source, ref }
+      const itemId = S.sel.id;
+      let stopAi = false;
+      try {
+        // points from the server, 6 at a time
+        let done = 0;
+        let cursor = 0;
+        const runOne = async () => {
+          while (cursor < todo.length) {
+            const f = todo[cursor++];
+            const o = { weapon, scope: f.scope, gesture: f.gesture, grip: f.grip, muzzle: f.muzzle, stock: f.stock };
+            const ref = RL.resolve(ix.idx, o).curve.map(([t, v]) => [Number(t), Number(v)]);
+            let pick = { source: 'coef', curve: ref };
+            try {
+              const r = await api('POST', '/recoil/suggest', { id: itemId, mode: rc.mode, combo: { weapon, scope: o.scope, gesture: o.gesture, grip: o.grip, muzzle: o.muzzle, stock: o.stock } });
+              const c = r.ok ? RL.checkCurve(r.curve) : null;
+              if (c && c.ok) pick = { source: 'server', curve: c.curve };
+            } catch { /* the coefficient curve stays */ }
+            made.set(RL.comboKey(o), { o, f, curve: pick.curve, source: pick.source, ref });
+            done++;
+            if (done % 8 === 0 || done === todo.length) bar.update({ step: 0, pct: 3 + (done / todo.length) * 40, detail: `Tính mốc ${done}/${todo.length}: ${RL.LABELS.SCOPES[o.scope]} · ${POSTURE_VN[o.gesture]}` });
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, todo.length) }, runOne));
+
+        // the AI, for the most important ones, one at a time
+        const important = [...made.values()].sort((a, b) => priority(b.f) - priority(a.f)).slice(0, aiLimit);
+        let aiOk = 0;
+        let aiBad = 0;
+        if (important.length) {
+          bar.setStop('Dừng AI (phần còn lại dùng kết quả của server)', () => { stopAi = true; });
+          let doneAi = 0;
+          await runPool(important, aiThreads(status), async (m) => {
+            if (stopAi) return;
+            const r = await askAi({ id: itemId, mode: rc.mode, combo: { weapon, scope: m.o.scope, gesture: m.o.gesture, grip: m.o.grip, muzzle: m.o.muzzle, stock: m.o.stock } }, { stopped: () => stopAi });
+            const c = r.ok ? RL.checkCurve(r.curve) : null;
+            if (c && c.ok && plausible(c.curve, m.ref)) { m.curve = c.curve; m.source = 'ai'; aiOk++; } else aiBad++;
+            doneAi++;
+            bar.update({ step: 1, pct: 43 + (doneAi / important.length) * 37, detail: `AI ${doneAi}/${important.length} (${aiThreads(status)} luồng song song): ${fullLine(m.o)}` });
+          });
+          bar.setStop(null);
+        }
+        bar.update({ step: 2, pct: 82, detail: 'Kiểm tra từng đường cong…' });
+        await nextFrame();
+
+        // ---- the check: every curve, the table of accessories, and a second scan that must find nothing new
+        let fixed = 0;
+        let suspect = 0;
+        let againstTable = 0;
+        for (const m of made.values()) {
+          const c = RL.checkCurve(m.curve);
+          if (!c.ok) { m.curve = m.ref; m.source = 'coef'; fixed++; }
+          if (RL.comboProblems(m.o.weapon, m.o.scope, m.o).length) againstTable++;
+          m.suspect = !plausible(m.curve, m.ref);
+          if (m.suspect) suspect++;
+        }
+        bar.update({ step: 2, pct: 86, detail: 'Quét lại các ống ngắm và tư thế…' });
+        const again = await scanGun(weapon);
+        const still = again.found.filter((f) => !made.has(RL.comboKey(f)) && !have.has(RL.comboKey(f)));
+
+        // ---- into the list
+        bar.update({ step: 3, pct: 95, detail: 'Thêm vào danh sách…' });
+        await nextFrame();
+        if (!rc.customCombos) rc.customCombos = new Set();
+        for (const [k, m] of made) {
+          rc.customCombos.add(k);
+          rc.drafts.set(recoilKey(m.o), { curve: m.curve, source: m.source, suspect: m.suspect });
+        }
+        rc.picked = null; rc.editCurve = null; rc.dirty = false; rc.bad.clear();
+        redraw();
+
+        const by = { ai: 0, server: 0, coef: 0 };
+        for (const m of made.values()) by[m.source]++;
+        const lines = [
+          `Đã thêm ${made.size} tổ hợp của ${gun} vào danh sách (chưa lưu): AI ${by.ai}, server (súng tương tự) ${by.server}, theo hệ số ${by.coef}.`,
+          aiLimit ? `AI: ${aiOk} tổ hợp dùng được${aiBad ? `, ${aiBad} không dùng được (lệch quá hoặc lỗi) nên giữ kết quả của server/hệ số` : ''}${stopAi ? '; đã dừng sớm' : ''}.` : 'Không dùng AI.',
+          `Kiểm tra lại: ${made.size - fixed}/${made.size} đường cong hợp lệ${fixed ? ` (${fixed} cái đã đổi về hệ số)` : ''}; ${againstTable ? `${againstTable} tổ hợp SAI bảng chuẩn` : 'không tổ hợp nào sai bảng chuẩn'}; quét lại ${still.length ? `còn thiếu ${still.length} tổ hợp` : 'không còn thiếu tổ hợp nào'}; ${suspect ? `${suspect} tổ hợp lệch nhiều so với hệ số (đánh dấu "xem lại" trong bảng)` : 'không có tổ hợp nào lệch bất thường'}.`,
+        ];
+        const total = pendingSaves().length;
+        await bar.result(lines, [
+          { label: `Lưu tất cả (${total})`, primary: true, onclick: () => guard(saveAll)() },
+          { label: 'Đóng, xem lại trong danh sách' },
+        ]);
+      } catch (e) {
+        await bar.fail(`Không tạo được: ${e.message || e}. Chưa có gì được thêm hay ghi.`);
+      }
+    } finally {
+      rc.filling = false;
+    }
   }
 
   function recoilDetail(ix, o) {
     const r = RL.resolve(ix.idx, o);
-    const st = RL.curveStats(r.curve);
-    const label = `${RL.weaponLabel(o.weapon)} · ${POSTURE_VN[o.gesture]} · ${RL.LABELS.SCOPES[o.scope]} · tay cầm: ${optText('GRIPS', o.grip)} · nòng: ${optText('MUZZLES', o.muzzle)} · báng: ${optText('STOCKS', o.stock)}`;
-    const pts = el('table', {}, el('thead', {}, el('tr', {}, ['#', 'Thời gian (ms)', 'Giá trị', 'Δ so với mốc trước'].map((h) => el('th', {}, h)))),
-      el('tbody', {}, r.curve.map(([t, v], i) => {
-        const disordered = i > 0 && t <= r.curve[i - 1][0];
-        const delta = i ? `${v - r.curve[i - 1][1] >= 0 ? '+' : ''}${(v - r.curve[i - 1][1]).toFixed(2)} / ${t - r.curve[i - 1][0]} ms` : '';
-        return el('tr', { class: disordered ? 'warnrow' : '', title: disordered ? 'Thời gian không lớn hơn mốc trước: đường cong nên tăng dần theo thời gian.' : undefined },
-          el('td', {}, i), el('td', { class: 'num' }, t), el('td', { class: 'num' }, num(v)), el('td', { class: 'num muted' }, delta));
-      })));
+    const comboKey = `${rc.weapon}|${rc.scope}|${rc.gesture}|${o.grip}|${o.muzzle}|${o.stock}|${rc.mode}`;
+    if (!rc.editCurve || rc.editKey !== comboKey) {
+      rc.editKey = comboKey;
+      const draft = rc.drafts.get(comboKey);
+      rc.editCurve = draft ? draft.curve : r.curve.map(([t, v]) => [Number(t), Number(v)]);
+      // a combination added on this page (by hand or from a suggestion) has no entry in the file yet: saving it is what is left to do, so the button is lit
+      const fresh = rc.customCombos && rc.customCombos.has(RL.comboKey(o)) && r.source !== 'exact' && !RL.isZeroWeapon(o.weapon) && latest();
+      rc.fresh = Boolean(fresh);
+      rc.freshBase = fresh && !draft ? JSON.stringify(rc.editCurve) : null;
+      rc.dirty = Boolean(fresh);
+      rc.bad.clear();
+    }
+    const curve = rc.editCurve;
+    const label = comboText(o);
+    const zero = RL.isZeroWeapon(o.weapon); // the app ignores this gun's data: nothing to save
+    const canSave = () => rc.dirty && latest() && !zero && rc.bad.size === 0;
+
+    const chartWrap = el('div', { class: 'chart-box my-3' });
+    const ptsSlot = el('div', { class: 'table-wrap my-2 overflow-x-auto' });
+    const summarySlot = el('span', {}, '');
+    const dirtyBadgeSlot = el('span', {}, '');
+
+    // two buttons (a node can only sit in one place): one beside the title, one under the table of points; both follow canSave()
+    const makeSaveBtn = () => el('button', {
+      type: 'button',
+      class: 'btn primary',
+      disabled: !canSave(),
+      onclick: guard(() => saveRecoil(ix, o, curve)),
+    }, icon('check'), 'Lưu độ giật vào server');
+    const saveBtns = [makeSaveBtn(), makeSaveBtn()];
+
+    const resetBtn = el('button', {
+      type: 'button',
+      class: 'btn small ghost',
+      disabled: !rc.dirty,
+      onclick: () => {
+        curve.splice(0, curve.length, ...r.curve.map(([t, v]) => [Number(t), Number(v)])); // in place: the boxes and the chart hold this very array
+        rc.drafts.delete(rc.editKey);
+        rc.freshBase = rc.fresh ? JSON.stringify(curve) : null;
+        rc.dirty = rc.fresh; // an added combination stays unsaved
+        rc.bad.clear();
+        renderPts();
+        updateLive();
+      },
+    }, 'Hoàn tác');
+
+    const openHistory = guard(() => {
+      if (window.Ui.restoreFromHistory) {
+        window.Ui.restoreFromHistory(CACHE_FILE, async () => {
+          rc.dirty = false;
+          rc.editCurve = null;
+          rc.idx = null;
+          await refresh();
+        });
+      }
+    });
+
+    function updateLive() {
+      const st = RL.curveStats(curve);
+      chartWrap.replaceChildren(chart(curve));
+      summarySlot.textContent = `${st.points} mốc, ${st.duration} ms, giá trị ${num(st.min)} … ${num(st.max)}`;
+      for (const b of saveBtns) b.disabled = !canSave();
+      resetBtn.disabled = !rc.dirty;
+      const untouched = rc.freshBase && JSON.stringify(curve) === rc.freshBase;
+      dirtyBadgeSlot.replaceChildren(rc.dirty ? badge(untouched ? 'Tổ hợp mới, chưa lưu vào server' : 'Có thay đổi chưa lưu', 'warn', { dot: true }) : badge('Đã đồng bộ', 'ok'));
+      paintSaveAll();
+    }
+
+    // A box was typed in. Only a finite number (and a time of 0 or more) goes into the curve; anything else keeps the old
+    // number there, marks the box and blocks saving, so a half-typed or absurd value (1e999) can never be written to the file.
+    function typed(e, i, col) {
+      const text = e.target.value.trim();
+      const n = text === '' ? NaN : Number(text);
+      const ok = Number.isFinite(n) && (col === 1 || n >= 0);
+      const k = `${i}:${col}`;
+      if (ok) { curve[i][col] = n; rc.bad.delete(k); } else rc.bad.add(k);
+      e.target.setAttribute('aria-invalid', ok ? 'false' : 'true');
+      e.target.title = ok ? '' : col === 0 ? 'Cần một số từ 0 trở lên' : 'Cần một số hữu hạn';
+      paintRow(i);
+      paintRow(i + 1);
+      rc.dirty = true;
+      updateLive();
+    }
+
+    // The boxes of the drawn rows, so recomputed points can be shown in place: a full redraw would drop the focus when the user tabs on.
+    let refs = [];
+    const deltaText = (i) => (i ? `${curve[i][1] - curve[i - 1][1] >= 0 ? '+' : ''}${(curve[i][1] - curve[i - 1][1]).toFixed(2)} / ${curve[i][0] - curve[i - 1][0]} ms` : '—');
+    const ORDER_HINT = 'Thời gian không lớn hơn mốc trước: đường cong nên tăng dần theo thời gian.';
+    function paintRow(i) {
+      const ref = refs[i];
+      if (!ref) return;
+      const disordered = i > 0 && curve[i][0] <= curve[i - 1][0];
+      ref.tr.className = disordered ? 'warnrow' : '';
+      if (disordered) ref.tr.title = ORDER_HINT; else ref.tr.removeAttribute('title');
+      ref.delta.textContent = deltaText(i);
+    }
+    // the later points were recomputed: put them in the boxes that are already on the page
+    function syncRows(from) {
+      for (let j = from; j < curve.length; j++) {
+        const ref = refs[j];
+        if (!ref) continue;
+        ref.t.value = String(curve[j][0]);
+        ref.v.value = String(Number(curve[j][1].toFixed(2)));
+        for (const b of [ref.t, ref.v]) { b.setAttribute('aria-invalid', 'false'); b.title = ''; }
+        rc.bad.delete(`${j}:0`);
+        rc.bad.delete(`${j}:1`);
+        paintRow(j);
+      }
+    }
+    // A box was left (or Enter): with "Tự tính các mốc sau" on, every later point of THAT column continues from the one before it.
+    function committed(i, col) {
+      if (!rc.autoStep || rc.bad.has(`${i}:${col}`)) return;
+      if (RL.cascadeFrom(curve, i, col, Math.random, rc.stepDir)) { rc.dirty = true; syncRows(i + 1); updateLive(); }
+    }
+
+    function renderPts() {
+      rc.bad.clear(); // the boxes are drawn again from the curve, which only holds good numbers
+      refs = [];
+      const rows = curve.map(([t, v], i) => {
+        const tInput = el('input', {
+          type: 'number',
+          min: '0',
+          step: '1',
+          value: t,
+          class: 'text-xs',
+          'aria-label': `Thời gian mốc ${i + 1}`,
+          oninput: (e) => typed(e, i, 0),
+          onchange: () => committed(i, 0),
+        });
+
+        const vInput = el('input', {
+          type: 'number',
+          step: 'any',
+          value: Number(v.toFixed(2)),
+          class: 'text-xs',
+          'aria-label': `Giá trị mốc ${i + 1}`,
+          oninput: (e) => typed(e, i, 1),
+          onchange: () => committed(i, 1),
+        });
+
+        const delBtn = el('button', {
+          type: 'button',
+          class: 'btn icon small danger',
+          title: 'Xóa mốc này',
+          disabled: curve.length <= 1,
+          onclick: () => {
+            curve.splice(i, 1);
+            rc.dirty = true;
+            renderPts();
+            updateLive();
+          },
+        }, icon('trash'));
+
+        const delta = el('td', { class: 'col-delta num muted text-xs' }, '');
+        const tr = el('tr', {},
+          el('td', { class: 'col-num num' }, i + 1),
+          el('td', { class: 'col-time' }, tInput),
+          el('td', { class: 'col-val' }, vInput),
+          delta,
+          el('td', { class: 'col-act act' }, delBtn));
+        refs[i] = { tr, t: tInput, v: vInput, delta };
+        return tr;
+      });
+
+      const table = el('table', { class: 'curve-table w-full' },
+        el('thead', {}, el('tr', {}, [
+          el('th', { class: 'col-num' }, '#'),
+          el('th', { class: 'col-time' }, 'Thời gian (ms)'),
+          el('th', { class: 'col-val' }, 'Giá trị'),
+          el('th', { class: 'col-delta' }, 'Δ so với mốc trước'),
+          el('th', { class: 'col-act' }, ''),
+        ])),
+        el('tbody', {}, rows));
+
+      ptsSlot.replaceChildren(table);
+      curve.forEach((_, i) => paintRow(i));
+    }
+
+    renderPts();
+    updateLive();
+
+    // "Thêm mốc": the new point continues from the last one (time and value both step up, see RecoilLib.STEP)
+    const addBtn = el('button', {
+      type: 'button',
+      class: 'btn small',
+      title: stepHint(),
+      onclick: () => {
+        curve.push(RL.nextPoint(curve, Math.random, rc.stepDir));
+        rc.dirty = true;
+        renderPts();
+        updateLive();
+        const last = refs[refs.length - 1];
+        if (last) last.t.focus();
+      },
+    }, icon('plus'), 'Thêm mốc');
+
+    const suggestBtn = el('button', {
+      type: 'button',
+      class: 'btn small',
+      disabled: !latest() || zero,
+      title: 'Server tính từ các súng tương tự và AI tính song song; bạn so sánh rồi chọn một kết quả để điền vào bảng bên dưới (chưa lưu).',
+      onclick: guard(() => suggestPoints(o)),
+    }, icon('sparkles'), 'Tính mốc (server + AI)');
+
+    const autoBox = el('label', { class: 'auto-step', title: `Khi sửa thời gian (hoặc giá trị) của một mốc, các mốc sau tự tính lại từ mốc đứng trước nó. ${stepHint()}` },
+      el('input', { type: 'checkbox', checked: rc.autoStep, onchange: (e) => { rc.autoStep = e.target.checked; try { localStorage.setItem(AUTO_KEY, rc.autoStep ? 'on' : 'off'); } catch { /* private mode */ } } }),
+      el('span', {}, 'Tự tính các mốc sau'));
+    const dirBox = el('label', { class: 'auto-step', title: `Hướng của GIÁ TRỊ khi tự tính (thời gian luôn tăng). ${stepHint()}` },
+      el('span', {}, 'Giá trị:'),
+      el('select', { 'aria-label': 'Hướng của giá trị khi tự tính', class: 'text-xs', onchange: (e) => { rc.stepDir = RL.DIRECTIONS.includes(e.target.value) ? e.target.value : 'up'; try { localStorage.setItem(DIR_KEY, rc.stepDir); } catch { /* private mode */ } } },
+        RL.DIRECTIONS.map((d) => el('option', { value: d, selected: d === rc.stepDir }, DIR_VN[d]))));
+
     const compare = el('table', {}, el('thead', {}, el('tr', {}, ['Tư thế', 'Nguồn', 'Giá trị t=0', 'Giá trị cuối', 'Thời lượng'].map((h) => el('th', {}, h)))),
       el('tbody', {}, POSTURE_VN.map((name, g) => {
         const rr = RL.resolve(ix.idx, { ...o, gesture: g });
         const s2 = RL.curveStats(rr.curve);
         return el('tr', { class: g === o.gesture ? 'active' : '' }, el('td', {}, name), el('td', {}, sourceTag(rr)), el('td', { class: 'num' }, num(s2.v0)), el('td', { class: 'num' }, num(s2.vEnd)), el('td', { class: 'num' }, `${s2.duration} ms`));
       })));
+
     const coef = RL.coefficientsFor(ix.idx, o.weapon, o.scope);
     const used = new Set(r.parts.map((p) => p.key));
     const coefTable = coef ? el('table', {}, el('tbody', {}, Object.entries(coef).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) =>
       el('tr', { class: used.has(k) ? 'active' : '' }, el('td', { title: k }, RL.coefLabel(k)), el('td', { class: 'num' }, typeof v === 'number' ? Number(v.toFixed(4)).toString() : String(v)))))) : el('p', { class: 'muted' }, 'Không có bảng hệ số.');
-    return el('div', { class: 'card' }, el('h2', {}, label),
-      el('dl', { class: 'kv' },
-        el('dt', {}, 'Nguồn'), el('dd', {}, sourceTag(r), r.source === 'exact' ? ' app dùng đúng mục này' : r.source === 'computed' ? ' = đường cong nền (đứng, không phụ kiện) × hệ số' : ''),
-        r.multiplier != null ? [el('dt', {}, 'Hệ số nhân'), el('dd', {}, r.parts.length ? `${r.parts.map((p) => `${p.label} ${Number(p.value.toFixed(4))}`).join(' × ')} = ${r.multiplier.toFixed(4)}` : '1 (không có hệ số áp dụng)')] : null,
-        r.copies > 1 ? [el('dt', {}, 'Trùng khóa'), el('dd', {}, `${r.copies} mục cùng khóa, ${r.distinct} nội dung khác nhau. App dùng mục xuất hiện cuối cùng.`)] : null,
-        el('dt', {}, 'Tóm tắt'), el('dd', {}, `${st.points} mốc, ${st.duration} ms, giá trị ${num(st.min)} … ${num(st.max)}`)),
-      r.notes.length ? el('ul', { class: 'muted' }, r.notes.map((n) => el('li', {}, n))) : null,
-      chart(r.curve), el('h2', {}, 'Từng mốc'), pts,
-      el('h2', {}, 'So sánh tư thế (cùng phụ kiện, ống ngắm)'), compare,
-      el('h2', {}, `Hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`), coefTable,
-      el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: () => { if (navigator.clipboard) navigator.clipboard.writeText(JSON.stringify(r.curve)); toast('Đã sao chép đường cong (JSON)'); } }, 'Sao chép đường cong JSON')));
+
+    // what the app does with this combination: an own entry, or the base curve times the coefficients
+    const how = r.source === 'exact' ? 'App dùng đúng mục này.' : r.source === 'computed' ? 'Chưa có mục riêng: đường cong nền (đứng, không phụ kiện) × hệ số. Lưu để tạo mục riêng.' : '';
+    const parts = r.multiplier != null ? (r.parts.length ? `${r.parts.map((p) => `${p.label} ${Number(p.value.toFixed(4))}`).join(' × ')} = ${r.multiplier.toFixed(4)}` : '1 (không có hệ số áp dụng)') : '';
+    const more = menuButton([
+      { label: 'Lịch sử & khôi phục', icon: 'history', onclick: openHistory },
+      { label: 'Sao chép đường cong (JSON)', icon: 'copy', onclick: () => copyText(JSON.stringify(curve), 'Đã sao chép đường cong (JSON)') },
+      ...(r.source === 'exact' ? [{ separator: true }, { label: 'Xóa mục riêng…', icon: 'trash', danger: true, onclick: guard(() => deleteRecoil(ix, o)) }] : []),
+    ], { label: 'Thao tác khác' });
+
+    return el('div', { class: 'card' },
+      el('div', { class: 'row' },
+        el('h2', {}, el('span', { class: 'sr-only' }, `${RL.weaponLabel(o.weapon)} · ${POSTURE_VN[o.gesture]} · ${RL.LABELS.SCOPES[o.scope]} · `), `Tay cầm: ${optText('GRIPS', o.grip)} · Nòng: ${optText('MUZZLES', o.muzzle)} · Báng: ${optText('STOCKS', o.stock)}`),
+        el('div', { class: 'head-actions' }, dirtyBadgeSlot, saveBtns[0], more)),
+      el('div', { class: 'meta' }, sourceTag(r), summarySlot),
+      r.copies > 1 ? alert('info', el('span', {}, `Có ${r.copies} mục trùng khóa (${r.distinct} nội dung khác nhau). App dùng mục xuất hiện cuối cùng.`)) : null,
+      r.notes.length ? el('ul', { class: 'muted text-xs' }, r.notes.map((n) => el('li', {}, n))) : null,
+      chartWrap,
+      el('h2', {}, 'Từng mốc'),
+      ptsSlot,
+      el('div', { class: 'row' }, addBtn, suggestBtn, resetBtn),
+      el('div', { class: 'row' }, saveBtns[1]),
+      el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
+        el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, stepHint()))),
+      el('details', { class: 'disclosure' }, el('summary', {}, 'Cách tính và hệ số'),
+        el('div', { class: 'disclosure-body' }, how ? el('p', { class: 'muted' }, how) : null, parts ? el('p', { class: 'mono' }, `Hệ số nhân: ${parts}`) : null,
+          el('h2', {}, 'So sánh tư thế (cùng phụ kiện, ống ngắm)'), compare,
+          el('h2', {}, `Hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`), coefTable)));
   }
 
-  async function refresh() { await load(); redraw(); }
+  async function refresh() { await load(); redraw({ smooth: true }); }
 
   // the command palette can jump to an item of the cache
   window.Palette.register(() => {
@@ -568,6 +2072,6 @@
   window.Analysis = {
     // called when the tab opens: fetches the file again, then returns the page
     async view() { active = true; S.sel = null; await load(); return draw(); },
-    leave() { active = false; clearInterval(pollTimer); pollTimer = null; if (lay.bg.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
+    leave() { active = false; stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (lay.bg.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
   };
 })();

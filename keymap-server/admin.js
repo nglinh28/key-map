@@ -15,7 +15,11 @@ const { DAY_RE } = require('./backup');
 const { DEVICE_ID_RE } = require('./devices');
 const CacheXml = require('./admin/cachexml');
 const { manifestOf, serverCheck } = require('./verify');
+const RecoilLib = require('./admin/recoil');
+const { analogCurve, comboCandidates } = require('./suggest');
+const { createAi } = require('./ai');
 
+const CACHE_FILE = 'gamwing_keymap_cache.xml';
 const CACHE_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const MAX_DELETE_IDS = 200;
 
@@ -26,6 +30,10 @@ const PAGES = {
   '/admin/': ['index.html', 'text/html; charset=utf-8'],
   '/admin/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/admin/recoil.js': ['recoil.js', 'text/javascript; charset=utf-8'],
+  '/admin/suggest-ui.js': ['suggest-ui.js', 'text/javascript; charset=utf-8'],
+  '/admin/standards.js': ['standards.js', 'text/javascript; charset=utf-8'],
+  '/admin/tablefilter.js': ['tablefilter.js', 'text/javascript; charset=utf-8'],
+  '/admin/filter-ui.js': ['filter-ui.js', 'text/javascript; charset=utf-8'],
   '/admin/edit.js': ['edit.js', 'text/javascript; charset=utf-8'],
   '/admin/layout.js': ['layout.js', 'text/javascript; charset=utf-8'],
   '/admin/cachexml.js': ['cachexml.js', 'text/javascript; charset=utf-8'],
@@ -70,6 +78,9 @@ const safeDecode = (s) => {
 
 function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
   const pageCache = new Map();
+  const ai = createAi(cfg.ai || {});
+  let analysisCache = { etag: '', docs: null }; // the parsed cache file, reused while its etag is the same
+  const indexCache = new Map(); // `${etag}|${id}|${mode}` -> RecoilLib index of that item (the last few)
 
   function json(res, status, body, extra = {}) {
     const data = JSON.stringify(body);
@@ -119,7 +130,53 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     });
   }
 
+  // The page's table filter, as the accessories it lets through: body.filter = { grips: [int], muzzles: [int], stocks: [int] } (a missing slot = any).
+  // constraints narrow the server's candidates; userFilter (names) tells the AI what the user is looking at.
+  function filterOf(body) {
+    const f = body && body.filter;
+    if (f === undefined || f === null) return { constraints: null, userFilter: null };
+    if (typeof f !== 'object' || Array.isArray(f)) return { error: 'Invalid filter' };
+    const slots = { grips: RecoilLib.GRIPS, muzzles: RecoilLib.MUZZLES, stocks: RecoilLib.STOCKS };
+    const constraints = {};
+    const userFilter = {};
+    for (const [key, names] of Object.entries(slots)) {
+      const v = f[key];
+      if (v === undefined || v === null) continue;
+      if (!Array.isArray(v) || v.length > names.length || !v.every((n) => Number.isInteger(n) && n >= 0 && n < names.length)) return { error: 'Invalid filter' };
+      constraints[key] = [...new Set(v)];
+      userFilter[key] = constraints[key].map((n) => names[n]);
+    }
+    return Object.keys(constraints).length ? { constraints, userFilter } : { constraints: null, userFilter: null };
+  }
+
   // POST /admin/api/cache/delete { file, ids, etag }: cuts items out of the keymap cache on the server now and leaves a command for the tablets.
+  // What both suggestion calls need: the recoil data of one item of the cache file, and the combination asked about.
+  function recoilContext(body, { partial = false } = {}) {
+    if (!body || typeof body.id !== 'string' || !CACHE_ID_RE.test(body.id)) return { status: 400, error: 'Invalid item id' };
+    if (!['touch', 'gyro', 'raw'].includes(body.mode)) return { status: 400, error: 'mode must be touch, gyro or raw' };
+    const c = body.combo;
+    const ok = (v, n) => Number.isInteger(v) && v >= 0 && v < n;
+    if (!c || typeof c !== 'object' || !ok(c.weapon, RecoilLib.WEAPONS.length) || !ok(c.scope, RecoilLib.SCOPES.length) || !ok(c.gesture, RecoilLib.POSTURES.length)
+      || (!partial && (!ok(c.grip, RecoilLib.GRIPS.length) || !ok(c.muzzle, RecoilLib.MUZZLES.length) || !ok(c.stock, RecoilLib.STOCKS.length)))) return { status: 400, error: 'Invalid combination' };
+    const file = databases.read(CACHE_FILE);
+    if (!file) return { status: 404, error: `File ${CACHE_FILE} chưa có trên server` };
+    if (analysisCache.etag !== file.etag) {
+      try { analysisCache = { etag: file.etag, docs: CacheXml.analyze(CacheXml.parse(file.text)).docs }; } catch { return { status: 400, error: 'File cache không đọc được' }; }
+    }
+    const doc = analysisCache.docs.get(body.id);
+    if (!doc) return { status: 404, error: 'Không tìm thấy mục này trong file cache' };
+    const ds = RecoilLib.pickDataset(doc, body.mode);
+    if (!ds) return { status: 400, error: 'Mục này không có recoil_data' };
+    const cacheKey = `${file.etag}|${body.id}|${body.mode}`;
+    let idx = indexCache.get(cacheKey);
+    if (!idx) {
+      idx = RecoilLib.indexData(ds.data);
+      indexCache.set(cacheKey, idx);
+      while (indexCache.size > 6) indexCache.delete(indexCache.keys().next().value);
+    }
+    return { idx, target: partial ? { weapon: c.weapon, scope: c.scope, gesture: c.gesture } : { weapon: c.weapon, scope: c.scope, gesture: c.gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock }, dataset: ds.key };
+  }
+
   async function deleteCacheItems(req, res) {
     const body = await jsonBody(req);
     const name = typeof body.file === 'string' ? body.file : 'gamwing_keymap_cache.xml';
@@ -192,6 +249,48 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     // ---- deleting items of the keymap cache (the web page asks, the tablet app does the same on its side)
     if (p === '/admin/api/cache/delete' && method === 'POST') return deleteCacheItems(req, res);
     if (p === '/admin/api/cache/commands' && method === 'GET') return json(res, 200, { commands: commands.list() });
+    // ---- points of a recoil combination: the page asks the server and the AI at the same time and lets the user pick one
+    if (p === '/admin/api/ai/status' && method === 'GET') return json(res, 200, ai.status());
+    if (p === '/admin/api/recoil/suggest' && method === 'POST') {
+      const ctx = recoilContext(await jsonBody(req));
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      const started = Date.now();
+      return json(res, 200, { ...analogCurve(ctx.idx, ctx.target), ms: Date.now() - started, dataset: ctx.dataset });
+    }
+    // combinations worth adding for one gun + scope + posture: found by the server; the AI only orders and explains them
+    if (p === '/admin/api/recoil/combo-suggestions' && method === 'POST') {
+      const body = await jsonBody(req);
+      const ctx = recoilContext(body, { partial: true });
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      const fl = filterOf(body);
+      if (fl.error) return err(res, 400, fl.error);
+      const started = Date.now();
+      return json(res, 200, { ...comboCandidates(ctx.idx, ctx.target, { constraints: fl.constraints }), ms: Date.now() - started, dataset: ctx.dataset });
+    }
+    if (p === '/admin/api/ai/rank-combos' && method === 'POST') {
+      const body = await jsonBody(req);
+      const ctx = recoilContext(body, { partial: true });
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      const fl = filterOf(body);
+      if (fl.error) return err(res, 400, fl.error);
+      const found = comboCandidates(ctx.idx, ctx.target, { constraints: fl.constraints });
+      if (!found.ok || !found.candidates.length) return json(res, 200, { ok: false, reason: found.reason || 'Không có tổ hợp nào để xếp hạng.', dataset: ctx.dataset });
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+      const r = await ai.rankCombos(ctx.idx, ctx.target, found.candidates, { signal: ac.signal, userFilter: fl.userFilter, regenerate: body.regenerate === true });
+      if (!r.ok) return json(res, 200, { ...r, dataset: ctx.dataset });
+      // answered by accessories, not by index, so the page can match them whatever order it holds
+      const ranking = r.ranking.map((x, n) => ({ grip: found.candidates[x.i].grip, muzzle: found.candidates[x.i].muzzle, stock: found.candidates[x.i].stock, rank: n + 1, reason: x.reason }));
+      return json(res, 200, { ok: true, ranking, model: r.model, ms: r.ms, dataset: ctx.dataset });
+    }
+    if (p === '/admin/api/ai/suggest-curve' && method === 'POST') {
+      const ctx = recoilContext(await jsonBody(req));
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      // the page closed its window (or left): stop waiting for the AI, so the next question is not told it is busy
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+      return json(res, 200, { ...(await ai.suggest(ctx.idx, ctx.target, { signal: ac.signal })), dataset: ctx.dataset });
+    }
     if ((m = /^\/admin\/api\/sync\/commands\/([^/]+)\/result$/.exec(p)) && method === 'POST') {
       if (!who) return err(res, 400, 'Invalid device id');
       const body = await jsonBody(req);
@@ -238,7 +337,9 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       const files = body && body.files;
       if (!validFiles(files)) return err(res, 400, 'Body must be {"files":[{"name":"…","text":"…"}]}');
       backups.actor = who ? (who.name || who.id) : 'Ứng dụng đồng bộ'; // recorded in the manifest of today's backup
-      const result = databases.put(who ? withoutDeleted(files, who.id) : files, { folder: body.folder, device: backups.actor });
+      const guarded = databases.filterDevicePush(who ? withoutDeleted(files, who.id) : files); // not over a web edit the phone has not received
+      const result = databases.put(guarded.allowed, { folder: body.folder, device: backups.actor });
+      result.skipped.push(...guarded.blocked);
       if (who) devices.recordPush(who.id, result);
       if (result.saved > 0) snapshotNow(); else backups.ensureToday();
       return json(res, 200, { saved: result.saved, unchanged: result.unchanged, skipped: result.skipped, changed: result.changed });
@@ -259,8 +360,15 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       backups.actor = 'Giao diện web';
       const r = databases.update(safeDecode(m[1]), body && body.text, body && body.etag);
       if (r.status !== 200) return json(res, r.status, { error: r.error, ...(r.etag ? { etag: r.etag } : {}) });
-      if (r.saved > 0) snapshotNow();
+      if (r.saved > 0) { databases.markWebEdit(safeDecode(m[1]), r.etag); snapshotNow(); } // only a save from the page: deleting items (above) is carried out by the tablet itself
       return json(res, 200, { ok: true, saved: r.saved, etag: r.etag, history: r.history });
+    }
+    // "Accept the phone's copy": forget that the web page edited the file, so the phone's next push may replace it.
+    if ((m = /^\/admin\/api\/sync\/databases\/([^/]+)\/web-edit$/.exec(p)) && method === 'DELETE') {
+      const name = safeDecode(m[1]);
+      if (!databases.read(name)) return err(res, 404, 'File not found');
+      databases.clearWebEdit(name);
+      return json(res, 200, { ok: true });
     }
     // ---- delete everything the server keeps (preference files with their history, daily backups).
     // Deliberate and noisy on purpose: a typed confirmation, and the last wipe is kept in <data>/_wiped/ so one mistake can be undone by hand.

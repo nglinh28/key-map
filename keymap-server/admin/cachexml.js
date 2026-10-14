@@ -231,5 +231,18 @@
     return { mapEntry, listEntry, hasMap: Boolean(mapEntry) };
   }
 
-  return { parse, analyze, diffEntries, entryValue, kindOf, guessKind, escapeXml, removeItems, sourceOf };
+  // Replaces the JSON content of map|<id> in gamwing_keymap_cache.xml with newDoc.
+  // Preserves everything else in the XML byte-for-byte.
+  function replaceMapItem(xml, id, newDoc) {
+    parse(xml); // refuses anything that is not a preferences file
+    if (typeof id !== 'string' || !ITEM_ID.test(id)) throw new Error(`id không hợp lệ: ${id}`);
+    const span = stringSpan(xml, `map|${id}`);
+    if (!span) throw new Error(`map|${id} không tồn tại trong XML`);
+    const newInner = escapeXml(JSON.stringify(newDoc));
+    const newXml = xml.slice(0, span.inner) + newInner + xml.slice(span.innerEnd);
+    parse(newXml); // verify that resulting XML is valid SharedPreferences XML
+    return newXml;
+  }
+
+  return { parse, analyze, diffEntries, entryValue, kindOf, guessKind, escapeXml, removeItems, sourceOf, replaceMapItem };
 });

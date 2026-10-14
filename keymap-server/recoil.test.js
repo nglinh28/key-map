@@ -201,3 +201,201 @@ test('the factor breakdown is written in Vietnamese', () => {
   const r = resolve(idx, { grip: G('THUMB'), muzzle: M('COMPENSATOR'), stock: K('GENERAL'), gesture: P('PRONE') });
   assert.deepEqual(r.parts.map((p) => p.label), ['Nòng: Nòng hãm giật', 'Tay cầm: Tay cầm ngón cái', 'Báng: Báng súng (Tactical Stock)', 'Tư thế: Nằm']);
 });
+
+// ---- editing a curve from the web page
+const combo = (o = {}) => ({ weapon: AUG, scope: S('X1'), grip: 0, muzzle: 0, stock: 0, gesture: 0, ...o });
+const docWith = (fill, modes = true) => {
+  const doc = { name: 'cfg', recoil_data: dataset(fill) };
+  if (modes) doc.ft_recoil_mode_profiles = { normal_touch_recoil_data: dataset(fill), gyro_recoil_data: dataset(fill) };
+  return doc;
+};
+const seeded = (g) => { g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100], [50, 80]])); };
+const curveOf = (doc, mode, o = combo()) => R.resolve(R.indexData(R.pickDataset(doc, mode).data), o);
+
+test('checkCurve: finite numbers only, time from 0, sorted by time, never Infinity/NaN/null', () => {
+  assert.deepEqual(R.checkCurve([[50, 2], [0, 1]]), { ok: true, curve: [[0, 1], [50, 2]] });
+  assert.deepEqual(R.checkCurve([['10', '2.5']]), { ok: true, curve: [[10, 2.5]] }, 'numeric text from the input boxes');
+  for (const bad of [[[0, Infinity]], [[0, NaN]], [[Infinity, 1]], [[0, null]], [[0, '']], [[-1, 1]], [[0]], [[0, 1, 2]], [], null, 'x', [null]]) {
+    const r = R.checkCurve(bad);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.ok(r.error.length > 0);
+  }
+  assert.match(R.checkCurve([[0, 1], [1e999, 1]]).error, /Mốc #2/);
+  assert.equal(JSON.stringify(R.checkCurve([[0, 1]]).curve), '[[0,1]]', 'what is stored contains no null');
+});
+
+test('applyCurveEdit: changes the LAST entry of the key, only in the dataset on screen, and does not touch the input', () => {
+  const doc = docWith((g) => { seeded(g); g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 90]])); });
+  const before = JSON.stringify(doc);
+  const r = R.applyCurveEdit(doc, 'touch', combo(), [[0, 1], [10, 2]]);
+  assert.equal(JSON.stringify(doc), before, 'the original is not mutated');
+  assert.equal(r.key, 'normal_touch_recoil_data');
+  assert.equal(r.created, false);
+  assert.deepEqual(curveOf(r.doc, 'touch').curve, [[0, 1], [10, 2]]);
+  const first = R.pickDataset(r.doc, 'touch').data[AUG].v[0].recoilValue;
+  assert.deepEqual(first, [[0, 100], [50, 80]], 'the earlier duplicate stays as it was');
+  assert.deepEqual(curveOf(r.doc, 'gyro').curve, [[0, 90]], 'gyro dataset untouched');
+  assert.deepEqual(curveOf(r.doc, 'raw').curve, [[0, 90]], 'raw dataset untouched');
+  const g = R.applyCurveEdit(doc, 'gyro', combo(), [[0, 7]]);
+  assert.equal(g.key, 'gyro_recoil_data');
+  assert.deepEqual(curveOf(g.doc, 'gyro').curve, [[0, 7]]);
+  assert.deepEqual(curveOf(g.doc, 'touch').curve, [[0, 90]]);
+  assert.equal(R.applyCurveEdit(doc, 'raw', combo(), [[0, 5]]).key, 'recoil_data');
+});
+
+test('applyCurveEdit: edits the dataset the page shows, also when the file has no mode profiles', () => {
+  const doc = docWith(seeded, false);
+  const r = R.applyCurveEdit(doc, 'touch', combo(), [[0, 3]]);
+  assert.equal(r.key, 'recoil_data', 'same fallback as pickDataset');
+  assert.equal(R.pickDataset(doc, 'touch').key, 'recoil_data');
+  assert.deepEqual(curveOf(r.doc, 'touch').curve, [[0, 3]]);
+});
+
+test('applyCurveEdit: a combination without its own entry gets one; the curve is sorted and checked', () => {
+  const doc = docWith(seeded);
+  const o = combo({ muzzle: M('COMPENSATOR'), gesture: P('CROUCH') });
+  assert.equal(curveOf(doc, 'touch', o).source, 'computed');
+  const r = R.applyCurveEdit(doc, 'touch', o, [[20, 5], [0, 6]]);
+  assert.equal(r.created, true);
+  const now = curveOf(r.doc, 'touch', o);
+  assert.equal(now.source, 'exact');
+  assert.deepEqual(now.curve, [[0, 6], [20, 5]]);
+  assert.throws(() => R.applyCurveEdit(doc, 'touch', o, [[0, Infinity]]), /Mốc #1/);
+  assert.throws(() => R.applyCurveEdit(doc, 'touch', o, []), /ít nhất 1 mốc/);
+});
+
+test('applyCurveEdit: refuses what the app would ignore or what the file cannot hold', () => {
+  const doc = docWith(seeded);
+  assert.throws(() => R.applyCurveEdit(doc, 'touch', combo({ weapon: W('MORTAR') }), [[0, 1]]), /luôn dùng đường cong 0/);
+  assert.throws(() => R.applyCurveEdit(doc, 'touch', combo({ weapon: W('Empty') }), [[0, 1]]), /luôn dùng đường cong 0/);
+  const short = { recoil_data: [{ v: [], coefficients: [] }] };
+  assert.throws(() => R.applyCurveEdit(short, 'raw', combo(), [[0, 1]]), /chưa có nhóm dữ liệu/, 'no empty groups are invented');
+  assert.throws(() => R.applyCurveEdit({ name: 'x' }, 'raw', combo(), [[0, 1]]), /không có recoil_data/);
+  assert.equal(short.recoil_data.length, 1);
+});
+
+test('removeEntry: drops every entry of the key and only those', () => {
+  const doc = docWith((g) => { seeded(g); g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 90]]), entry(1, 0, 0, S('X1'), 0, [[0, 70]])); });
+  const r = R.removeEntry(doc, 'touch', combo());
+  assert.equal(r.removed, 2);
+  assert.notEqual(curveOf(r.doc, 'touch').source, 'exact');
+  assert.equal(curveOf(r.doc, 'touch', combo({ grip: 1 })).source, 'exact', 'a neighbour stays');
+  assert.equal(curveOf(r.doc, 'gyro').source, 'exact', 'the other dataset stays');
+  assert.equal(R.removeEntry(doc, 'touch', combo({ scope: S('X2') })).removed, 0);
+  assert.equal(JSON.stringify(doc).includes('"recoilValue":[[0,90]]'), true, 'input not mutated');
+});
+
+test('isZeroWeapon: the two guns the app always zeroes', () => {
+  assert.equal(R.isZeroWeapon(W('Empty')) && R.isZeroWeapon(W('MORTAR')), true);
+  assert.equal(R.isZeroWeapon(AUG), false);
+});
+
+// ---- points added or recomputed by the page (time + 450..678 ms; value + or - 1.02..1.35; cumulative)
+const lo = () => 0, hi = () => 0.9999999;
+const seq = (...xs) => { let i = 0; return () => xs[i++ % xs.length]; };
+const near = (a, b) => Math.abs(a - b) < 1e-6;
+
+test('step ranges: time +450..678 ms in whole ms, value +1.02..1.35 (or minus), both ends reachable', () => {
+  assert.deepEqual(R.STEP, { time: [450, 678], value: [1.02, 1.35] });
+  assert.equal(R.stepTime(100, lo), 550);
+  assert.equal(R.stepTime(100, hi), 778);
+  assert.ok(near(R.stepValue(85.71, lo), 86.73));
+  assert.ok(near(R.stepValue(85.71, hi), 87.06));
+  assert.ok(near(R.stepValue(85.71, lo, 'down'), 84.69));
+  assert.ok(near(R.stepValue(85.71, hi, 'down'), 84.36));
+  for (let i = 0; i < 3000; i++) {
+    const t = R.stepTime(500) - 500;
+    assert.ok(Number.isInteger(t) && t >= 450 && t <= 678, `dt ${t}`);
+    const up = R.stepValue(3.14159, Math.random, 'up') - 3.14159;
+    const down = 3.14159 - R.stepValue(3.14159, Math.random, 'down');
+    assert.ok(up >= 1.02 - 1e-6 && up <= 1.35 + 1e-6, `up ${up}`);
+    assert.ok(down >= 1.02 - 1e-6 && down <= 1.35 + 1e-6, `down ${down}`);
+  }
+});
+
+test('direction: "random" picks up or down at random; anything unknown means up; values may go below zero', () => {
+  assert.deepEqual(R.DIRECTIONS, ['up', 'down', 'random']);
+  // random: first draw is the step, second decides the direction (below 0.5 = down)
+  assert.ok(near(R.stepValue(10, seq(0, 0.2), 'random'), 8.98));
+  assert.ok(near(R.stepValue(10, seq(0, 0.7), 'random'), 11.02));
+  let ups = 0, downs = 0;
+  for (let i = 0; i < 2000; i++) { const v = R.stepValue(10, Math.random, 'random'); if (v > 10) ups++; else downs++; }
+  assert.ok(ups > 700 && downs > 700, `${ups} up / ${downs} down`);
+  assert.ok(near(R.stepValue(10, lo, 'sideways'), 11.02));
+  assert.ok(near(R.stepValue(0.5, lo, 'down'), -0.52), 'a value near zero simply goes negative');
+});
+
+test('nextPoint continues from the last point; an empty curve starts at 0,0', () => {
+  const p = R.nextPoint([[0, 10], [200, 12]], lo);
+  assert.equal(p[0], 650);
+  assert.ok(near(p[1], 13.02));
+  assert.ok(near(R.nextPoint([[0, 10], [200, 12]], lo, 'down')[1], 10.98));
+  assert.deepEqual(R.nextPoint([], lo), [0, 0]);
+});
+
+test('cascadeFrom: only the points after the edited one change, one column at a time, each from the one before (cumulative)', () => {
+  const base = () => [[0, 10], [300, 11], [600, 12], [900, 13]];
+  const t = base();
+  assert.equal(R.cascadeFrom(t, 1, 0, lo), 2);
+  assert.deepEqual(t.map((p) => p[0]), [0, 300, 750, 1200], 'times: +450 each, starting from the edited time');
+  assert.deepEqual(t.map((p) => p[1]), [10, 11, 12, 13], 'values untouched');
+  const v = base();
+  assert.equal(R.cascadeFrom(v, 0, 1, hi), 3);
+  assert.deepEqual(v.map((p) => p[0]), [0, 300, 600, 900], 'times untouched');
+  assert.deepEqual(v.map((p) => p[1]), [10, 11.35, 12.7, 14.05], '+1.35 each time, from the previous value');
+  const d = base();
+  R.cascadeFrom(d, 1, 1, lo, 'down');
+  assert.deepEqual(d.map((p) => p[1]), [10, 11, 9.98, 8.96], '-1.02 each time');
+  assert.equal(R.cascadeFrom(base(), 3, 0, lo), 0, 'nothing after the last point');
+  assert.equal(R.cascadeFrom(base(), 9, 1, lo), 0);
+  // random, many times: every step stays inside the ranges, and the curve stays ascending in time
+  const r = [[0, 40], [1, 41], [2, 42], [3, 43], [4, 44]];
+  for (let n = 0; n < 200; n++) {
+    R.cascadeFrom(r, 0, 0);
+    R.cascadeFrom(r, 0, 1, Math.random, 'random');
+    for (let i = 1; i < r.length; i++) {
+      const dt = r[i][0] - r[i - 1][0];
+      const dv = Math.abs(r[i][1] - r[i - 1][1]);
+      assert.ok(dt >= 450 && dt <= 678, `dt ${dt}`);
+      assert.ok(dv >= 1.02 - 1e-6 && dv <= 1.35 + 1e-6, `dv ${dv}`);
+    }
+  }
+  assert.equal(R.checkCurve(r).ok, true);
+});
+
+// ---- adding a combination that is already there
+const keyOf2 = (o) => `${o.weapon}|${o.scope}|${o.gesture}|${o.grip}|${o.muzzle}|${o.stock}`;
+test('findDuplicateCombo: an own entry, one added on the page, or the default row counts as already there', () => {
+  const idx = R.indexData(dataset((g) => { seeded(g); g[AUG].v.push(entry(G('VERTICAL'), 0, 0, S('X1'), 0, [[0, 1]])); }));
+  const custom = new Set([keyOf2(combo({ muzzle: M('SUPPRESSOR') }))]);
+  assert.equal(keyOf2(combo()), `${AUG}|${S('X1')}|0|0|0|0`);
+  assert.deepEqual(R.findDuplicateCombo(idx, custom, combo({ grip: G('VERTICAL') })), { kind: 'exact', copies: 1 });
+  assert.deepEqual(R.findDuplicateCombo(idx, custom, combo({ muzzle: M('SUPPRESSOR') })), { kind: 'custom', copies: 0 });
+  assert.deepEqual(R.findDuplicateCombo(idx, new Set(), combo({ scope: S('X2'), grip: G('HALF') })), null, 'no entry, not listed: a new combination');
+  assert.deepEqual(R.findDuplicateCombo(idx, new Set(), combo({ grip: G('LIGHT') })), null);
+  // (none, none, none) is always listed: exact when the file has it, otherwise the default row
+  const noDefault = R.indexData(dataset((g) => { g[AUG].v.push(entry(G('VERTICAL'), 0, 0, S('X1'), 0, [[0, 1]])); }));
+  assert.deepEqual(R.findDuplicateCombo(noDefault, new Set(), combo()), { kind: 'default', copies: 0 });
+  assert.equal(R.comboKey(combo({ grip: 1, muzzle: 2, stock: 1, gesture: 2 })), `${AUG}|${S('X1')}|2|1|2|1`);
+});
+
+// ---- the curve the app computes from the coefficients, even when the combination has an own entry
+test('computedFor: base curve times the coefficients, ignoring any own entry; resolve still prefers the own entry', () => {
+  const idx = R.indexData(dataset((g) => {
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100], [50, 80]]));
+    g[AUG].v.push(entry(0, M('COMPENSATOR'), 0, S('X1'), 0, [[0, 55], [50, 44]])); // own entry, differs from base x 0.9
+  }));
+  const o = combo({ muzzle: M('COMPENSATOR') });
+  const c = R.computedFor(idx, o);
+  assert.deepEqual(c.curve.map(([t, v]) => [t, Math.round(v * 100) / 100]), [[0, 90], [50, 72]]);
+  assert.ok(Math.abs(c.multiplier - 0.9) < 1e-9);
+  assert.equal(c.baseMissing, false);
+  assert.equal(R.resolve(idx, o).source, 'exact');
+  assert.deepEqual(R.resolve(idx, o).curve, [[0, 55], [50, 44]]);
+  // no base: zeros, flagged
+  const none = R.computedFor(R.indexData(dataset(() => {})), o);
+  assert.equal(none.baseMissing, true);
+  assert.deepEqual(none.curve, [[0, 0]]);
+  // the zero guns
+  assert.deepEqual(R.computedFor(idx, combo({ weapon: W('MORTAR') })).curve, [[0, 0]]);
+});
