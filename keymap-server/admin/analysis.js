@@ -58,6 +58,8 @@
   async function discardOk() {
     if (!rc.dirty) return true;
     if (rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase) return true; // an added combination nobody has touched: nothing to lose
+    const review = rc.drafts.get(rc.editKey);
+    if (review && review.review) return true; // "AI đề xuất" for an existing entry: the draft keeps the edits, "Lưu tất cả" writes it
     if (rc.fresh && rc.editKey && rc.editCurve) {
       // an added combination keeps what was done to it ("Lưu tất cả" writes it with the others): nothing is lost by leaving
       const prev = rc.drafts.get(rc.editKey);
@@ -281,7 +283,16 @@
 
   const colHead = () => ['Tên', 'Dung lượng', ''].map((h, i) => el('th', { class: i === 0 ? 'col-name' : i === 1 ? 'col-size num' : '' }, h)); // new elements each time: a node has only one parent
 
-  function openItem(it) {
+  async function openItem(it) {
+    if (rc.itemId !== it.id && rc.itemId && rc.drafts.size) {
+      const go = await showModal({
+        title: 'Bỏ các mốc chưa lưu?', tone: 'warn',
+        body: el('p', {}, `Mục đang mở còn ${rc.drafts.size} tổ hợp có mốc chưa lưu (AI tạo hoặc AI đề xuất). Mở mục khác sẽ bỏ chúng.`),
+        actions: [{ id: 'stay', label: 'Ở lại' }, { id: 'drop', label: 'Bỏ và mở mục khác', danger: true }],
+      });
+      if (go !== 'drop') return;
+      if (rc.bulk) rc.bulk.ac.abort();
+    }
     if (rc.itemId !== it.id) { rc.itemId = it.id; rc.drafts.clear(); rc.customCombos = new Set(); } // added combinations and drafts belong to one item
     S.sel = { id: it.id, kind: it.kind, ns: it.ns, label: it.label };
     lay.selected = null;
@@ -1090,7 +1101,7 @@
         rc.dirty = false;
         redraw();
       } },
-        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
+        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
         el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
         el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
         el('td', { 'data-label': 'Nguồn' }, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
@@ -1141,9 +1152,15 @@
       title: 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
       onclick: guard(() => fillGun(ix)),
     }, icon('layers'), 'Tạo đủ cho cả súng');
+    const scanAllBtn = el('button', {
+      type: 'button', class: 'btn small', disabled: zero || !latest() || Boolean(rc.bulk),
+      title: 'Rà soát MỌI mục riêng của súng này (mọi ống ngắm × tư thế): server tìm mục lệch so với súng tương tự hoặc không nhất quán, AI xem lại từng mục theo bảng chuẩn và đề xuất mốc mới. Chưa lưu gì: bấm "Lưu tất cả".',
+      onclick: guard(() => scanAll()),
+    }, icon('search'), 'Quét tất cả');
+    const aiSettingsBtn = el('button', { type: 'button', class: 'btn small ghost', title: 'Các nguồn AI (địa chỉ, khóa API, model) và thứ tự ưu tiên', onclick: guard(() => showAiSettings()) }, icon('command'), 'Cài đặt AI');
     const saveAllBtn = saveAllButton(model);
     rc.model = model;
-    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, saveAllBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
+    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, scanAllBtn, saveAllBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
     const audit = auditOf(ix);
     const mine = audit.filter((e) => e.weapon === rc.weapon);
     const auditBtn = el('button', {
@@ -1469,6 +1486,12 @@
       const draft = rc.drafts.get(p.key);
       items.push({ key: p.key, o: p.o, curve: open ? rc.editCurve : draft ? draft.curve : p.r.curve, how: draft ? ({ ai: 'AI', server: 'server', coef: 'theo hệ số' }[draft.source] || 'đã sửa') : open && rc.dirty && rc.freshBase && JSON.stringify(rc.editCurve) !== rc.freshBase ? 'đã sửa' : 'theo hệ số' });
     }
+    // "Quét tất cả": proposals of the AI for entries that already exist (only those of the dataset shown: touch / gyro / raw)
+    for (const [key, d] of rc.drafts) {
+      if (!d.review || !key.endsWith(`|${rc.mode}`) || items.some((i) => i.key === key)) continue;
+      const open = rc.editKey === key && rc.editCurve;
+      items.push({ key, o: d.o, curve: open ? rc.editCurve : d.curve, how: 'AI đề xuất' });
+    }
     // the open combination that already has an own entry and was edited
     if (rc.picked && rc.dirty && rc.editCurve && rc.editKey === recoilKey(rcCombo(rc.picked)) && !items.some((i) => i.key === rc.editKey)) {
       items.push({ key: rc.editKey, o: rcCombo(rc.picked), curve: rc.editCurve, how: 'đang sửa' });
@@ -1492,6 +1515,7 @@
     const b = rc.bulk;
     if (!b) return [];
     const bar = window.Ui.progressBar(b.total ? (b.done / b.total) * 100 : 0);
+    if (b.review) return [bar.node, el('span', {}, `Đang rà soát ${b.done}/${b.total} · đề xuất đổi ${b.changed} · giữ nguyên ${b.same}${b.failed ? ` · lỗi ${b.failed}` : ''}`)];
     return [bar.node, el('span', {}, `Đang tạo mốc ${b.done}/${b.total} · AI ${b.ai} · server ${b.server}${b.failed ? ` · lỗi ${b.failed}` : ''}`)];
   }
 
@@ -1511,10 +1535,10 @@
     await Promise.all(Array.from({ length: Math.min(size, items.length) }, async () => { while (next < items.length) { const item = items[next++]; await fn(item); } }));
   }
   // one question to the AI. "busy" (the server's slots are taken) and 429 / 5xx (the free endpoint asks to slow down) are waited out, up to 4 tries.
-  async function askAi(body, { signal, stopped = () => false } = {}) {
+  async function askAi(body, { signal, stopped = () => false, route = '/ai/suggest-curve' } = {}) {
     let last = null;
     for (let attempt = 0; attempt < 4 && !stopped(); attempt++) {
-      try { last = await api('POST', '/ai/suggest-curve', body, { signal }); } catch (e) { return { ok: false, reason: e.message }; }
+      try { last = await api('POST', route, body, { signal }); } catch (e) { return { ok: false, reason: e.message }; }
       if (last.ok) return last;
       const slowDown = /HTTP (429|5\d\d)/.test(last.reason || '');
       if (!last.busy && !slowDown) return last;
@@ -1628,6 +1652,165 @@
       if (saved) await bar.finish(`Đã lưu ${plan.length} tổ hợp.`); else bar.close();
     } catch (e) {
       await bar.fail(`Không lưu được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
+  }
+
+
+  // ---------------------------------------------------------------- "Quét tất cả": the AI reviews the entries the gun already has
+  // 1. the server looks at every own entry of the gun (every scope and posture) without AI and says which look odd (far from similar guns,
+  //    crouch/prone above standing, more accessories pulling harder); 2. the user picks: only those, or every entry, and how many at most;
+  // 3. the AI reviews them one by one against the same evidence and the table of accessories, the answer checked against the current entry;
+  // 4. a change of 3% or more becomes a draft "AI đề xuất" (nothing written). Then "Lưu tất cả" writes them in one go.
+  const REVIEW_MIN_CHANGE = 0.03;
+  async function scanAll() {
+    if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
+    const weapon = rc.weapon;
+    if (RL.isZeroWeapon(weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để rà soát.', true); return; }
+    if (rc.bulk || rc.filling) return;
+    if (!(await discardOk())) return;
+    aiStatusP = null;
+    const status = await aiStatus();
+    if (!status.enabled) { toast('AI chưa được bật: thêm một nguồn AI trong "Cài đặt AI".', true); return; }
+    const gun = RL.weaponLabel(weapon);
+    const itemId = S.sel.id;
+    const mode = rc.mode;
+    let scan;
+    try { scan = await api('POST', '/recoil/review-scan', { id: itemId, mode, combo: { weapon, scope: rc.scope, gesture: rc.gesture } }); } catch (e) { toast(e.message, true); return; }
+    if (!scan.total) { toast(`${gun}: chưa có mục riêng nào (ngoài đường cong nền) để rà soát.`); return; }
+    const here = (f) => (f.scope === rc.scope && f.gesture === rc.gesture ? 0 : 1); // what is on screen first
+    const flagged = [...scan.flagged].sort((a, b) => here(a) - here(b) || b.score - a.score);
+    const flaggedKeys = new Set(flagged.map((f) => RL.comboKey({ weapon, ...f })));
+    const rest = scan.entries.filter((e) => !flaggedKeys.has(RL.comboKey(e))).sort((a, b) => here(a) - here(b));
+    const threads = aiThreads(status);
+
+    const pick = { all: !flagged.length };
+    const limitBox = el('input', { type: 'number', min: '1', step: '1', class: 'fp-num', 'aria-label': 'Tối đa bao nhiêu mục' });
+    const estimate = el('p', { class: 'muted text-sm' });
+    const paintEstimate = () => {
+      const n = Math.max(0, Math.floor(Number(limitBox.value) || 0));
+      estimate.textContent = `Ước tính khoảng ${Math.max(1, Math.ceil((n * 25) / threads / 60))} phút (mỗi mục 10–40 giây, ${threads} luồng song song). Mục đang xem (${RL.LABELS.SCOPES[rc.scope]} · ${POSTURE_VN[rc.gesture]}) được rà soát trước.`;
+    };
+    const setLimit = () => {
+      const n = pick.all ? scan.total : flagged.length;
+      limitBox.max = String(n);
+      limitBox.value = String(Math.min(n, 30));
+      paintEstimate();
+    };
+    limitBox.oninput = paintEstimate;
+    const choice = (all, text) => el('label', { class: 'field row' }, el('input', { type: 'radio', name: 'scan-pick', checked: pick.all === all, disabled: !all && !flagged.length, onchange: () => { pick.all = all; setLimit(); } }), text);
+    setLimit();
+    const shown = flagged.slice(0, 8);
+    const go = await showModal({
+      title: `Quét tất cả: ${gun}`, tone: 'warn',
+      body: [
+        el('p', {}, `${gun} có ${scan.total} mục riêng (mọi ống ngắm × tư thế, không tính đường cong nền và mục sai bảng chuẩn). Server thấy ${flagged.length} mục đáng xem lại${flagged.length ? ':' : '.'}`),
+        shown.length ? el('ul', {}, shown.map((f) => el('li', {}, `${RL.LABELS.SCOPES[f.scope]} · ${POSTURE_VN[f.gesture]} · ${comboLine(f)}: ${f.reasons.join('; ')}`))) : null,
+        flagged.length > shown.length ? el('p', { class: 'muted' }, `… và ${flagged.length - shown.length} mục nữa.`) : null,
+        choice(false, `Chỉ các mục server thấy lạ (${flagged.length})`),
+        choice(true, `Tất cả mục riêng (${scan.total})`),
+        el('label', { class: 'field' }, 'Rà soát tối đa bao nhiêu mục', limitBox),
+        estimate,
+        el('p', { class: 'muted text-sm' }, `AI xem lại từng mục với dữ liệu súng tương tự, các mục khác của súng và bảng phụ kiện chuẩn. Câu trả lời được kiểm tra so với mục hiện tại; thay đổi dưới ${Math.round(REVIEW_MIN_CHANGE * 100)}% coi như giữ nguyên. Mọi đề xuất chỉ là bản nháp ("AI đề xuất"), chưa ghi gì.`),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Bắt đầu rà soát', primary: true }],
+    });
+    if (go !== 'go') return;
+    const pool = pick.all ? [...flagged, ...rest] : flagged;
+    const todo = pool.slice(0, Math.max(1, Math.min(pool.length, Math.floor(Number(limitBox.value) || 0))));
+    const reasonsOf = new Map(flagged.map((f) => [RL.comboKey({ weapon, ...f }), f.reasons]));
+
+    const ac = new AbortController();
+    rc.bulk = { ac, review: true, done: 0, total: todo.length, failed: 0, changed: 0, same: 0, ai: 0, server: 0 };
+    const errors = [];
+    redraw();
+    await runPool(todo, threads, async (f) => {
+      if (ac.signal.aborted || !active || !S.sel || S.sel.id !== itemId || rc.mode !== mode) return;
+      const o = { weapon, scope: f.scope, gesture: f.gesture, grip: f.grip, muzzle: f.muzzle, stock: f.stock };
+      const r = await askAi({ id: itemId, mode, combo: o }, { signal: ac.signal, stopped: () => ac.signal.aborted, route: '/ai/review-curve' });
+      if (ac.signal.aborted || !rc.bulk) return;
+      const checked = r && r.ok ? RL.checkCurve(r.curve) : null;
+      if (checked && checked.ok) {
+        if ((r.change || 0) >= REVIEW_MIN_CHANGE) {
+          rc.drafts.set(recoilKey(o), { curve: checked.curve, source: 'ai', review: true, o, change: r.change, reasoning: r.reasoning || '', provider: r.provider || '', flags: reasonsOf.get(RL.comboKey(o)) || [] });
+          rc.bulk.changed++;
+        } else rc.bulk.same++;
+      } else {
+        rc.bulk.failed++;
+        if (errors.length < 5) errors.push(`${fullLine(o)}: ${(r && r.reason) || (checked && checked.error) || 'lỗi'}`);
+      }
+      rc.bulk.done++;
+      paintBulk();
+    });
+    const b = rc.bulk;
+    rc.bulk = null;
+    rc.picked = null; rc.editCurve = null; rc.dirty = false; rc.bad.clear();
+    redraw();
+    if (!b) return;
+    const total = pendingSaves().length;
+    const end = await showModal({
+      title: `${b.ac.signal.aborted ? 'Đã dừng' : 'Rà soát xong'}: ${gun}`, tone: b.changed ? 'warn' : 'info',
+      body: [
+        el('p', {}, `Đã rà soát ${b.done}/${b.total} mục: AI đề xuất đổi ${b.changed}, giữ nguyên ${b.same}${b.failed ? `, không dùng được ${b.failed}` : ''}.`),
+        b.changed ? el('p', {}, 'Các mục có đề xuất mang nhãn "AI đề xuất n%" trong bảng (đổi ống ngắm/tư thế để xem hết). Mở một dòng để xem đồ thị, sửa tiếp hoặc "Hoàn tác" để bỏ đề xuất đó.') : null,
+        errors.length ? el('ul', { class: 'muted text-sm' }, errors.map((x) => el('li', {}, x))) : null,
+      ],
+      actions: b.changed && total ? [{ id: 'close', label: 'Đóng, xem lại trong bảng' }, { id: 'save', label: `Lưu tất cả (${total})`, primary: true }] : [{ id: 'close', label: 'Đóng', primary: true }],
+    });
+    if (end === 'save') await guard(saveAll)();
+  }
+
+  // ---------------------------------------------------------------- "Cài đặt AI": the endpoints and the order they are tried in
+  async function showAiSettings() {
+    let rows;
+    try { rows = (await api('GET', '/ai/providers')).providers.map((p) => ({ ...p, apiKey: '', saved: true })); } catch (e) { toast(e.message, true); return; }
+    const box = el('div', { class: 'ai-providers' });
+    const note = el('p', { class: 'muted text-sm' }, 'Mỗi câu hỏi gửi tới nguồn đầu tiên đang bật; nguồn đó lỗi (không kết nối, lỗi HTTP, quá giờ, trả lời không hợp lệ) thì chuyển sang nguồn kế tiếp. Khóa chỉ nằm trên server: trang không bao giờ thấy lại khóa. Đổi địa chỉ của một nguồn thì phải nhập lại khóa.');
+    const field = (label, input) => el('label', { class: 'field' }, label, input);
+    const move = (i, d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; rows[i].dirty = rows[j].dirty = true; paint(); };
+    async function test(p, out) {
+      const say = (t) => { p.testMsg = t; out.textContent = t; }; // kept on the row: the list is drawn again on every change
+      if (!p.saved || p.dirty) { say('Bấm "Lưu" trước rồi hãy thử.'); return; }
+      say('Đang thử…');
+      try {
+        const r = await api('POST', '/ai/providers/test', { id: p.id });
+        say(r.ok ? `Trả lời được (${r.model}, ${Math.round(r.ms / 100) / 10} giây).` : r.reason);
+      } catch (e) { say(e.message); }
+    }
+    function paint() {
+      box.replaceChildren(...rows.map((p, i) => {
+        const out = el('div', { class: 'muted text-sm' }, p.testMsg || '');
+        const set = (k) => (e) => { p[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; p.dirty = true; };
+        const head = el('div', { class: 'row' },
+          el('strong', {}, `${i + 1}. ${p.name || 'Nguồn mới'}`),
+          p.builtin ? badge('Mặc định') : null,
+          !p.saved ? badge('Chưa lưu', 'warn') : p.ready ? null : badge('Chưa đủ địa chỉ/khóa', 'warn'),
+          el('label', { class: 'row' }, el('input', { type: 'checkbox', checked: p.enabled, onchange: set('enabled') }), 'Bật'),
+          el('button', { type: 'button', class: 'btn icon small ghost', title: 'Ưu tiên cao hơn', 'aria-label': 'Ưu tiên cao hơn', disabled: i === 0, onclick: () => move(i, -1) }, icon('arrowUp')),
+          el('button', { type: 'button', class: 'btn icon small ghost', title: 'Ưu tiên thấp hơn', 'aria-label': 'Ưu tiên thấp hơn', disabled: i === rows.length - 1, onclick: () => move(i, 1) }, icon('arrowDown')),
+          el('button', { type: 'button', class: 'btn small ghost', onclick: () => test(p, out) }, 'Thử'),
+          p.builtin ? null : el('button', { type: 'button', class: 'btn icon small ghost', title: 'Xóa nguồn này', 'aria-label': 'Xóa nguồn này', onclick: () => { rows.splice(i, 1); paint(); } }, icon('trash')));
+        const body = p.builtin
+          ? el('p', { class: 'muted text-sm' }, `FreeLLMAPI của server (biến AI_BASE_URL / AI_API_KEY), model ${p.model}. Địa chỉ và khóa không hiện ở đây; tắt hoặc đổi thứ tự được.`)
+          : el('div', {},
+            field('Tên', el('input', { type: 'text', value: p.name || '', maxlength: '60', oninput: set('name') })),
+            field('Địa chỉ (tương thích OpenAI, tới /v1)', el('input', { type: 'url', value: p.baseUrl || '', placeholder: 'https://openrouter.ai/api/v1', oninput: set('baseUrl') })),
+            field('Model', el('input', { type: 'text', value: p.model || '', placeholder: 'auto', oninput: set('model') })),
+            field(p.hasKey ? `Khóa API (đang có ${p.keyHint}; để trống = giữ khóa cũ)` : 'Khóa API', el('input', { type: 'password', autocomplete: 'new-password', value: '', oninput: set('apiKey') })));
+        return el('div', { class: 'card my-2' }, head, body, out);
+      }), el('button', { type: 'button', class: 'btn small', disabled: rows.length > 8, onclick: () => { rows.push({ id: '', name: '', baseUrl: '', model: 'auto', apiKey: '', enabled: true, saved: false }); paint(); } }, icon('plus'), 'Thêm nguồn AI'));
+    }
+    paint();
+    for (;;) {
+      const id = await showModal({ title: 'Cài đặt AI', tone: 'info', className: 'wide', body: [note, box], actions: [{ id: 'cancel', label: 'Đóng' }, { id: 'save', label: 'Lưu', primary: true }] });
+      if (id !== 'save') return;
+      const list = rows.map((p) => (p.builtin ? { id: 'env', enabled: p.enabled } : { id: p.id || undefined, name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey, enabled: p.enabled }));
+      try {
+        const r = await api('PUT', '/ai/providers', { providers: list });
+        aiStatusP = null;
+        const first = r.providers.find((x) => x.enabled && x.ready);
+        toast(`Đã lưu ${r.providers.length} nguồn AI. ${first ? `Hỏi trước: ${first.name}.` : 'Chưa có nguồn nào dùng được.'}`);
+        return;
+      } catch (e) { toast(e.message, true); } // the window opens again with what was typed
     }
   }
 
@@ -1812,7 +1995,7 @@
       const fresh = rc.customCombos && rc.customCombos.has(RL.comboKey(o)) && r.source !== 'exact' && !RL.isZeroWeapon(o.weapon) && latest();
       rc.fresh = Boolean(fresh);
       rc.freshBase = fresh && !draft ? JSON.stringify(rc.editCurve) : null;
-      rc.dirty = Boolean(fresh);
+      rc.dirty = Boolean(fresh) || Boolean(draft && draft.review && latest()); // an "AI đề xuất" is a change not saved yet
       rc.bad.clear();
     }
     const curve = rc.editCurve;

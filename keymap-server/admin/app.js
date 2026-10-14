@@ -97,6 +97,12 @@
     });
   }
 
+  // the user's corrections of the table of accessories ("Tiêu chuẩn súng"), loaded once before any tab is drawn: every check of the page uses them
+  let standardsP = null;
+  const loadStandards = () => (standardsP || (standardsP = api('GET', '/standards')
+    .then((r) => { window.RecoilLib.setRuleOverrides(r.overrides); })
+    .catch(() => { standardsP = null; }))); // tried again next time
+
   let renderSeq = 0;
   async function render() {
     renderNav();
@@ -106,6 +112,7 @@
     app.setAttribute('aria-busy', 'true');
     const wait = setTimeout(() => { if (mine === renderSeq) app.replaceChildren(skeleton(['analysis', 'files', 'standards'].includes(state.view) ? 'split' : 'page')); }, 150);
     let node;
+    await loadStandards();
     try {
       const view = { analysis: () => window.Analysis.view(), standards: () => window.Standards.view(), files: viewFiles, compare: viewCompare, backups: viewBackups, devices: viewDevices }[state.view];
       node = await view();

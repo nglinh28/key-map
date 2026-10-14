@@ -208,12 +208,54 @@
 
   const attachCache = new Map();
   const toSet = (list, names) => new Set(names.map((n) => { const i = list.indexOf(n); if (i < 0) throw new Error(`Unknown accessory ${n}`); return i; }));
-  // -> { name, grips:Set, muzzles:Set, stocks:Set (enum indexes), maxZoom, source, sourceLabel, note } or null when the table does not mention the gun
+  // ---- the user's corrections ("Tiêu chuẩn súng" → "Sửa tiêu chuẩn"), kept by the server in DATA_DIR/gun-standards.json and loaded by the server
+  // and by the page: gun code -> a rule like those above (source 'edited'), or null = "no rule for this gun" (nothing refused). They win over
+  // ATTACHMENT_RULES everywhere: the checks, the combinations offered, the scans and what the AI is told.
+  SOURCES.edited = 'người dùng sửa trên trang Tiêu chuẩn súng';
+  const MAX_ZOOMS = [null, 0, 1, 2, 3, 4, 6, 8]; // null = no limit
+  let ruleOverrides = {};
+  const hasOverride = (name) => Object.prototype.hasOwnProperty.call(ruleOverrides, name);
+  // a rule from the page -> { ok, rule } with the names checked against the app's lists, or { ok:false, error }
+  function checkRule(r) {
+    if (!r || typeof r !== 'object') return { ok: false, error: 'Tiêu chuẩn không hợp lệ.' };
+    const names = (list, v, what) => {
+      if (!Array.isArray(v)) return { error: `${what}: cần một danh sách.` };
+      const out = [...new Set(v)];
+      const bad = out.find((n) => typeof n !== 'string' || n === 'None' || !list.includes(n));
+      return bad === undefined ? { out } : { error: `${what}: "${bad}" không có trong danh sách của app.` };
+    };
+    const m = names(MUZZLES, r.muzzles, 'Đầu nòng');
+    const g = names(GRIPS, r.grips, 'Tay cầm');
+    const s = names(STOCKS, r.stocks, 'Báng');
+    const err = m.error || g.error || s.error;
+    if (err) return { ok: false, error: err };
+    const maxZoom = r.maxZoom === undefined ? null : r.maxZoom;
+    if (!MAX_ZOOMS.includes(maxZoom)) return { ok: false, error: 'Ống ngắm tối đa phải là không giới hạn, không lắp được, 1x, 2x, 3x, 4x, 6x hoặc 8x.' };
+    const note = typeof r.note === 'string' ? r.note.trim().slice(0, 300) : '';
+    return { ok: true, rule: { muzzles: m.out, grips: g.out, stocks: s.out, maxZoom, source: 'edited', note } };
+  }
+  function setRuleOverrides(map) {
+    const next = {};
+    for (const [name, r] of Object.entries(map && typeof map === 'object' ? map : {})) {
+      if (!WEAPONS.includes(name)) continue;
+      if (r === null) { next[name] = null; continue; }
+      const c = checkRule(r);
+      if (c.ok) next[name] = c.rule;
+    }
+    ruleOverrides = next;
+    attachCache.clear();
+    return getRuleOverrides();
+  }
+  const getRuleOverrides = () => ({ ...ruleOverrides });
+  // the rule in force for a gun code: the user's correction if any, else the table above (null = none)
+  const ruleOf = (name) => (hasOverride(name) ? ruleOverrides[name] : ATTACHMENT_RULES[name] || null);
+
+  // -> { name, grips:Set, muzzles:Set, stocks:Set (enum indexes), maxZoom, source, sourceLabel, note, edited } or null when no rule covers the gun
   function attachmentsFor(weapon) {
     const name = WEAPONS[weapon];
-    const r = name && ATTACHMENT_RULES[name];
+    const r = name && ruleOf(name);
     if (!r) return null;
-    if (!attachCache.has(name)) attachCache.set(name, { name, grips: toSet(GRIPS, r.grips), muzzles: toSet(MUZZLES, r.muzzles), stocks: toSet(STOCKS, r.stocks), maxZoom: r.maxZoom, source: r.source, sourceLabel: SOURCES[r.source] || r.source, note: r.note });
+    if (!attachCache.has(name)) attachCache.set(name, { name, grips: toSet(GRIPS, r.grips), muzzles: toSet(MUZZLES, r.muzzles), stocks: toSet(STOCKS, r.stocks), maxZoom: r.maxZoom, source: r.source, sourceLabel: SOURCES[r.source] || r.source, note: r.note, edited: hasOverride(name) });
     return attachCache.get(name);
   }
 
@@ -426,5 +468,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, comboKey, findDuplicateCombo };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, comboKey, findDuplicateCombo };
 });

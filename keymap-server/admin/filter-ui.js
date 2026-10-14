@@ -94,7 +94,9 @@
       else if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') { e.preventDefault(); apply(); }
     };
     const onDown = (e) => { if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) close(); };
-    const onMove = () => close();
+    // the page or the table moving takes the box away from its button: close it. Scrolling INSIDE the box (a long list of values, like the
+    // 67 guns of "Tiêu chuẩn súng") must not: the capturing listener sees that scroll too.
+    const onMove = (e) => { if (e && e.type === 'scroll' && e.target instanceof Node && pop.contains(e.target)) return; close(); };
     document.addEventListener('keydown', onKey, true);
     document.addEventListener('pointerdown', onDown, true);
     window.addEventListener('resize', onMove);

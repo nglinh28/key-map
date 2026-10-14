@@ -39,6 +39,9 @@ Keep the number of points close to the coefficient estimate (between 3 and ${MAX
 Answer with ONE JSON object only, no markdown: {"points": [[time_ms, value], ...], "reasoning": "at most 3 sentences in Vietnamese: which evidence you used and the main change against the coefficient estimate"}`;
 
 const label = (list, i) => list[i] || String(i);
+// said last in every question, as a message of its own (the data message stays plain JSON): "thinking" models otherwise write their analysis
+// into the answer and run out of tokens before the JSON
+const JSON_ONLY = { role: 'user', content: 'Reply with the JSON object ONLY: no analysis, no text before or after it. The first character of your reply must be {.' };
 
 // What a gun can take (RecoilLib.attachmentsFor, from the official table): sent with every question so the model never relies on or proposes an accessory
 // the gun cannot carry. A gun the table does not cover gets an explicit "no rule" note instead of a guess.
@@ -82,7 +85,116 @@ function buildMessages(idx, target, { limit = 5 } = {}) {
   return [
     { role: 'system', content: SYSTEM },
     { role: 'user', content: `Data for the request (JSON follows):\n${JSON.stringify(data)}` },
+    JSON_ONLY,
   ];
+}
+
+// ---------------------------------------------------------------- reviewing an entry that already exists ("Quét tất cả")
+const SYSTEM_REVIEW = `You help tune the recoil curves in the controller config of a mobile shooter game.
+A curve is a list of points [time_ms, value]: time starts at 0 and strictly increases, the value is the vertical pull strength at that time.
+Task: the TARGET gun and combination (scope, posture, accessories) ALREADY has its own entry: current_curve. Review it against the evidence and propose the curve it should have.
+Evidence you get: (1) coefficient_estimate = the gun's base curve times the accessory/posture coefficients (what the app would use without an own entry); (2) similar_guns = for guns whose base curve resembles the target's, their REAL own entry for this very combination next to their own coefficient curve, so you can see how real data differs from the coefficient estimate; (3) same_gun_entries = other real entries of the target gun (keep the target consistent with them: e.g. more recoil-reducing accessories should not give a stronger pull than fewer, crouch/prone are usually lower than standing).
+target.accessory_rules says what this gun can physically take; target.combination_problems is empty when the combination fits the gun.
+If current_curve is already consistent with the evidence, return it unchanged (same points). Change only what the evidence supports; keep the shape and the number of points close to current_curve (between 3 and ${MAX_POINTS}). Do not invent a wildly different scale.
+Answer with ONE JSON object only, no markdown: {"points": [[time_ms, value], ...], "reasoning": "at most 3 sentences in Vietnamese: is the current curve fine, what evidence you used and what you changed"}`;
+
+// the same evidence as buildMessages plus the entry being reviewed
+function buildReviewMessages(idx, target, opts = {}) {
+  const msgs = buildMessages(idx, target, opts);
+  const body = msgs[1].content;
+  const data = JSON.parse(body.slice(body.indexOf('{')));
+  const own = idx.map.get(S.keyOf(target.weapon, target.scope, target.grip, target.muzzle, target.stock, target.gesture));
+  data.target.current_curve = own ? curve2(own[own.length - 1].recoilValue) : null;
+  return [{ role: 'system', content: SYSTEM_REVIEW }, { role: 'user', content: `Data for the request (JSON follows):\n${JSON.stringify(data)}` }, JSON_ONLY];
+}
+
+// how far a new curve is from the current one: mean of |new/old - 1| over the old curve's points, time scaled to the new duration (0.05 = 5%)
+function curveChange(current, next) {
+  const dc = S.duration(current);
+  const dn = S.duration(next);
+  let sum = 0;
+  let n = 0;
+  for (const [t, v] of current) {
+    if (Math.abs(v) < 1e-6) continue;
+    const w = S.interp(next, dc > 0 && dn > 0 ? (t / dc) * dn : t);
+    sum += Math.abs(w / v - 1);
+    n++;
+  }
+  const value = n ? sum / n : 0;
+  const duration = dc > 0 ? Math.abs(dn / dc - 1) : 0;
+  return Math.round(Math.max(value, duration) * 10000) / 10000;
+}
+
+// A reviewed curve is checked against the CURRENT entry, not the coefficient curve (real entries often sit far from the coefficients, and an
+// unchanged answer must always pass): same rules for points, duration 0.5-2x and every value 0.6-1.6x of the current curve.
+const sameCurve = (a, b) => a.length === b.length && a.every(([t, v], i) => Math.abs(t - b[i][0]) < 1e-6 && Math.abs(v - b[i][1]) < 1e-4);
+function validateReview(points, current) {
+  const checked = R.checkCurve(points);
+  if (!checked.ok) return { ok: false, reason: checked.error };
+  if (sameCurve(points, current)) return { ok: true, curve: points.map(([t, v]) => [t, v]) };
+  if (points.length > MAX_POINTS) return { ok: false, reason: `AI trả quá nhiều mốc (${points.length}; tối đa ${MAX_POINTS}).` };
+  for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
+  const durC = S.duration(current);
+  if (durC > 0 && current.some(([, v]) => Math.abs(v) > 1e-6)) {
+    const dur = S.duration(points);
+    if (dur / durC < 0.5 || dur / durC > 2) return { ok: false, reason: `Thời lượng AI đưa ra (${Math.round(dur)} ms) lệch quá xa mục hiện tại (${Math.round(durC)} ms).` };
+    for (let i = 0; i < points.length; i++) {
+      const ref = S.interp(current, (points[i][0] / dur) * durC);
+      if (Math.abs(ref) < 1e-6) continue;
+      const k = points[i][1] / ref;
+      if (k < 0.6 || k > 1.6) return { ok: false, reason: `Giá trị mốc #${i + 1} (${r2(points[i][1])}) lệch quá xa mục hiện tại (${r2(ref)}).` };
+    }
+  }
+  return { ok: true, curve: points.map(([t, v]) => [t, v]) };
+}
+
+// ---------------------------------------------------------------- which existing entries are worth reviewing (no AI: the server's own logic)
+// Every own entry of the gun (not the bare base curves, not the ones against the table of accessories), with what the server finds odd:
+//   * far from what similar guns say for the same combination (analogCurve), by REVIEW_ANALOG or more;
+//   * crouch/prone pulling harder than standing with the same accessories;
+//   * more accessories pulling harder than a subset of them (same scope and posture).
+// -> { ok, total, flagged: [{ scope, gesture, grip, muzzle, stock, score, reasons }] most suspicious first, clean, entries: every own entry reviewed }
+const REVIEW_ANALOG = 0.08;
+const meanValue = (c) => (c.length ? c.reduce((n, [, v]) => n + Math.abs(v), 0) / c.length : 0);
+function reviewScan(idx, weapon) {
+  const own = [];
+  for (const [key, list] of idx.map) {
+    const [w, s, g, m, st, ge] = key.split('|').map(Number);
+    if (w !== weapon || (!g && !m && !st && !ge)) continue;
+    const o = { weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st };
+    if (R.comboProblems(w, s, o).length) continue; // against the table: "Kiểm tra theo chuẩn" deletes those, nothing to tune
+    own.push({ o, curve: list[list.length - 1].recoilValue.map(([t, v]) => [Number(t), Number(v)]) });
+  }
+  const meanOf = (o) => {
+    const list = idx.map.get(S.keyOf(o.weapon, o.scope, o.grip, o.muzzle, o.stock, o.gesture));
+    return list ? meanValue(list[list.length - 1].recoilValue.map(([t, v]) => [Number(t), Number(v)])) : null;
+  };
+  const flagged = [];
+  for (const e of own) {
+    const reasons = [];
+    let score = 0;
+    const a = S.analogCurve(idx, e.o);
+    if (a.ok) {
+      const d = curveChange(e.curve, a.curve);
+      if (d >= REVIEW_ANALOG) { reasons.push(`lệch ${Math.round(d * 100)}% so với các súng tương tự`); score = Math.max(score, d); }
+    }
+    const mine = meanValue(e.curve);
+    if (e.o.gesture) {
+      const stand = meanOf({ ...e.o, gesture: 0 });
+      if (stand && mine > stand * 1.02) { reasons.push(`${e.o.gesture === 1 ? 'ngồi' : 'nằm'} kéo mạnh hơn đứng ${Math.round((mine / stand - 1) * 100)}%`); score = Math.max(score, mine / stand - 1 + 0.1); }
+    }
+    for (const slot of ['grip', 'muzzle', 'stock']) {
+      if (!e.o[slot]) continue;
+      const fewer = meanOf({ ...e.o, [slot]: 0 });
+      if (fewer && mine > fewer * 1.1) {
+        reasons.push(`thêm ${slot === 'grip' ? 'tay cầm' : slot === 'muzzle' ? 'đầu nòng' : 'báng'} mà kéo mạnh hơn ${Math.round((mine / fewer - 1) * 100)}%`);
+        score = Math.max(score, mine / fewer - 1);
+      }
+    }
+    if (reasons.length) flagged.push({ ...e.o, score: Math.round(score * 10000) / 10000, reasons });
+  }
+  flagged.sort((x, y) => y.score - x.score);
+  return { ok: true, total: own.length, flagged, clean: own.length - flagged.length, entries: own.map((e) => e.o) };
 }
 
 // ---------------------------------------------------------------- what comes back
@@ -155,7 +267,7 @@ function buildRankMessages(idx, target, candidates, { userFilter = null, regener
       similar_guns_having: c.gap ? `${c.gap.n}/${c.gap.of}` : `${c.seenIn || 0}/?`,
     })),
   };
-  return [{ role: 'system', content: SYSTEM_RANK }, { role: 'user', content: `Data for the request (JSON follows):\n${JSON.stringify(data)}` }];
+  return [{ role: 'system', content: SYSTEM_RANK }, { role: 'user', content: `Data for the request (JSON follows):\n${JSON.stringify(data)}` }, JSON_ONLY];
 }
 
 // -> { ok:true, ranking:[{ i, reason }] } with indexes inside [0, count), no repeats, at most 8; else { ok:false, reason }
@@ -179,76 +291,134 @@ function parseRanking(content, count) {
 }
 
 // ---------------------------------------------------------------- the client
-function createAi(cfg = {}, { fetchImpl = globalThis.fetch } = {}) {
-  const baseUrl = String(cfg.baseUrl || '').replace(/\/+$/, '');
-  const enabled = Boolean(baseUrl && cfg.apiKey);
-  const model = cfg.model || 'auto';
+// cfg: { baseUrl, apiKey, model, timeoutMs, concurrency } (loadAiConfig). providers (optional): () => [{ id, name, baseUrl, apiKey, model }] the
+// endpoints to try, in order (AiProviders.usable). Without it the one endpoint of cfg is used, as before.
+// A question goes to the first endpoint; when that one fails (no connection, HTTP error, timeout, empty or invalid answer) it goes to the next,
+// until one gives a usable answer. The page aborting stops the chain at once.
+function createAi(cfg = {}, { fetchImpl = globalThis.fetch, providers = null } = {}) {
+  const single = { id: 'env', name: 'AI', baseUrl: String(cfg.baseUrl || '').replace(/\/+$/, ''), apiKey: cfg.apiKey || '', model: cfg.model || 'auto' };
+  const listOf = () => (providers ? providers() : single.baseUrl && single.apiKey ? [single] : []);
   const timeoutMs = cfg.timeoutMs || DEFAULT_TIMEOUT_MS;
   const concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(Number(cfg.concurrency)) || 1)); // asking this class directly: one at a time unless told
   const limit = { curve: concurrency, rank: 1 }; // the ranking of combinations stays one at a time
-  const busy = { curve: 0, rank: 0 }; // requests out now, per kind of work
-  const clean = (s) => String(s).split(cfg.apiKey).join('***').replace(/\s+/g, ' ').slice(0, 160);
+  const busy = { curve: 0, rank: 0 }; // requests out now, per kind of work (one slot for the whole chain of endpoints)
 
-  // One chat completion. -> { ok:true, content, model, ms } or { ok:false, reason, busy? }. opts.signal: aborted when the page gives up.
-  async function ask(lane, messages, opts = {}) {
-    if (!enabled) return { ok: false, reason: 'AI chưa được cấu hình (cần AI_BASE_URL và AI_API_KEY trên server).' };
+  // One chat completion to one endpoint. -> { ok:true, content, model, ms } or { ok:false, reason, aborted? }
+  async function askOne(p, messages, opts = {}) {
+    const clean = (s) => String(s).split(p.apiKey).join('***').split(p.baseUrl).join('…').replace(/\s+/g, ' ').slice(0, 160);
+    const started = Date.now();
+    const aborted = () => opts.signal && opts.signal.aborted;
+    const late = () => ({ ok: false, reason: `không trả lời kịp (quá ${Math.round(timeoutMs / 1000)} giây)` });
+    let res;
+    try {
+      res = await fetchImpl(`${p.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${p.apiKey}` },
+        body: JSON.stringify({ model: p.model || 'auto', temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens || 6000, messages }),
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) {
+      if (aborted()) return { ok: false, aborted: true, reason: 'Đã hủy yêu cầu AI.' };
+      if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return late();
+      return { ok: false, reason: 'không kết nối được (kiểm tra địa chỉ và mạng)' };
+    }
+    let text = '';
+    try { text = await res.text(); } catch (e) {
+      if (aborted()) return { ok: false, aborted: true, reason: 'Đã hủy yêu cầu AI.' };
+      if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return late();
+      return { ok: false, reason: 'kết nối bị ngắt giữa chừng' };
+    }
+    if (!res.ok) return { ok: false, reason: `trả lỗi HTTP ${res.status}${text ? `: ${clean(text)}` : ''}` };
+    let data;
+    try { data = JSON.parse(text); } catch { return { ok: false, reason: 'nội dung trả về không đọc được (không phải JSON)' }; }
+    const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    const finish = data && data.choices && data.choices[0] && data.choices[0].finish_reason;
+    return { ok: true, content, finish, model: typeof data.model === 'string' && data.model ? data.model : p.model, ms: Date.now() - started };
+  }
+
+  // The chain: endpoints in order; take(r) turns an answer into a result ({ ok:true, ... } or { ok:false, reason }) and a bad answer also
+  // moves on to the next endpoint. -> the first good result + { model, ms, provider }, or { ok:false, reason, busy? } saying what each one did.
+  async function ask(lane, messages, opts, take) {
+    const list = listOf();
+    if (!list.length) return { ok: false, reason: providers ? 'AI chưa được cấu hình (thêm nguồn AI trong "Cài đặt AI", hoặc AI_BASE_URL và AI_API_KEY trên server).' : 'AI chưa được cấu hình (cần AI_BASE_URL và AI_API_KEY trên server).' };
     if (busy[lane] >= limit[lane]) return { ok: false, busy: true, reason: 'AI đang bận với một yêu cầu khác, thử lại sau ít giây.' };
     busy[lane]++;
     const started = Date.now();
-    const aborted = () => opts.signal && opts.signal.aborted;
-    const late = () => ({ ok: false, reason: `AI không trả lời kịp (quá ${Math.round(timeoutMs / 1000)} giây).` });
+    const failures = [];
+    let slowDown = false; // every endpoint asked us to slow down: the page waits and tries again
+    const deadline = started + timeoutMs * 2; // the whole chain, so one question never holds its slot for endpoints x timeout
     try {
-      let res;
-      try {
-        res = await fetchImpl(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-          body: JSON.stringify({ model, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens || 3000, messages }),
-          signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-        });
-      } catch (e) {
-        if (aborted()) return { ok: false, reason: 'Đã hủy yêu cầu AI.' };
-        if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return late();
-        return { ok: false, reason: 'Không kết nối được tới AI (kiểm tra AI_BASE_URL và mạng).' };
+      for (const p of list) {
+        if (failures.length && Date.now() > deadline) { failures.push(`${p.name}: bỏ qua (đã quá thời gian cho cả chuỗi)`); break; }
+        const r = await askOne(p, messages, opts);
+        if (r.aborted) return { ok: false, reason: r.reason };
+        if (!r.ok) {
+          if (/HTTP (429|5\d\d)/.test(r.reason)) slowDown = true;
+          failures.push(`${p.name}: ${r.reason}`);
+          continue;
+        }
+        const t = take(r);
+        if (t.ok) return { ...t, model: r.model, ms: Date.now() - started, provider: p.name, tried: failures.length + 1 };
+        failures.push(`${p.name}: ${t.reason}${r.finish === 'length' ? ' (câu trả lời bị cắt: model viết quá dài)' : ''}`);
       }
-      let text = '';
-      try { text = await res.text(); } catch (e) {
-        if (aborted()) return { ok: false, reason: 'Đã hủy yêu cầu AI.' };
-        if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return late();
-        return { ok: false, reason: 'Kết nối tới AI bị ngắt giữa chừng.' };
-      }
-      if (!res.ok) return { ok: false, reason: `AI trả lỗi HTTP ${res.status}${text ? `: ${clean(text)}` : ''}` };
-      let data;
-      try { data = JSON.parse(text); } catch { return { ok: false, reason: 'Nội dung AI trả về không đọc được (không phải JSON).' }; }
-      const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      return { ok: true, content, model: typeof data.model === 'string' && data.model ? data.model : model, ms: Date.now() - started };
     } finally {
       busy[lane]--;
     }
+    const head = failures.length > 1 ? `Đã thử ${failures.length} nguồn AI, không nguồn nào dùng được. ` : 'AI ';
+    // a single failure keeps the wording the page knows ("AI trả lỗi HTTP 429") so its wait-and-retry still works
+    const reason = failures.length === 1 ? `AI ${failures[0].slice(failures[0].indexOf(': ') + 2)}` : `${head}${failures.join(' · ')}`;
+    return { ok: false, reason: slowDown && failures.length > 1 ? `${reason} (HTTP 429)` : reason };
   }
 
-  // The points of one combination.
-  async function suggest(idx, target, opts = {}) {
-    const r = await ask('curve', buildMessages(idx, target, opts), opts);
-    if (!r.ok) return r;
+  const curveTaker = (idx, target) => (r) => {
     const parsed = parseAnswer(r.content);
     if (!parsed.ok) return parsed;
     const valid = validatePoints(parsed.points, R.computedFor(idx, target).curve);
-    if (!valid.ok) return { ok: false, reason: valid.reason };
-    return { ok: true, curve: valid.curve, reasoning: parsed.reasoning, model: r.model, ms: r.ms };
+    return valid.ok ? { ok: true, curve: valid.curve, reasoning: parsed.reasoning } : { ok: false, reason: valid.reason };
+  };
+
+  // The points of one combination.
+  async function suggest(idx, target, opts = {}) {
+    return ask('curve', buildMessages(idx, target, opts), opts, curveTaker(idx, target));
+  }
+
+  // "Quét tất cả": a combination that has its own entry, reviewed. -> { ok, curve, reasoning, change } (change: see curveChange)
+  async function review(idx, target, opts = {}) {
+    const own = idx.map.get(S.keyOf(target.weapon, target.scope, target.grip, target.muzzle, target.stock, target.gesture));
+    if (!own) return { ok: false, reason: 'Tổ hợp này chưa có mục riêng: dùng "AI tạo mốc" thay vì rà soát.' };
+    const current = own[own.length - 1].recoilValue.map(([t, v]) => [Number(t), Number(v)]);
+    const r = await ask('curve', buildReviewMessages(idx, target, opts), opts, (a) => {
+      const parsed = parseAnswer(a.content);
+      if (!parsed.ok) return parsed;
+      const valid = validateReview(parsed.points, current);
+      return valid.ok ? { ok: true, curve: valid.curve, reasoning: parsed.reasoning } : { ok: false, reason: valid.reason };
+    });
+    return r.ok ? { ...r, current, change: curveChange(current, r.curve) } : r;
   }
 
   // Which of the candidates (suggest.comboCandidates) deserve an own entry most. The AI only orders and explains: it cannot add a combination.
   async function rankCombos(idx, target, candidates, opts = {}) {
     if (!Array.isArray(candidates) || !candidates.length) return { ok: false, reason: 'Không có tổ hợp ứng viên nào để xếp hạng.' };
     // "AI tạo lại" (regenerate) asks for a fresh opinion: a higher temperature, and the message says so
-    const r = await ask('rank', buildRankMessages(idx, target, candidates, { userFilter: opts.userFilter, regenerate: opts.regenerate }), { ...opts, maxTokens: 1500, temperature: opts.regenerate ? 0.7 : undefined });
-    if (!r.ok) return r;
-    const parsed = parseRanking(r.content, candidates.length);
-    return parsed.ok ? { ok: true, ranking: parsed.ranking, model: r.model, ms: r.ms } : parsed;
+    return ask('rank', buildRankMessages(idx, target, candidates, { userFilter: opts.userFilter, regenerate: opts.regenerate }),
+      { ...opts, maxTokens: 1500, temperature: opts.regenerate ? 0.7 : undefined }, (r) => parseRanking(r.content, candidates.length));
   }
 
-  return { status: () => ({ enabled, model, concurrency }), suggest, rankCombos };
+  // "Thử" in the settings: one tiny question to one endpoint, outside the queue
+  async function test(p, opts = {}) {
+    if (!p || !p.baseUrl || !p.apiKey) return { ok: false, reason: 'Nguồn này chưa có địa chỉ hoặc khóa API.' };
+    const r = await askOne(p, [{ role: 'user', content: 'Reply with the single word OK.' }], { ...opts, maxTokens: 20, temperature: 0 });
+    if (!r.ok) return { ok: false, reason: `${p.name}: ${r.reason}` };
+    return typeof r.content === 'string' && r.content.trim() ? { ok: true, model: r.model, ms: r.ms } : { ok: false, reason: `${p.name}: trả lời trống` };
+  }
+
+  // the model of the first endpoint that will be asked (the page shows it); which endpoints exist is GET /ai/providers
+  function status() {
+    const list = listOf();
+    return { enabled: list.length > 0, model: list.length ? list[0].model || 'auto' : cfg.model || 'auto', concurrency };
+  }
+
+  return { status, suggest, review, rankCombos, test };
 }
 
-module.exports = { createAi, loadAiConfig, parseAnswer, parseRanking, validatePoints, buildMessages, buildRankMessages, MAX_POINTS };
+module.exports = { createAi, loadAiConfig, parseAnswer, parseRanking, validatePoints, validateReview, reviewScan, buildMessages, buildRankMessages, buildReviewMessages, curveChange, MAX_POINTS, REVIEW_ANALOG };

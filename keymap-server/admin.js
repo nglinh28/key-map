@@ -17,7 +17,9 @@ const CacheXml = require('./admin/cachexml');
 const { manifestOf, serverCheck } = require('./verify');
 const RecoilLib = require('./admin/recoil');
 const { analogCurve, comboCandidates } = require('./suggest');
-const { createAi } = require('./ai');
+const { createAi, reviewScan } = require('./ai');
+const { AiProviders } = require('./ai-providers');
+const { GunStandards } = require('./gun-standards');
 
 const CACHE_FILE = 'gamwing_keymap_cache.xml';
 const CACHE_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -78,7 +80,11 @@ const safeDecode = (s) => {
 
 function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
   const pageCache = new Map();
-  const ai = createAi(cfg.ai || {});
+  // the AI endpoints, in the order they are tried: FreeLLMAPI of the environment first by default, then what "Cài đặt AI" added
+  const aiProviders = new AiProviders({ env: cfg.ai || {}, file: cfg.dataDir ? path.join(cfg.dataDir, 'ai-providers.json') : '' });
+  const ai = createAi(cfg.ai || {}, { providers: () => aiProviders.usable() });
+  // the user's corrections of the table of accessories: loaded into RecoilLib now, so every check of this server uses them
+  const standards = new GunStandards({ file: cfg.dataDir ? path.join(cfg.dataDir, 'gun-standards.json') : '' });
   let analysisCache = { etag: '', docs: null }; // the parsed cache file, reused while its etag is the same
   const indexCache = new Map(); // `${etag}|${id}|${mode}` -> RecoilLib index of that item (the last few)
 
@@ -282,6 +288,49 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       // answered by accessories, not by index, so the page can match them whatever order it holds
       const ranking = r.ranking.map((x, n) => ({ grip: found.candidates[x.i].grip, muzzle: found.candidates[x.i].muzzle, stock: found.candidates[x.i].stock, rank: n + 1, reason: x.reason }));
       return json(res, 200, { ok: true, ranking, model: r.model, ms: r.ms, dataset: ctx.dataset });
+    }
+    // ---- "Tiêu chuẩn súng": the user's corrections of what each gun can take (the page loads them into its own RecoilLib)
+    if (p === '/admin/api/standards' && method === 'GET') return json(res, 200, { overrides: standards.list() });
+    if ((m = /^\/admin\/api\/standards\/([^/]+)$/.exec(p)) && (method === 'PUT' || method === 'DELETE')) {
+      const code = safeDecode(m[1]);
+      let r;
+      if (method === 'DELETE') r = standards.reset(code);
+      else {
+        const body = await jsonBody(req);
+        r = body && Object.prototype.hasOwnProperty.call(body, 'rule') ? standards.set(code, body.rule) : { ok: false, error: 'Thiếu "rule".' };
+      }
+      if (!r.ok) return err(res, 400, r.error);
+      return json(res, 200, { ok: true, overrides: standards.list() });
+    }
+    // ---- "Cài đặt AI": the endpoints and their order. Keys never come back; the address of the environment endpoint neither.
+    if (p === '/admin/api/ai/providers' && method === 'GET') return json(res, 200, { providers: aiProviders.publicList() });
+    if (p === '/admin/api/ai/providers' && method === 'PUT') {
+      const body = await jsonBody(req);
+      const r = aiProviders.replace(body && body.providers);
+      if (!r.ok) return err(res, 400, r.error);
+      return json(res, 200, { ok: true, providers: aiProviders.publicList(), status: ai.status() });
+    }
+    if (p === '/admin/api/ai/providers/test' && method === 'POST') {
+      const body = await jsonBody(req);
+      const one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
+      if (!one) return err(res, 404, 'Không tìm thấy nguồn AI này');
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+      return json(res, 200, await ai.test(one, { signal: ac.signal }));
+    }
+    // ---- "Quét tất cả": the server finds which own entries of a gun look odd (no AI), then the page asks the AI to review those one by one
+    if (p === '/admin/api/recoil/review-scan' && method === 'POST') {
+      const ctx = recoilContext(await jsonBody(req), { partial: true });
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      const started = Date.now();
+      return json(res, 200, { ...reviewScan(ctx.idx, ctx.target.weapon), ms: Date.now() - started, dataset: ctx.dataset });
+    }
+    if (p === '/admin/api/ai/review-curve' && method === 'POST') {
+      const ctx = recoilContext(await jsonBody(req));
+      if (ctx.error) return err(res, ctx.status, ctx.error);
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+      return json(res, 200, { ...(await ai.review(ctx.idx, ctx.target, { signal: ac.signal })), dataset: ctx.dataset });
     }
     if (p === '/admin/api/ai/suggest-curve' && method === 'POST') {
       const ctx = recoilContext(await jsonBody(req));

@@ -1,0 +1,13 @@
+# Ban dung cho container RouterOS (MikroTik), dung song song voi Dockerfile goc.
+# Khac biet duy nhat: chay bang root. Thu muc mount (/data) do RouterOS tao ra thuoc root:root,
+# user "node" khong ghi duoc vao do.
+# Dung: docker build -f Dockerfile.mikrotik -t ft-keymap-server:mikrotik-amd64 .
+FROM node:22-alpine
+ENV NODE_ENV=production PORT=8787 HOST=0.0.0.0 DATA_DIR=/data
+WORKDIR /app
+COPY package.json *.js ./
+COPY admin ./admin
+RUN mkdir -p /data
+VOLUME /data
+EXPOSE 8787
+CMD ["node", "server.js"]
