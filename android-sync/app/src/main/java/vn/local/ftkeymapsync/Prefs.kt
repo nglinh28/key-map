@@ -16,6 +16,10 @@ import java.util.UUID
 
 const val DEFAULT_DATABASES = "Documents/jya2/databases"
 
+/** The Gamwing app: its launcher activity is in com.zjx.jyandroid (that is how it is found); the package is only the fallback. */
+const val GAMWING_ACTIVITY_PREFIX = "com.zjx.jyandroid"
+const val DEFAULT_GAMWING_PACKAGE = "com.mqi.plsiq"
+
 /** Where the engine writes what it did for the user to read later (shown on the main screen). */
 interface ActionLog {
     fun addAction(line: String)
@@ -29,9 +33,24 @@ class Prefs(context: Context) : DbStateStore, ActionLog {
         get() = sp.getString("server", "") ?: ""
         set(v) { sp.edit().putString("server", v).apply() }
 
+    /** Push by itself when the folder changes. On unless the user turned it off. */
     var autoPush: Boolean
-        get() = sp.getBoolean("auto", false)
+        get() = sp.getBoolean("auto", true)
         set(v) { sp.edit().putBoolean("auto", v).apply() }
+
+    /**
+     * Keep the background service running (also after the app is swiped out of the recent apps, and after the tablet restarts).
+     * The web page needs it: the heartbeat that shows this tablet is connected, and the commands the page sends (delete items, check
+     * the sync), only work while the service is alive. On unless the user turned it off.
+     */
+    var keepAlive: Boolean
+        get() = sp.getBoolean("keepAlive", true)
+        set(v) { sp.edit().putBoolean("keepAlive", v).apply() }
+
+    /** The package of the Gamwing app, when it cannot be found by its launcher activity. */
+    var gamwingPackage: String
+        get() = sp.getString("gamwingPkg", DEFAULT_GAMWING_PACKAGE) ?: DEFAULT_GAMWING_PACKAGE
+        set(v) { sp.edit().putString("gamwingPkg", v.trim()).apply() }
 
     /** Documents/jya2/databases: the Gamwing app's own preference files (the only thing this app backs up). */
     var databasesPath: String

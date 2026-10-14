@@ -154,13 +154,17 @@ class SyncEngine(
         return PullPlan(items, rejected)
     }
 
-    /** Writes new and changed files. Files about to be overwritten are first copied to <backup>/<time>/databases/. Nothing is deleted. */
-    fun applyRestore(plan: PullPlan): PullResult {
+    /**
+     * Writes new and changed files. Files about to be overwritten are first copied to <backup>/<time>/databases/. Nothing is deleted.
+     * [onFile] gets (done, total, name) before each file, so a screen can show how far it is.
+     */
+    fun applyRestore(plan: PullPlan, onFile: (Int, Int, String) -> Unit = { _, _, _ -> }): PullResult {
         val written = mutableListOf<String>()
         val failed = mutableListOf<String>()
         var backupDir: File? = null
-        for (item in plan.items) {
-            if (item.state == PullState.SAME || !DatabaseNames.isBackupName(item.name)) continue
+        val todo = plan.items.filter { it.state != PullState.SAME && DatabaseNames.isBackupName(it.name) }
+        for ((i, item) in todo.withIndex()) {
+            onFile(i + 1, todo.size, item.name)
             try {
                 if (item.state == PullState.CHANGED) {
                     val dir = backupDir ?: File(newBackupDir(), "databases").also { it.mkdirs(); backupDir = it }
@@ -249,7 +253,8 @@ class SyncEngine(
         lines
     }
 
-    private fun newBackupDir(): File {
+    /** <backup>/<yyyyMMdd-HHmmss>/ (created); the files copied away before they are overwritten or deleted go in folders inside it */
+    fun newBackupDir(): File {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(clock()))
         return File(backupRoot, stamp).also { it.mkdirs() }
     }

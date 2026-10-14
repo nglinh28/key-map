@@ -2,6 +2,7 @@ package vn.local.ftkeymapsync
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,6 +18,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
@@ -30,6 +32,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
@@ -51,17 +54,22 @@ class MainActivity : Activity() {
     private lateinit var nameInput: EditText
     private lateinit var folderInput: EditText
     private lateinit var autoSwitch: Switch
+    private lateinit var keepSwitch: Switch
+    private lateinit var backgroundNote: TextView
+    private lateinit var batteryBox: LinearLayout
+    private var bgBinding = false // true while the switches are set from the code, so their listeners stay quiet
 
     private enum class Level { INFO, OK, WARN, ERR }
 
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    // The heartbeat that lets the web page see this phone is connected (the service sends its own while the auto-push is on).
-    private val beatTask = object : Runnable {
+    // While this screen is on, ask the server every 15 s whether the web page is open. (The heartbeat that shows this tablet to the web
+    // page, and the commands from the page, belong to the background service: only one place does them, so a command never runs twice.)
+    private val webTask = object : Runnable {
         override fun run() {
-            sendHeartbeat()
-            ui.postDelayed(this, HeartbeatMs)
+            pollWeb()
+            ui.postDelayed(this, WebPollMs)
         }
     }
 
@@ -70,7 +78,10 @@ class MainActivity : Activity() {
         prefs = Prefs(this)
         setContentView(buildUi())
         StatusBus.history().forEach { appendLog(it) }
-        if (prefs.autoPush) startWatch() // the service may have been killed with the process
+        if (prefs.keepAlive) {
+            ensureNotificationPermission() // so the "đang chạy ngầm" notification can be seen (the service works without it)
+            startWatch() // the service may have been killed with the process; starting it again is harmless
+        }
     }
 
     override fun onStart() {
@@ -86,13 +97,14 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshPermission()
+        refreshBackground()
         refreshActions()
         checkConnection() // the "which server am I connected to" message, every time the app opens
-        ui.post(beatTask)
+        ui.post(webTask)
     }
 
     override fun onPause() {
-        ui.removeCallbacks(beatTask)
+        ui.removeCallbacks(webTask)
         super.onPause()
     }
 
@@ -152,15 +164,14 @@ class MainActivity : Activity() {
             isSingleLine = true
             addTextChangedListener(watcher { prefs.deviceName = it })
         }
-        val settingsCard = card("Cài đặt server") {
-            field("Địa chỉ server (ví dụ 192.168.4.17:8787, lưu trong máy)", serverInput)
-            addView(actionButton("Lưu địa chỉ", true) { saveServer() }, matchWrap().apply { topMargin = dp(10) })
-            addView(statusLine(savedDot, savedView), matchWrap().apply { topMargin = dp(10) })
-            field("Tên thiết bị (hiện trên trang web)", nameInput)
-        }
-        val connectCard = card("Kết nối") {
+        // one card for everything about the server: whether it answers, the address, and the name the web page shows
+        val serverCard = card("Server") {
             addView(statusLine(statusDot, statusView))
             addView(statusLine(webDot, webView), matchWrap().apply { topMargin = dp(6) })
+            field("Địa chỉ server (ví dụ 192.168.4.17:8787, lưu trong máy)", serverInput)
+            actions(actionButton("Lưu địa chỉ", true) { saveServer() }, actionButton("Kiểm tra lại", false) { checkConnection() })
+            addView(statusLine(savedDot, savedView), matchWrap().apply { topMargin = dp(10) })
+            field("Tên thiết bị (hiện trên trang web)", nameInput)
         }
 
         // ---- folder
@@ -172,31 +183,44 @@ class MainActivity : Activity() {
         }
         val folderCard = card("Thư mục") {
             field("Thư mục cài đặt Gamwing (tính từ bộ nhớ trong; bắt đầu bằng / là đường dẫn đầy đủ)", folderInput)
+            actions(actionButton("Quét file", false) { scanFolder() })
         }
 
-        // ---- actions: the one that matters most is filled, the rest are outlined
+        // ---- actions: the one that matters most is filled. (The sync checks are done from the web page, and after every push.)
         val actionCard = card("Thao tác") {
             addView(actionButton("Đẩy lên server", true) { pushAll() }, matchWrap())
-            actions(
-                actionButton("Khôi phục theo ngày…", false) { restoreByDay() },
-                actionButton("Kiểm tra kết nối", false) { checkConnection() },
-                actionButton("Quét file", false) { scanFolder() },
-                actionButton("Kiểm tra đồng bộ trên app", false) { checkTabletSync() },
-                actionButton("Kiểm tra đồng bộ trên server", false) { checkServerSync() },
-            )
+            addView(actionButton("Khôi phục theo ngày…", false) { restoreByDay() }, matchWrap().apply { topMargin = dp(8) })
         }
 
-        // ---- automatic push
-        autoSwitch = switchRow("Tự đẩy lên server khi thư mục có thay đổi", prefs.autoPush) { on ->
-            prefs.autoPush = on
+        // ---- the background service: what makes the web page see this tablet and reach it
+        keepSwitch = switchRow("Chạy ngầm, kể cả khi đóng app", prefs.keepAlive) { on ->
+            if (bgBinding) return@switchRow
+            prefs.keepAlive = on
             if (on) { ensureNotificationPermission(); startWatch() } else stopWatch()
+            refreshBackground()
         }
-        val autoCard = card("Tự động") {
-            addView(autoSwitch, matchWrap())
+        autoSwitch = switchRow("Tự đẩy lên server khi thư mục có thay đổi", prefs.autoPush) { on ->
+            if (bgBinding) return@switchRow
+            prefs.autoPush = on
+            refreshBackground()
+        }
+        backgroundNote = TextView(this).apply { textSize = 13f; setTextColor(pal.muted); setPadding(0, dp(2), 0, 0) }
+        batteryBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(pal.warnBg, pal.warn)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            layoutParams = matchWrap().apply { topMargin = dp(10) }
             addView(TextView(context).apply {
-                text = "Kiểm tra mỗi 3 giây; chỉ đẩy file đã đổi và đã ngừng thay đổi."
-                textSize = 13f; setTextColor(pal.muted); setPadding(0, dp(2), 0, 0)
+                text = "Máy đang giới hạn pin cho app này, nên có thể ngừng chạy ngầm khi tắt màn hình. Hãy chọn \"Không hạn chế\"; trên Samsung còn phải bỏ app khỏi \"Ứng dụng ngủ\" (Cài đặt → Pin → Giới hạn dùng nền)."
+                textSize = 13f; setTextColor(pal.text)
             })
+            addView(actionButton("Cho phép chạy nền không giới hạn", true) { requestBatteryExemption() }, matchWrap().apply { topMargin = dp(8) })
+        }
+        val backgroundCard = card("Chạy ngầm") {
+            addView(keepSwitch, matchWrap())
+            addView(autoSwitch, matchWrap())
+            addView(backgroundNote)
+            addView(batteryBox)
         }
 
         // ---- danger zone
@@ -240,7 +264,7 @@ class MainActivity : Activity() {
         })
         col.addView(permBox)
         if (twoColumns) {
-            // left: where it connects and which folders; right: what to do, automatic push, the log
+            // left: where it connects, the background service and the folder; right: what to do, what happened, the log
             fun column(vararg cards: View, endGap: Boolean) = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 cards.forEach { addView(it) }
@@ -248,11 +272,11 @@ class MainActivity : Activity() {
             }
             col.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(column(settingsCard, connectCard, folderCard, dangerCard, endGap = true))
-                addView(column(actionCard, historyCard, autoCard, logCard, endGap = false))
+                addView(column(serverCard, backgroundCard, folderCard, dangerCard, endGap = true))
+                addView(column(actionCard, historyCard, logCard, endGap = false))
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         } else {
-            listOf(settingsCard, connectCard, folderCard, actionCard, historyCard, autoCard, logCard, dangerCard).forEach { col.addView(it) }
+            listOf(serverCard, backgroundCard, actionCard, historyCard, folderCard, logCard, dangerCard).forEach { col.addView(it) }
         }
 
         // Content is centred and at most 640dp (one column) or 1200dp (two) wide, so a big screen is not stretched edge to edge.
@@ -476,9 +500,36 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun ignoresBatteryLimits() = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+
+    /** Asks the system to leave this app out of battery optimisation (a one-tap dialog); falls back to the settings list. */
+    private fun requestBatteryExemption() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (e2: Exception) { StatusBus.log("Không mở được cài đặt pin: ${e2.message ?: e2.javaClass.simpleName}") }
+        }
+    }
+
+    /** Shows what the two switches and the battery setting are now (also after coming back from the settings screen). */
+    private fun refreshBackground() {
+        bgBinding = true
+        keepSwitch.isChecked = prefs.keepAlive
+        autoSwitch.isChecked = prefs.autoPush
+        autoSwitch.isEnabled = prefs.keepAlive
+        autoSwitch.alpha = if (prefs.keepAlive) 1f else 0.5f
+        bgBinding = false
+        backgroundNote.text = when {
+            !prefs.keepAlive -> "Đang tắt: giao diện web không thấy máy này và không gửi được lệnh (xóa mục, kiểm tra đồng bộ), và không tự đẩy."
+            prefs.autoPush -> "Giữ liên lạc với giao diện web mỗi 15 giây và tự đẩy file đã đổi (kiểm tra thư mục mỗi 3 giây). Tiếp tục sau khi đóng app hoặc khởi động lại máy."
+            else -> "Giữ liên lạc với giao diện web mỗi 15 giây (nhận lệnh xóa mục, kiểm tra đồng bộ). Không tự đẩy: bấm \"Đẩy lên server\" khi cần."
+        }
+        batteryBox.visibility = if (prefs.keepAlive && !ignoresBatteryLimits()) View.VISIBLE else View.GONE
+    }
+
     // ------------------------------------------------------------------ service
     private fun startWatch() {
-        startForegroundService(Intent(this, WatchService::class.java))
+        try { startForegroundService(Intent(this, WatchService::class.java)) } catch (e: Exception) { StatusBus.log("Không bật được chạy ngầm: ${e.message ?: e.javaClass.simpleName}") }
     }
 
     private fun stopWatch() {
@@ -566,25 +617,14 @@ class MainActivity : Activity() {
         }
     }
 
-    /** every 15 s while this screen is on: tells the server (so the web page) this phone is here, and learns whether the web page is open */
-    private fun sendHeartbeat() {
+    /** every 15 s while this screen is on: learns whether the web page is open (the service does the heartbeat and the commands) */
+    private fun pollWeb() {
         val url = normalizeServerUrl(prefs.serverUrl) ?: return
         val me = identity()
-        val auto = prefs.autoPush
-        val folder = prefs.databasesPath
         io.execute {
             try {
-                val r = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).hello(Heartbeat(auto, folder, if (auto) "watching" else "idle", ""))
-                runOnUiThread { setWeb(if (r.webSessions > 0) "Giao diện web: đang mở (${r.webSessions} phiên)" else "Giao diện web: chưa có ai mở", r.webSessions > 0) }
-                if (r.commands.isNotEmpty()) {
-                    // the web page asked something of this tablet (delete items of the cache file, check the sync)
-                    if (!hasAllFiles()) StatusBus.log("Có lệnh từ giao diện web nhưng chưa cấp quyền \"Truy cập mọi file\".")
-                    else {
-                        val local = LocalFolder(resolveFolder(folder))
-                        SyncEngine(local, ServerClient(url, identity = me), backupRoot(), actions = prefs).runCommands(r.commands).forEach { StatusBus.log(it) }
-                        runOnUiThread { refreshActions() }
-                    }
-                }
+                val info = ServerClient(url, connectTimeoutMs = 4_000, readTimeoutMs = 8_000, identity = me).info()
+                runOnUiThread { setWeb(info.webLine(), info.webSessions > 0); refreshActions() } // refreshActions: the service may have done a command since
             } catch (e: SyncException) {
                 // the status line above already shows the connection problem
             }
@@ -609,49 +649,16 @@ class MainActivity : Activity() {
         runOnUiThread { refreshActions() }
     }
 
-    /** "Kiểm tra đồng bộ trên app": the files on this tablet against the server's latest copy and its newest backup day. */
-    private fun checkTabletSync() = withEngine { _, engine ->
-        StatusBus.log("Đang kiểm tra đồng bộ giữa máy tính bảng và server…")
-        val r = engine.checkSync()
-        r.lines().forEach { StatusBus.log(it) }
-        showResult("Đồng bộ giữa máy tính bảng và server", r.lines(), good = r.inSync)
-    }
-
-    /** "Kiểm tra đồng bộ trên server": the server compares its latest copy with its newest backup day. */
-    private fun checkServerSync() {
-        val url = serverUrlOrNull() ?: return
-        val me = identity()
-        setBusy(true)
-        StatusBus.log("Đang nhờ server kiểm tra đồng bộ…")
-        io.execute {
-            try {
-                val r = ServerClient(url, identity = me).serverVerify()
-                r.lines().forEach { StatusBus.log(it) }
-                showResult("Đồng bộ trên server", r.lines(), good = r.ok)
-            } catch (e: Exception) {
-                StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
-            } finally {
-                runOnUiThread { setBusy(false) }
-            }
-        }
-    }
-
-    private fun showResult(title: String, lines: List<String>, good: Boolean) {
-        runOnUiThread {
-            AlertDialog.Builder(this)
-                .setTitle(if (good) "$title: ĐÃ ĐỒNG BỘ" else "$title: CHƯA ĐỒNG BỘ")
-                .setMessage(lines.joinToString("\n"))
-                .setPositiveButton("Đóng", null)
-                .show()
-        }
-    }
-
-    /** the list of what the web page made this tablet do (deleted items by name, checks) and of the checks after a push */
+    /** the list of what the web page made this tablet do (deleted items by name, sync checks started from the page) and of the checks after a push */
     private fun refreshActions() {
         val lines = prefs.actionLog().take(12)
-        actionsView.text = if (lines.isEmpty()) "Chưa có gì. Khi bạn xóa mục hoặc kiểm tra đồng bộ từ giao diện web, app ghi lại ở đây." else lines.joinToString("\n\n")
+        actionsView.text = if (lines.isEmpty()) "Chưa có gì. Khi bạn xóa mục hoặc bấm kiểm tra đồng bộ trên giao diện web, app làm ngay (kể cả khi đã đóng app) và ghi lại ở đây." else lines.joinToString("\n\n")
     }
 
+    // ------------------------------------------------------------------ "Khôi phục theo ngày": one button for the whole job
+    // 1. stop Gamwing if it runs in the background; 2. write the databases folder from the backup day (old files copied away first);
+    // 3. clear the files of pubg_extension/RCConfig (copied away first); 4. open Gamwing's app page, where the user taps "Xóa dữ liệu"
+    // (an app cannot clear another app's data itself). A progress window follows every step.
     private fun restoreByDay() = withEngine { folder, engine ->
         val days = engine.listBackupDays().filter { it.databases > 0 }
         if (days.isEmpty()) { StatusBus.log("Server chưa có bản sao lưu nào."); return@withEngine }
@@ -663,7 +670,7 @@ class MainActivity : Activity() {
                     io.execute {
                         try {
                             StatusBus.log("Đang lấy bản sao lưu ngày ${day.date}…")
-                            confirmAndApply(folder, engine, engine.planRestore(day.date), day.date)
+                            confirmApplyDay(folder, engine, engine.planRestore(day.date), day.date)
                         } catch (e: Exception) {
                             StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
                         }
@@ -674,34 +681,146 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Shows what would change, warns, and only after the user agrees writes the files (old ones are copied first). */
-    private fun confirmAndApply(folder: LocalFolder, engine: SyncEngine, plan: PullPlan, day: String) {
+    /** The package of the Gamwing app: found by its launcher activity (com.zjx.jyandroid…) or its name, else the one saved. */
+    private fun findGamwing(): String? {
+        val launchers = packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        launchers.firstOrNull { it.activityInfo.name.startsWith(GAMWING_ACTIVITY_PREFIX) }?.let { return it.activityInfo.packageName }
+        launchers.firstOrNull { it.loadLabel(packageManager).toString().contains("gamwing", ignoreCase = true) }?.let { return it.activityInfo.packageName }
+        return prefs.gamwingPackage.takeIf { p -> runCatching { packageManager.getPackageInfo(p, 0) }.isSuccess }
+    }
+
+    /** Gamwing's app page (Storage → Clear data is on it); the list of all apps when Gamwing is not found. */
+    private fun openGamwingSettings(pkg: String?) {
+        try {
+            startActivity(if (pkg != null) Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")) else Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS))
+        } catch (e: Exception) {
+            StatusBus.log("Không mở được cài đặt ứng dụng: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun sizeText(bytes: Long) = if (bytes < 1024) "$bytes B" else if (bytes < 1_048_576) "%.1f KB".format(bytes / 1024.0) else "%.2f MB".format(bytes / 1_048_576.0)
+
+    /** Says what will happen (the numbers come from the files as they are now) and only after the user agrees starts. */
+    private fun confirmApplyDay(folder: LocalFolder, engine: SyncEngine, plan: PullPlan, day: String) {
         plan.rejected.forEach { StatusBus.log("  bỏ qua tên file không được phép: $it") }
-        StatusBus.log("Ngày $day: ${plan.items.size} file — ${plan.newCount} mới, ${plan.changedCount} khác, ${plan.sameCount} giống")
-        if (plan.newCount + plan.changedCount == 0) { StatusBus.log("Không có gì để ghi."); return }
-        val names = plan.items.filter { it.state != PullState.SAME }.joinToString("\n") { "• ${it.name} (${if (it.state == PullState.NEW) "mới" else "sẽ bị ghi đè"})" }
+        val rcDir = RcConfig.dirFor(folder.dir)
+        val rc = RcConfig.plan(rcDir)
+        val pkg = findGamwing()
+        val change = plan.newCount + plan.changedCount
+        val dbLine = if (change == 0) "• databases: đã giống bản sao lưu ngày $day (${plan.sameCount} file), không cần ghi"
+        else "• databases: ghi $change file (${plan.newCount} mới, ${plan.changedCount} ghi đè; file cũ được chép dự phòng trước), ${plan.sameCount} file giống"
+        val rcLine = if (!rc.exists || rc.count == 0) "• RCConfig: không có file nào để xóa"
+        else "• RCConfig: xóa ${rc.count} file (${sizeText(rc.bytes)}) trong ${rcDir.path}; chép dự phòng trước"
+        val gwLine = if (pkg != null) "• Cuối cùng mở trang ứng dụng Gamwing ($pkg): chọn Bộ nhớ → Xóa dữ liệu"
+        else "• Không tìm thấy Gamwing: cuối cùng mở danh sách ứng dụng, bạn chọn Gamwing rồi Bộ nhớ → Xóa dữ liệu"
+        StatusBus.log("Ngày $day: ${plan.items.size} file — ${plan.newCount} mới, ${plan.changedCount} khác, ${plan.sameCount} giống; RCConfig ${rc.count} file")
         runOnUiThread {
             AlertDialog.Builder(this)
-                .setTitle("Ghi ${plan.newCount + plan.changedCount} file của ngày $day vào ${folder.dir.path}?")
+                .setTitle("Áp dụng bản sao lưu ngày $day?")
                 .setMessage(
-                    "$names\n\n⚠ Đây là file cài đặt của chính app Gamwing. Hãy ĐÓNG HẲN Gamwing trước khi ghi; nếu app đang chạy nó có thể ghi đè lại " +
-                        "hoặc không đọc lại các file này. Tôi chưa kiểm chứng app có đọc lại hay không.\n\n" +
-                        "File cũ bị ghi đè được sao lưu vào ${backupRoot().path}/<thời gian>/databases/.",
+                    "$dbLine\n$rcLine\n$gwLine\n\n" +
+                        "⚠ Hãy ĐÓNG HẲN Gamwing trước. Đang chạy, nó có thể ghi đè lại các file này. App sẽ thử dừng nó nếu nó đang chạy nền.\n\n" +
+                        "File cũ bị ghi đè hoặc bị xóa được chép vào ${backupRoot().path}/<thời gian>/.",
                 )
                 .setNegativeButton("Hủy") { _, _ -> StatusBus.log("Đã hủy.") }
-                .setPositiveButton("Ghi vào thư mục") { _, _ ->
-                    io.execute {
-                        val r = engine.applyRestore(plan)
-                        prefs.lastPushedDb = databaseFingerprints(folder)
-                        StatusBus.log("Đã ghi ${r.written.size} file." + (r.backupDir?.let { " File cũ đã sao lưu vào ${it.path}" } ?: ""))
-                        r.failed.forEach { StatusBus.log("  lỗi: $it") }
-                    }
-                }
+                .setPositiveButton("Bắt đầu") { _, _ -> runApplyDay(folder, engine, plan, day, pkg) }
                 .show()
         }
     }
 
+    private fun runApplyDay(folder: LocalFolder, engine: SyncEngine, plan: PullPlan, day: String, pkg: String?) {
+        val rcDir = RcConfig.dirFor(folder.dir)
+        setBusy(true)
+        val steps = listOf("Dừng Gamwing đang chạy nền", "Ghi thư mục databases", "Xóa file trong RCConfig", "Mở trang Xóa dữ liệu của Gamwing")
+        val progress = StepProgress("Đang áp dụng bản sao lưu ngày $day", steps)
+        io.execute {
+            try {
+                progress.update(0, 2, if (pkg != null) "Yêu cầu dừng $pkg…" else "Không tìm thấy Gamwing, bỏ qua bước này")
+                val stopped = pkg?.let { runCatching { getSystemService(ActivityManager::class.java).killBackgroundProcesses(it) }.isSuccess }
+                Thread.sleep(700) // a moment, so the process is gone before its files are written
+                progress.update(1, 6, "Chuẩn bị ghi thư mục databases…")
+                val restore = engine.applyRestore(plan) { i, n, name -> progress.update(1, 6 + 60 * (i - 1) / n, "Ghi file $i/$n: $name") }
+                prefs.lastPushedDb = databaseFingerprints(folder) // the watcher must not push the restored files back
+                progress.update(1, 66, "Đã ghi ${restore.written.size} file")
+                progress.update(2, 68, "Dọn thư mục RCConfig…")
+                val cleared = RcConfig.clear(rcDir, { engine.newBackupDir() }) { i, n, name -> progress.update(2, 68 + 26 * (i - 1) / n, "Xóa file $i/$n: $name") }
+                progress.update(3, 96, "Sắp mở trang Xóa dữ liệu của Gamwing…")
+                val result = ApplyDayResult(restore, cleared, stopped)
+                result.lines(day).forEach { StatusBus.log(it) }
+                prefs.addAction("Áp dụng bản sao lưu ngày $day: ghi ${restore.written.size} file databases, xóa ${cleared.deleted} file RCConfig" + if (result.ok) "" else " (có lỗi, xem nhật ký)")
+                runOnUiThread { refreshActions() }
+                progress.finish(result.lines(day), result.ok, pkg)
+            } catch (e: Exception) {
+                StatusBus.log("Lỗi: ${e.message ?: e.javaClass.simpleName}")
+                progress.fail("Không áp dụng được: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                runOnUiThread { setBusy(false) }
+            }
+        }
+    }
+
+    /** A window that follows a job: a bar with the percent, the steps (done / now / waiting) and a line for what is being done. */
+    private inner class StepProgress(title: String, private val steps: List<String>) {
+        private val bar = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = ColorStateList.valueOf(pal.primary)
+        }
+        private val percent = TextView(this@MainActivity).apply { textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(pal.text) }
+        private val detail = TextView(this@MainActivity).apply { textSize = 13f; setTextColor(pal.muted); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        private val stepViews = steps.map { TextView(this@MainActivity).apply { textSize = 15f; setPadding(0, dp(3), 0, dp(3)) } }
+        private val actions = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        private val dialog: AlertDialog
+
+        init {
+            val body = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(24), dp(8), dp(24), dp(4))
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(bar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(percent, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
+                }, matchWrap())
+                addView(detail, matchWrap().apply { topMargin = dp(6) })
+                stepViews.forEach { addView(it, matchWrap()) }
+                addView(actions, matchWrap().apply { topMargin = dp(10) })
+            }
+            paint(0, 0, "Đang bắt đầu…")
+            dialog = AlertDialog.Builder(this@MainActivity).setTitle(title).setView(body).setCancelable(false).create()
+            dialog.show()
+        }
+
+        private fun paint(step: Int, pct: Int, text: String) {
+            bar.progress = pct
+            percent.text = "$pct%"
+            detail.text = text
+            stepViews.forEachIndexed { i, v ->
+                v.text = (if (i < step) "✓  " else if (i == step) "●  " else "○  ") + steps[i]
+                v.setTextColor(if (i < step) pal.ok else if (i == step) pal.text else pal.muted)
+                v.setTypeface(null, if (i == step) Typeface.BOLD else Typeface.NORMAL)
+            }
+        }
+
+        fun update(step: Int, pct: Int, text: String) = runOnUiThread { paint(step, pct, text) }
+
+        /** all steps done: the summary, and a button to open Gamwing's page (it opens by itself after a moment when everything went well) */
+        fun finish(summary: List<String>, ok: Boolean, pkg: String?) = runOnUiThread {
+            paint(steps.size, 100, if (ok) "Xong. Trang Xóa dữ liệu của Gamwing sẽ tự mở sau giây lát: bấm Bộ nhớ → Xóa dữ liệu." else "Xong nhưng có lỗi (xem bên dưới).")
+            stepViews.forEach { it.setTextColor(pal.ok); it.setTypeface(null, Typeface.NORMAL) }
+            actions.addView(TextView(this@MainActivity).apply { text = summary.joinToString("\n"); textSize = 12f; setTextColor(pal.text); setTextIsSelectable(true) }, matchWrap())
+            actions.addView(actionButton("Mở trang Xóa dữ liệu của Gamwing", true) { openGamwingSettings(pkg) }, matchWrap().apply { topMargin = dp(10) })
+            actions.addView(actionButton("Đóng", false) { dialog.dismiss() }, matchWrap().apply { topMargin = dp(8) })
+            if (ok) ui.postDelayed({ if (dialog.isShowing) openGamwingSettings(pkg) }, 1_800)
+        }
+
+        fun fail(message: String) = runOnUiThread {
+            detail.text = message
+            detail.setTextColor(pal.err)
+            actions.addView(actionButton("Đóng", true) { dialog.dismiss() }, matchWrap().apply { topMargin = dp(10) })
+        }
+    }
+
     companion object {
-        private const val HeartbeatMs = 15_000L
+        private const val WebPollMs = 15_000L
     }
 }

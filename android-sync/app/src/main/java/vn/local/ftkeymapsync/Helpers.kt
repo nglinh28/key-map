@@ -57,6 +57,20 @@ fun serverUrlProblem(input: String): String? {
     return if (ok) null else "Địa chỉ không hợp lệ: \"$t\" (ví dụ 192.168.4.17:8787)."
 }
 
+/**
+ * Should the background service be started on its own (when the tablet boots, or after this app is updated)? Only when the user
+ * wants it kept alive and it could actually work: a usable server address and the "all files" permission.
+ */
+fun shouldRunInBackground(keepAlive: Boolean, serverUrl: String, hasAllFiles: Boolean): Boolean =
+    keepAlive && hasAllFiles && normalizeServerUrl(serverUrl) != null
+
+/** The line of the heartbeat that tells the web page what the app is doing: "idle" when it only listens, "watching" when it also pushes. */
+fun heartbeatState(autoPush: Boolean, lastError: String): String = when {
+    lastError.isNotEmpty() -> "error"
+    autoPush -> "watching"
+    else -> "idle"
+}
+
 /** "192.168.1.15:8787" -> "http://192.168.1.15:8787"; null when it is not an http(s) address (see [serverUrlProblem] for why). */
 fun normalizeServerUrl(input: String): String? {
     if (serverUrlProblem(input) != null) return null
