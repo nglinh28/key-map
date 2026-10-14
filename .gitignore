@@ -11,6 +11,15 @@ android-sync/**/build/
 android-sync/local.properties
 *.log
 
+# sản phẩm build/test của các kỹ năng
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+coverage*.json
+.coverage
+.pytest_cache/
+
 # khóa và cấu hình riêng của từng máy (AI_API_KEY...): không bao giờ commit
 .env
 **/.env
