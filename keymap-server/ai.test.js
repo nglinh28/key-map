@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const R = require('./admin/recoil');
-const { createAi, parseAnswer, validatePoints, buildMessages, loadAiConfig } = require('./ai');
+const { createAi, parseAnswer, validatePoints, validateReview, buildMessages, buildReviewMessages, curveChange, reviewScan, loadAiConfig } = require('./ai');
 
 const W = (n) => R.WEAPONS.indexOf(n);
 const SC = R.SCOPES.indexOf('X1');
@@ -24,6 +24,10 @@ const idx = build({
   Scar: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 80], [100, 64], [200, 48]])],
 });
 const target = { weapon: W('AUG'), scope: SC, gesture: 0, grip: 0, muzzle: MUZ, stock: 0 };
+// AUG and M416 have default fire data: the older tests below are about a gun WITHOUT it, so they start without it (the fire tests set their own)
+test.beforeEach(() => R.setFireOverrides({ AUG: null, M416: null }));
+test.afterEach(() => R.setFireOverrides({}));
+const withFire = (code, magazine, interval) => R.setFireOverrides({ ...R.getFireOverrides(), [code]: { magazine, interval } });
 
 // a fake OpenAI-compatible server; handler(req, body) -> { status, body } or undefined to hang
 function fake(handler) {
@@ -326,3 +330,78 @@ test('listModels: fetches models from /models, supports OpenAI and Ollama format
   } finally { await f.close(); }
 });
 
+
+// ---- the even time axis: what the AI is told, and how its answer is normalised
+const dataOf = (m) => JSON.parse(m[1].content.slice(m[1].content.indexOf('{')));
+
+test('buildMessages: a gun with fire data gets the time axis (T and the number of points); a gun without gets null', () => {
+  assert.equal(dataOf(buildMessages(idx, target)).target.time_axis, null);
+  withFire('AUG', 4, 0.1); // T = 300 ms
+  const m = buildMessages(idx, target);
+  const ax = dataOf(m).target.time_axis;
+  assert.equal(ax.duration_ms, 300);
+  assert.equal(ax.point_count, 3, 'as many points as the coefficient estimate');
+  assert.match(ax.rule, /evenly/);
+  assert.match(m[0].content, /time_axis/);
+});
+
+test('validatePoints with fire data: the times are put on the even grid, the values stay; bad values and shapes are still refused', () => {
+  const computed = [[0, 90], [100, 72], [200, 54]];
+  withFire('AUG', 4, 0.1);
+  const fire = R.fireOf('AUG');
+  const long = validatePoints(GOOD.map(([t, v]) => [t * 10, v]), computed, fire);
+  assert.equal(long.ok, true, 'ten times longer is no reason to refuse any more');
+  assert.deepEqual(long.curve, [[0, 80], [150, 64], [300, 48]]);
+  assert.deepEqual(validatePoints([[0, 80], [5, 64], [6, 48]], computed, fire).curve, [[0, 80], [150, 64], [300, 48]], 'uneven times');
+  const flat = validatePoints([[0, 80], [0, 64], [0, 48]], computed, fire);
+  assert.equal(flat.ok, true, 'times that are all equal are replaced, not a NaN');
+  assert.ok(flat.curve.every(([t, v]) => Number.isFinite(t) && Number.isFinite(v)));
+  assert.match(validatePoints([[0, 900], [100, 700], [200, 500]], computed, fire).reason, /lệch/);
+  assert.match(validatePoints([[0, 80], [100, Infinity]], computed, fire).reason, /hữu hạn/);
+  assert.match(validatePoints(Array.from({ length: 200 }, (_, i) => [i, 70]), computed, fire).reason, /quá nhiều/);
+  assert.match(validatePoints([[0, 90], [1000000, 54]], computed).reason, /thời lượng/i, 'without fire data the old duration rule stays');
+});
+
+test('validateReview with fire data: an unchanged answer stays as it is; a changed one is put on the even grid; wild values are refused', () => {
+  withFire('AUG', 4, 0.1);
+  const fire = R.fireOf('AUG');
+  const current = [[0, 90], [500, 72], [1000, 54]];
+  assert.deepEqual(validateReview(current.map((p) => [...p]), current, fire).curve, current, 'same points back: times untouched');
+  assert.deepEqual(validateReview([[0, 90], [400, 70], [800, 52]], current, fire).curve, [[0, 90], [150, 70], [300, 52]]);
+  assert.match(validateReview([[0, 90], [400, 7], [800, 5]], current, fire).reason, /lệch/);
+  assert.match(validateReview([[0, 90], [4000, 70], [8000, 52]], current).reason, /thời lượng/i, 'without fire data the duration is still checked');
+  assert.equal(validateReview([[0, 90], [4000, 70], [8000, 52]], current, fire).ok, true, 'with fire data it is not');
+});
+
+test('suggest: with fire data the answer comes back on the even grid', async () => {
+  withFire('AUG', 4, 0.1);
+  const f = await fake(() => answer(GOOD));
+  try {
+    const r = await createAi({ baseUrl: f.url, apiKey: KEY, timeoutMs: 5000 }).suggest(idx, target);
+    assert.equal(r.ok, true, r.reason);
+    assert.deepEqual(r.curve, [[0, 80], [150, 64], [300, 48]]);
+  } finally { await f.close(); }
+});
+
+test('buildReviewMessages: the time axis counts the points of the current curve', () => {
+  withFire('AUG', 4, 0.1);
+  const m = buildReviewMessages(idx, { ...target, grip: 1, muzzle: 0 });
+  const t = dataOf(m).target;
+  assert.equal(t.current_curve.length, 3);
+  assert.equal(t.time_axis.point_count, 3);
+  assert.match(m[0].content, /current values/, 'keeping the curve means returning its values');
+});
+
+test('curveChange: with ignoreDuration only the values count, on the normalised time', () => {
+  assert.equal(curveChange([[0, 10], [100, 20]], [[0, 10], [1000, 20]]), 9, 'by default a longer curve is a change');
+  assert.equal(curveChange([[0, 10], [100, 20]], [[0, 10], [1000, 20]], { ignoreDuration: true }), 0);
+});
+
+test('reviewScan: for a gun with fire data the length of saved curves is not a reason to flag them', () => {
+  const lib = build({ M416: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 81], [100, 64.8], [200, 48.6]])], Scar: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 80], [100, 64], [200, 48]])] });
+  withFire('M416', 4, 0.1); // T = 300 ms, the saved curves last 200 ms
+  const r = reviewScan(lib, W('M416'));
+  assert.equal(r.ok, true);
+  assert.equal(r.total, 1);
+  assert.deepEqual(r.flagged, []);
+});

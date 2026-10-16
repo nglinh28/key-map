@@ -36,6 +36,7 @@ Task: propose the curve for the TARGET gun and combination (scope, posture, acce
 Evidence you get: (1) coefficient_estimate = the gun's base curve times the accessory/posture coefficients, which is what the app uses when there is no own entry; (2) similar_guns = for guns whose base curve resembles the target's, their REAL own entry for this very combination next to their own coefficient curve, so you can see how real data differs from the coefficient estimate (value ratio and duration change); (3) same_gun_entries = other real entries of the target gun.
 target.accessory_rules says what this gun can physically take (anything not listed cannot be fitted); target.combination_problems is empty when the combination fits the gun, otherwise it says what does not. Never rely on an accessory the gun cannot take.
 Keep the number of points close to the coefficient estimate (between 3 and ${MAX_POINTS}). Do not invent a wildly different scale.
+If target.time_axis is not null, the times are FIXED by it: the points are spread evenly from 0 to duration_ms, so decide only the VALUES and answer exactly point_count points (your times are replaced by that grid anyway).
 Answer with ONE JSON object only, no markdown: {"points": [[time_ms, value], ...], "reasoning": "at most 3 sentences in Vietnamese: which evidence you used and the main change against the coefficient estimate"}`;
 
 const label = (list, i) => list[i] || String(i);
@@ -53,6 +54,12 @@ function accessoryRules(weapon) {
 }
 
 // idx: RecoilLib.indexData(groups); target: { weapon, scope, gesture, grip, muzzle, stock } (enum indexes)
+// what fixes the times of the points of a gun that has fire data: null when it has none
+function timeAxis(weapon, pointCount) {
+  const fire = R.fireOf(weapon);
+  return fire ? { duration_ms: fire.emptyMs, point_count: pointCount, rule: 'points are evenly spaced: time_i = round(i * duration_ms / (point_count - 1)); the first is at 0 and the last at duration_ms' } : null;
+}
+
 function buildMessages(idx, target, { limit = 5 } = {}) {
   const comp = R.computedFor(idx, target);
   const baseList = idx.map.get(S.keyOf(target.weapon, target.scope, 0, 0, 0, 0));
@@ -75,6 +82,7 @@ function buildMessages(idx, target, { limit = 5 } = {}) {
       base_curve: baseList ? curve2(baseList[baseList.length - 1].recoilValue) : null,
       accessory_rules: accessoryRules(target.weapon),
       combination_problems: R.comboProblems(target.weapon, target.scope, target).map((p) => p.reason),
+      time_axis: timeAxis(target.weapon, comp.curve.length),
     },
     coefficient_estimate: { curve: curve2(comp.curve), multiplier: comp.multiplier == null ? null : Math.round(comp.multiplier * 10000) / 10000, parts: comp.parts.map((p) => ({ name: p.label, value: Math.round(p.value * 10000) / 10000 })) },
     same_gun_entries: sameGun.slice(0, 14).map((x) => x.e),
@@ -96,6 +104,7 @@ Task: the TARGET gun and combination (scope, posture, accessories) ALREADY has i
 Evidence you get: (1) coefficient_estimate = the gun's base curve times the accessory/posture coefficients (what the app would use without an own entry); (2) similar_guns = for guns whose base curve resembles the target's, their REAL own entry for this very combination next to their own coefficient curve, so you can see how real data differs from the coefficient estimate; (3) same_gun_entries = other real entries of the target gun (keep the target consistent with them: e.g. more recoil-reducing accessories should not give a stronger pull than fewer, crouch/prone are usually lower than standing).
 target.accessory_rules says what this gun can physically take; target.combination_problems is empty when the combination fits the gun.
 If current_curve is already consistent with the evidence, return it unchanged (same points). Change only what the evidence supports; keep the shape and the number of points close to current_curve (between 3 and ${MAX_POINTS}). Do not invent a wildly different scale.
+If target.time_axis is not null, the times are FIXED by it (points spread evenly from 0 to duration_ms): decide only the VALUES and answer exactly point_count points; to keep the curve as it is, return its current values.
 Answer with ONE JSON object only, no markdown: {"points": [[time_ms, value], ...], "reasoning": "at most 3 sentences in Vietnamese: is the current curve fine, what evidence you used and what you changed"}`;
 
 // the same evidence as buildMessages plus the entry being reviewed
@@ -105,11 +114,12 @@ function buildReviewMessages(idx, target, opts = {}) {
   const data = JSON.parse(body.slice(body.indexOf('{')));
   const own = idx.map.get(S.keyOf(target.weapon, target.scope, target.grip, target.muzzle, target.stock, target.gesture));
   data.target.current_curve = own ? curve2(own[own.length - 1].recoilValue) : null;
+  if (data.target.time_axis && data.target.current_curve) data.target.time_axis.point_count = data.target.current_curve.length;
   return [{ role: 'system', content: SYSTEM_REVIEW }, { role: 'user', content: `Data for the request (JSON follows):\n${JSON.stringify(data)}` }, JSON_ONLY];
 }
 
 // how far a new curve is from the current one: mean of |new/old - 1| over the old curve's points, time scaled to the new duration (0.05 = 5%)
-function curveChange(current, next) {
+function curveChange(current, next, { ignoreDuration = false } = {}) {
   const dc = S.duration(current);
   const dn = S.duration(next);
   let sum = 0;
@@ -121,23 +131,25 @@ function curveChange(current, next) {
     n++;
   }
   const value = n ? sum / n : 0;
-  const duration = dc > 0 ? Math.abs(dn / dc - 1) : 0;
+  const duration = dc > 0 && !ignoreDuration ? Math.abs(dn / dc - 1) : 0; // a gun with fire data has the length of its magazine, not of the saved curve
   return Math.round(Math.max(value, duration) * 10000) / 10000;
 }
 
 // A reviewed curve is checked against the CURRENT entry, not the coefficient curve (real entries often sit far from the coefficients, and an
 // unchanged answer must always pass): same rules for points, duration 0.5-2x and every value 0.6-1.6x of the current curve.
 const sameCurve = (a, b) => a.length === b.length && a.every(([t, v], i) => Math.abs(t - b[i][0]) < 1e-6 && Math.abs(v - b[i][1]) < 1e-4);
-function validateReview(points, current) {
+// fire: R.fireOf(gun) or null. With it the times of a changed answer are put on the even grid first (values kept) and the length is not judged.
+function validateReview(points, current, fire = null) {
   const checked = R.checkCurve(points);
   if (!checked.ok) return { ok: false, reason: checked.error };
   if (sameCurve(points, current)) return { ok: true, curve: points.map(([t, v]) => [t, v]) };
   if (points.length > MAX_POINTS) return { ok: false, reason: `AI trả quá nhiều mốc (${points.length}; tối đa ${MAX_POINTS}).` };
-  for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
+  if (fire) points = R.withEvenTimes(points, fire.emptyMs);
+  else for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
   const durC = S.duration(current);
   if (durC > 0 && current.some(([, v]) => Math.abs(v) > 1e-6)) {
     const dur = S.duration(points);
-    if (dur / durC < 0.5 || dur / durC > 2) return { ok: false, reason: `Thời lượng AI đưa ra (${Math.round(dur)} ms) lệch quá xa mục hiện tại (${Math.round(durC)} ms).` };
+    if (!fire && (dur / durC < 0.5 || dur / durC > 2)) return { ok: false, reason: `Thời lượng AI đưa ra (${Math.round(dur)} ms) lệch quá xa mục hiện tại (${Math.round(durC)} ms).` };
     for (let i = 0; i < points.length; i++) {
       const ref = S.interp(current, (points[i][0] / dur) * durC);
       if (Math.abs(ref) < 1e-6) continue;
@@ -176,7 +188,7 @@ function reviewScan(idx, weapon) {
     let score = 0;
     const a = S.analogCurve(idx, e.o);
     if (a.ok) {
-      const d = curveChange(e.curve, a.curve);
+      const d = curveChange(e.curve, a.curve, { ignoreDuration: Boolean(R.fireOf(weapon)) });
       if (d >= REVIEW_ANALOG) { reasons.push(`lệch ${Math.round(d * 100)}% so với các súng tương tự`); score = Math.max(score, d); }
     }
     const mine = meanValue(e.curve);
@@ -219,16 +231,18 @@ function parseAnswer(content) {
 }
 
 // computed: the coefficient curve of the same combination (the sanity reference)
-function validatePoints(points, computed) {
+// fire: R.fireOf(gun) or null. With it the times are put on the even grid first (the values stay) and neither the order nor the length of the times is judged.
+function validatePoints(points, computed, fire = null) {
   const checked = R.checkCurve(points);
   if (!checked.ok) return { ok: false, reason: checked.error };
   if (points.length > MAX_POINTS) return { ok: false, reason: `AI trả quá nhiều mốc (${points.length}; tối đa ${MAX_POINTS}).` };
-  for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
+  if (fire) points = R.withEvenTimes(points, fire.emptyMs);
+  else for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
   const durC = S.duration(computed);
   const hasRef = durC > 0 && computed.some(([, v]) => Math.abs(v) > 1e-6);
   if (hasRef) {
     const dur = S.duration(points);
-    if (dur / durC < 0.25 || dur / durC > 4) return { ok: false, reason: `Thời lượng AI đưa ra (${Math.round(dur)} ms) lệch quá xa đường cong theo hệ số (${Math.round(durC)} ms).` };
+    if (!fire && (dur / durC < 0.25 || dur / durC > 4)) return { ok: false, reason: `Thời lượng AI đưa ra (${Math.round(dur)} ms) lệch quá xa đường cong theo hệ số (${Math.round(durC)} ms).` };
     for (let i = 0; i < points.length; i++) {
       const ref = S.interp(computed, (points[i][0] / dur) * durC);
       if (Math.abs(ref) < 1e-6) continue;
@@ -374,7 +388,7 @@ function createAi(cfg = {}, { fetchImpl = globalThis.fetch, providers = null } =
   const curveTaker = (idx, target) => (r) => {
     const parsed = parseAnswer(r.content);
     if (!parsed.ok) return parsed;
-    const valid = validatePoints(parsed.points, R.computedFor(idx, target).curve);
+    const valid = validatePoints(parsed.points, R.computedFor(idx, target).curve, R.fireOf(target.weapon));
     return valid.ok ? { ok: true, curve: valid.curve, reasoning: parsed.reasoning } : { ok: false, reason: valid.reason };
   };
 
@@ -391,10 +405,10 @@ function createAi(cfg = {}, { fetchImpl = globalThis.fetch, providers = null } =
     const r = await ask('curve', buildReviewMessages(idx, target, opts), opts, (a) => {
       const parsed = parseAnswer(a.content);
       if (!parsed.ok) return parsed;
-      const valid = validateReview(parsed.points, current);
+      const valid = validateReview(parsed.points, current, R.fireOf(target.weapon));
       return valid.ok ? { ok: true, curve: valid.curve, reasoning: parsed.reasoning } : { ok: false, reason: valid.reason };
     });
-    return r.ok ? { ...r, current, change: curveChange(current, r.curve) } : r;
+    return r.ok ? { ...r, current, change: curveChange(current, r.curve, { ignoreDuration: Boolean(R.fireOf(target.weapon)) }) } : r;
   }
 
   // Which of the candidates (suggest.comboCandidates) deserve an own entry most. The AI only orders and explains: it cannot add a combination.
