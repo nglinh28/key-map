@@ -175,7 +175,7 @@ function kindErrors(idx) {
     const truth = list[list.length - 1].recoilValue;
     const k = kindOf(g, m, st, ge);
     const a = acc.get(k) || { seen: new Set(), errors: [] };
-    const sig = JSON.stringify(truth);
+    const sig = JSON.stringify([truth, comp.curve]); // same truth AND same estimate = a template copy; same truth with another estimate is a different sample
     if (a.seen.has(sig)) continue;
     a.seen.add(sig);
     a.errors.push(curveError(comp.curve, truth));
@@ -250,8 +250,9 @@ function comboCandidates(idx, target, { limit = 8, minError = 0.06, minKindSampl
 }
 
 // How much an own entry (a) differs from the coefficient curve (b) at one point, as a multiplier. Against a b that is not near 0 it is a / b; near 0
-// (below `floor`) it continues smoothly as 1 + (a - b) / floor instead of exploding. Kept within CORRECTION.
-const ratio = (a, b, floor) => clamp(Math.abs(b) >= floor ? a / b : 1 + (a - b) / floor, CORRECTION[0], CORRECTION[1]);
+// (below `floor`) it continues smoothly as 1 + (a - b) / floor instead of exploding (mirrored for a negative b, so it is continuous on both sides).
+// Kept within CORRECTION.
+const ratio = (a, b, floor) => clamp(Math.abs(b) >= floor ? a / b : 1 + (b < 0 ? -1 : 1) * (a - b) / floor, CORRECTION[0], CORRECTION[1]);
 
 // -> { ok:true, curve, computed, factor:{min,max,mean}, stretch, similar:[{weapon,name,distance,weight}], method:'analog' }
 //    or { ok:false, reason, computed } when there is nothing to learn from (the coefficient curve is still returned)
@@ -293,7 +294,7 @@ function analogCurve(idx, target, opts = {}) {
 }
 
 // ---------------------------------------------------------------- leave-one-out check
-// Hide each own entry in turn, rebuild it from the rest with analogCurve and score it against the hidden curve; also score the plain coefficient
+// Hide each own entry (and its template copies on other guns) in turn, rebuild it from the rest with analogCurve and score it against the hidden curve; also score the plain coefficient
 // curve, so the gain of the method is measured, not assumed. Pure over idx (it is not changed: the hidden entry is masked in a read-only view).
 // opts: { limit (similar guns), only(o) -> boolean to restrict which entries are tried, scope/gesture are taken from each entry }
 // -> { n (entries tried), covered (analogCurve gave a curve), computed:{mean,median}, analog:{mean,median} (over the covered ones only), better (share of covered where analog beat computed) }
@@ -308,7 +309,16 @@ function backtest(idx, { limit = 5, only } = {}) {
     if (only && !only(o)) continue;
     const truth = list[list.length - 1].recoilValue;
     tried++;
-    const r = analogCurve({ groups: idx.groups, map: { get: (k) => (k === key ? undefined : idx.map.get(k)) } }, o, { limit }); // analogCurve only reads idx.map.get
+    // Hide the entry, and also the same entry of any gun that is a template copy of this one (same base curve and same own entry): it would hand the answer back.
+    const hidden = new Set([key]);
+    const sigTruth = JSON.stringify(truth);
+    const sigBase = JSON.stringify(lastCurve(idx.map.get(keyOf(weapon, scope, 0, 0, 0, 0))));
+    for (let w = 0; w < idx.groups.length; w++) {
+      if (w === weapon) continue;
+      const k2 = keyOf(w, scope, grip, muzzle, stock, gesture);
+      if (JSON.stringify(lastCurve(idx.map.get(k2))) === sigTruth && JSON.stringify(lastCurve(idx.map.get(keyOf(w, scope, 0, 0, 0, 0)))) === sigBase) hidden.add(k2);
+    }
+    const r = analogCurve({ groups: idx.groups, map: { get: (k) => (hidden.has(k) ? undefined : idx.map.get(k)) } }, o, { limit }); // analogCurve only reads idx.map.get
     if (!r.ok) continue;
     errC.push(curveError(r.computed, truth));
     errA.push(curveError(r.curve, truth));
