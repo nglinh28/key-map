@@ -1364,7 +1364,7 @@
         rc.dirty = false;
         redraw();
       } },
-        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && draft.source === 'add_points' ? el('span', { class: 'tag warn', title: `Đã thêm mốc, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
+        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && (draft.source === 'add_points' || draft.source === 'retime') ? el('span', { class: 'tag warn', title: `${draft.source === 'retime' ? 'Đã chia đều thời gian' : 'Đã thêm mốc'}, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
         el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
         el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
         el('td', { 'data-label': 'Nguồn' }, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
@@ -2211,6 +2211,44 @@
   }
 
   // ---------------------------------------------------------------- "Thêm mốc cho súng": batch add points across all scopes and postures
+  // Puts a new curve for each combination into the drafts (nothing is written to the file). makeCurve(base, o) -> the new curve; base is what the
+  // page holds now for that combination: its draft, the curve being edited, or what the app uses. -> how many combinations
+  function applyToDrafts(ix, targets, makeCurve, { source, how }) {
+    for (const o of targets) {
+      const key = recoilKey(o);
+      const draft = rc.drafts.get(key);
+      const base = draft && draft.curve ? draft.curve : rc.editKey === key && rc.editCurve ? rc.editCurve : RL.resolve(ix.idx, o).curve;
+      const curve = makeCurve(base, o);
+      rc.drafts.set(key, { o, curve, review: true, source, how, change: 0 });
+      if (rc.editKey === key && rc.editCurve) { rc.editCurve = curve; rc.dirty = true; }
+    }
+    return targets.length;
+  }
+
+  // "Chia đều thời gian cả súng": every own combination of the gun is spread evenly over one magazine (shape kept), as drafts
+  async function showRetimeGunModal(ix) {
+    if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
+    const weapon = rc.weapon;
+    const fire = RL.fireOf(weapon);
+    if (!fire) { toast('Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng).', true); return; }
+    if (RL.isGunDisabled(weapon) || RL.isZeroWeapon(weapon) || rc.bulk || rc.filling) return;
+    const gunName = RL.weaponLabel(weapon);
+    const targets = RL.batchCombos(ix.idx, rc.customCombos, weapon, scopesOf(weapon)).own;
+    if (!targets.length) { toast(`${gunName}: chưa có mục riêng nào để chia đều.`, true); return; }
+    const id = await showModal({
+      title: `Chia đều thời gian cả súng ${gunName}?`, tone: 'info',
+      body: [
+        el('p', {}, `Mọi mục riêng của ${gunName} (${targets.length} tổ hợp, mọi ống ngắm và tư thế) được chia đều thời gian trên ${secondsText(fire.emptyMs)} s (${fire.magazine} viên × ${vn(fire.interval)} s). Số mốc và hình dạng đường cong giữ nguyên.`),
+        el('p', { class: 'muted text-xs' }, 'Kết quả là bản nháp: xem lại rồi bấm "Lưu tất cả" để ghi vào server (có bản sao lưu lịch sử).'),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'apply', label: 'Chia đều', primary: true }],
+    });
+    if (id !== 'apply') return;
+    if (!latest() || rc.bulk || rc.filling || rc.weapon !== weapon) { toast('Dữ liệu đã thay đổi khi hộp thoại đang mở: hãy thử lại.', true); return; }
+    const n = applyToDrafts(ix, targets, (base) => RL.retime(base, fire.emptyMs), { source: 'retime', how: 'chia đều' });
+    redraw();
+    toast(`Đã chia đều thời gian cho ${n} tổ hợp của ${gunName}. Bấm "Lưu tất cả" để ghi vào server.`);
+  }
   async function showBatchAddPointsModal(ix) {
     if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
     const weapon = rc.weapon;
@@ -2219,6 +2257,7 @@
     if (rc.bulk || rc.filling) return;
 
     const gunName = RL.weaponLabel(weapon);
+    const fire = RL.fireOf(weapon); // time to empty one magazine, or null
 
     // own entries (any scope, saved or still custom) and every valid combination, once each; the scope picker also lists scopes the rules no longer allow
     const { own: ownCombos, all: allValidCombos, scopeList: scopes, extra: extraScopes } = RL.batchCombos(ix.idx, rc.customCombos, weapon, scopesOf(weapon));
@@ -2311,7 +2350,7 @@
       const byGesture = countBy(RL.filterCombos(inRange, { scopes: selScopes }), 'gesture');
       scopePicks.forEach((x) => { x.n.textContent = String(byScope.get(x.sc) || 0); });
       posturePicks.forEach((x) => { x.n.textContent = String(byGesture.get(x.ge) || 0); });
-      const method = methodTrend.checked ? 'theo xu hướng mốc trước' : 'theo bước chuẩn ngẫu nhiên';
+      const method = fire ? `nội suy trên ${secondsText(fire.emptyMs)} s` : methodTrend.checked ? 'theo xu hướng mốc trước' : 'theo bước chuẩn ngẫu nhiên';
       let msg;
       if (!selScopes.size) msg = 'Chưa chọn ống ngắm nào.';
       else if (!selGestures.size) msg = 'Chưa chọn tư thế nào.';
@@ -2370,10 +2409,12 @@
           el('span', { class: 'font-semibold text-sm' }, 'Số lượng mốc cần thêm vào mỗi tổ hợp (1–20 mốc):'),
           stepper
         ),
-        el('div', { class: 'field' },
-          el('span', { class: 'font-semibold text-sm' }, 'Quy tắc tính mốc tiếp theo:'),
-          methodCards
-        ),
+        fire
+          ? el('p', { class: 'muted' }, `Các mốc mới được nội suy lại trên thời gian bắn hết băng ${secondsText(fire.emptyMs)} s (${fire.magazine} viên × ${vn(fire.interval)} s): các mốc luôn chia đều thời gian, hình dạng đường cong giữ nguyên.`)
+          : el('div', { class: 'field' },
+            el('span', { class: 'font-semibold text-sm' }, 'Quy tắc tính mốc tiếp theo:'),
+            methodCards
+          ),
         el('div', { class: 'field' },
           el('span', { class: 'font-semibold text-sm' }, 'Ống ngắm (số tổ hợp bị thêm mốc):'),
           scopePickBox, scopeQuick
@@ -2409,36 +2450,9 @@
       return;
     }
 
-    let modified = 0;
-    for (const o of targets) {
-      const key = recoilKey(o);
-      let baseCurve;
-      const draft = rc.drafts.get(key);
-      if (draft && draft.curve) {
-        baseCurve = draft.curve;
-      } else if (rc.editKey === key && rc.editCurve) {
-        baseCurve = rc.editCurve;
-      } else {
-        const r = RL.resolve(ix.idx, o);
-        baseCurve = r.curve;
-      }
-
-      const newCurve = RL.extendCurve(baseCurve, count, { method, dir: rc.stepDir });
-      rc.drafts.set(key, {
-        o,
-        curve: newCurve,
-        review: true,
-        source: 'add_points',
-        how: `+${count} mốc`,
-        change: 0,
-      });
-
-      if (rc.editKey === key && rc.editCurve) {
-        rc.editCurve = newCurve;
-        rc.dirty = true;
-      }
-      modified++;
-    }
+    const modified = applyToDrafts(ix, targets, fire
+      ? (base) => RL.resample(base, base.length + count, fire.emptyMs) // the shape is kept, the points are evenly spaced over one magazine
+      : (base) => RL.extendCurve(base, count, { method, dir: rc.stepDir }), { source: 'add_points', how: `+${count} mốc` });
 
     redraw();
     toast(`Đã thêm ${count} mốc cho ${modified} tổ hợp của ${gunName}. Bấm "Lưu tất cả" để ghi vào server.`);
@@ -2909,6 +2923,13 @@
       title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Thêm mốc nối tiếp cho súng này ở tất cả tư thế và ống ngắm dựa vào dữ liệu mốc trước đó.',
       onclick: guard(() => showBatchAddPointsModal(ix)),
     }, icon('plus'), 'Thêm mốc cho súng');
+    const retimeGunBtn = el('button', {
+      type: 'button',
+      class: 'btn small',
+      disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk) || !RL.fireOf(o.weapon),
+      title: RL.fireOf(o.weapon) ? 'Chia đều thời gian của mọi mục riêng của súng này trên thời gian bắn hết băng (bản nháp, chưa ghi file).' : 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng)',
+      onclick: guard(() => showRetimeGunModal(ix)),
+    }, icon('clock'), 'Chia đều thời gian cả súng');
     const suggestBtn = el('button', {
       type: 'button',
       class: 'btn small',
@@ -2957,7 +2978,7 @@
       chartWrap,
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
-      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, suggestBtn, resetBtn),
+      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, resetBtn),
       el('div', { class: 'row' }, saveBtns[1]),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),
