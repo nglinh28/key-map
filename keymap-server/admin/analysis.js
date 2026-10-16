@@ -34,7 +34,7 @@
   const DIR_VN = { up: 'Tăng (+)', down: 'Giảm (−)', random: 'Tăng hoặc giảm (ngẫu nhiên)' };
   const stepHint = () => `Mốc mới và các mốc sau nối tiếp mốc đứng trước, cộng dồn: thời gian +${RL.STEP.time[0]}–${RL.STEP.time[1]} ms; giá trị +${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Tăng) hoặc −${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Giảm).`;
 
-  const S = { src: '', days: [], data: null, error: '', pick: '', sel: null, refs: new Map(), cmds: [], pending: '' };
+  const S = { src: '', days: [], versions: [], data: null, error: '', pick: '', sel: null, refs: new Map(), cmds: [], pending: '' };
   const defaultWeapon = () => {
     const aug = RL.WEAPONS.indexOf('AUG');
     if (!RL.isGunDisabled(aug)) return aug;
@@ -75,6 +75,24 @@
     release();
   };
   const latest = () => S.src === '';
+  // the source: '' = newest on the server; 'YYYY-MM-DD' = a daily backup; 'v:<version>' = an older version of the file kept in its history (has the time)
+  const versionOf = () => (S.src.startsWith('v:') ? S.src.slice(2) : '');
+  const srcLabel = () => {
+    const v = versionOf();
+    if (v) { const x = S.versions.find((q) => q.version === v); return `bản trước lúc ${x ? clockDateTime(x.saved_at) : v}`; }
+    return `sao lưu ngày ${S.src}`;
+  };
+  // Saving from an older source writes it over the newest file: ask once, clearly. true = go on (or it is the newest anyway).
+  async function oldSourceOk() {
+    if (latest()) return true;
+    const ok = await showModal({
+      title: 'Lưu từ một mốc cũ?', tone: 'danger',
+      body: [el('p', {}, `Bạn đang xem ${srcLabel()}. Lưu sẽ thay TOÀN BỘ ${CACHE_FILE} mới nhất trên server bằng bản này cộng chỉnh sửa của bạn: mọi thay đổi sau mốc này sẽ mất khỏi bản mới nhất.`),
+        el('p', { class: 'muted' }, 'Bản mới nhất hiện tại vẫn nằm trong lịch sử (tối đa 10 bản) để khôi phục.')],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Tôi hiểu, tiếp tục', danger: true }],
+    });
+    return ok === 'go';
+  }
 
   // Leaving a curve that was changed but not saved: ask once, with the same dialog as everything else. true = go on.
   async function discardOk() {
@@ -186,17 +204,24 @@
   async function load() {
     S.error = '';
     S.data = null;
-    S.days = (await api('GET', '/sync/backups')).days.filter((d) => d.databases > 0);
-    if (S.src && !S.days.some((d) => d.date === S.src)) S.src = '';
     const name = encodeURIComponent(CACHE_FILE);
+    const [daysR, verR] = await Promise.all([api('GET', '/sync/backups'), api('GET', `/sync/databases/${name}/history`).catch(() => ({ versions: [] }))]);
+    S.days = daysR.days.filter((d) => d.databases > 0);
+    S.versions = verR.versions || [];
+    if (S.src && !(versionOf() ? S.versions.some((v) => v.version === versionOf()) : S.days.some((d) => d.date === S.src))) S.src = '';
     try {
-      const file = await api('GET', S.src ? `/sync/backups/${S.src}/databases/${name}` : `/sync/databases/${name}`);
+      let file;
+      if (versionOf()) {
+        const v = await api('GET', `/sync/databases/${name}/history/${encodeURIComponent(versionOf())}`);
+        const q = S.versions.find((x) => x.version === v.version);
+        file = { name: CACHE_FILE, text: v.text, etag: '', bytes: textBytes(v.text), updated_at: q ? q.saved_at : null, folder: '' };
+      } else file = await api('GET', S.src ? `/sync/backups/${S.src}/databases/${name}` : `/sync/databases/${name}`);
       const t0 = performance.now();
       const parsed = CX.parse(file.text);
       S.data = { file, parsed, analysis: CX.analyze(parsed), ms: Math.round(performance.now() - t0) };
-      await Promise.all([loadRefs(S.src), loadCommands()]);
+      await Promise.all([loadRefs(versionOf() ? '' : S.src), loadCommands()]);
     } catch (e) {
-      if (e.status === 404) S.error = S.src ? `Ngày ${S.src} không có file ${CACHE_FILE}.` : `Server chưa có file ${CACHE_FILE}. Mở app KeyMap Sync, kiểm tra thư mục Documents/jya2/databases rồi bấm "Đẩy lên server".`;
+      if (e.status === 404) S.error = S.src ? `Mốc ${S.src.replace(/^v:/, '')} không có file ${CACHE_FILE}.` : `Server chưa có file ${CACHE_FILE}. Mở app KeyMap Sync, kiểm tra thư mục Documents/jya2/databases rồi bấm "Đẩy lên server".`;
       else S.error = e.message;
     }
     if (S.sel && !(S.data && (S.data.analysis.docs.has(S.sel.id)))) S.sel = null;
@@ -333,10 +358,11 @@
 
   // ---------------------------------------------------------------- list: groups of rows and the inspector
   function sourceControl() {
-    const options = [{ value: '', label: 'Mới nhất' }, ...S.days.map((x) => ({ value: x.date, label: x.date.slice(5).replace('-', '/') }))];
-    const change = guard(async (v) => { S.src = v; S.sel = null; S.pick = ''; await refresh(); });
-    if (options.length <= 5) return segmented({ label: 'Nguồn dữ liệu', options, value: S.src, onchange: change });
-    return el('select', { 'aria-label': 'Nguồn dữ liệu', onchange: (e) => change(e.target.value) }, options.map((o) => el('option', { value: o.value, selected: o.value === S.src }, o.value ? `Sao lưu ngày ${o.value}` : 'Bản mới nhất trên server')));
+    const ids = [{ value: '', label: 'Bản mới nhất trên server' },
+      ...S.versions.map((v) => ({ value: `v:${v.version}`, label: `Bản trước lúc ${clockDateTime(v.saved_at)}` })),
+      ...S.days.map((x) => ({ value: x.date, label: `Sao lưu ngày ${x.date}` }))];
+    const change = guard(async (v) => { if (!(await discardOk())) { redraw(); return; } S.src = v; S.sel = null; S.pick = ''; await refresh(); });
+    return el('select', { 'aria-label': 'Nguồn dữ liệu (thời gian)', class: 'src-select', onchange: (e) => change(e.target.value) }, ids.map((o) => el('option', { value: o.value, selected: o.value === S.src }, o.label)));
   }
 
   function pageHead() {
@@ -494,7 +520,7 @@
     const refs = S.refs.get(S.sel.id) || [];
     const viewHead = el('div', { class: 'view-head' },
       el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn small', onclick: back }, icon('back'), 'Danh sách'), el('h2', {}, S.sel.label), badge(KIND_VN[S.sel.kind] || 'Không rõ', 'accent'),
-        info && info.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null, !S.src ? null : badge(`sao lưu ngày ${S.src}`),
+        info && info.selected ? badge('Đang dùng trong app', 'ok', { dot: true }) : null, !S.src ? null : badge(srcLabel()),
         el('span', { class: 'spacer' }),
         menuButton([
           { label: 'Lịch sử & khôi phục', icon: 'history', onclick: guard(() => (window.Ui.restoreFromHistory ? window.Ui.restoreFromHistory(CACHE_FILE, async () => { rc.dirty = false; rc.editCurve = null; rc.idx = null; await refresh(); }) : null)) },
@@ -1712,8 +1738,11 @@
     stage(2, 60, `Đang gửi ${fmtBytes(textBytes(newXml))} lên server…`);
     await frame();
     let saved;
+    const fromOld = !latest();
     try {
-      saved = await api('PUT', `/sync/databases/${encodeURIComponent(CACHE_FILE)}`, { text: newXml, etag: S.data.file.etag });
+      // from an older source the file is written over the newest one: its etag is read now (the owner confirmed the overwrite)
+      const etag = fromOld ? (await api('GET', `/sync/databases/${encodeURIComponent(CACHE_FILE)}`)).etag : S.data.file.etag;
+      saved = await api('PUT', `/sync/databases/${encodeURIComponent(CACHE_FILE)}`, { text: newXml, etag });
     } catch (err) {
       if (err.status === 409) {
         toast('File đã thay đổi trên server từ lúc bạn mở (có thể app vừa đồng bộ). Đã tải lại bản mới; kiểm tra rồi lưu lại.', true);
@@ -1732,6 +1761,7 @@
     rc.editCurve = null;
     rc.idx = null;
     rc.bad.clear();
+    if (fromOld) { S.src = ''; try { await refresh(); } catch (e) { toast(`Đã lưu vào server nhưng chưa tải lại được trang (${e.message || e}). Bấm "Tải lại".`, true); } return true; }
     try {
       const at = new Date().toISOString();
       // read the new file first and replace file, parsed and analysis together: if reading fails, nothing is half replaced (the old etag then makes the
@@ -1750,7 +1780,6 @@
   }
 
   async function saveRecoil(ix, o, curve) {
-    if (!latest()) { toast('Chỉ lưu được khi đang xem "Mới nhất", không lưu vào bản sao lưu cũ.', true); return; }
     if (rc.bad.size) { toast('Có ô nhập không phải số hợp lệ. Sửa các ô viền đỏ trước khi lưu.', true); return; }
     const checked = RL.checkCurve(curve);
     if (!checked.ok) { toast(checked.error, true); return; }
@@ -1773,6 +1802,7 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: 'Lưu vào server', primary: true }],
     });
     if (ok !== 'save') return;
+    if (!(await oldSourceOk())) return;
     const savedKey = recoilKey(o);
     // the same window with steps as "Lưu tất cả" and the other long writes: what is being done, and how far it is
     const bar = window.Ui.progressDialog({ title: `Đang lưu ${checked.curve.length} mốc độ giật…`, steps: ['Áp dụng thay đổi', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
@@ -1787,7 +1817,6 @@
   }
 
   async function deleteRecoil(ix, o) {
-    if (!latest()) { toast('Chỉ xóa được khi đang xem "Mới nhất", không xóa trong bản sao lưu cũ.', true); return; }
     const doc = S.data.analysis.docs.get(S.sel.id);
     if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
     let edit;
@@ -1806,6 +1835,7 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'delete', label: 'Xóa mục riêng', danger: true }],
     });
     if (ok !== 'delete') return;
+    if (!(await oldSourceOk())) return;
     // the same window with steps as the saves: what is being done, and how far it is
     const bar = window.Ui.progressDialog({ title: 'Đang xóa mục riêng…', steps: ['Áp dụng thay đổi', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
     try {
@@ -1906,7 +1936,6 @@
   }
 
   async function deleteAudited(list) {
-    if (!latest()) { toast('Chỉ xóa được khi đang xem "Mới nhất", không xóa trong bản sao lưu cũ.', true); return; }
     if (!(await discardOk())) return;
     const doc = S.data.analysis.docs.get(S.sel.id);
     if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
@@ -1925,6 +1954,7 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Xóa ${list.length} mục`, danger: true }],
     });
     if (go !== 'go') return;
+    if (!(await oldSourceOk())) return;
 
     const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} mục sai chuẩn…`, steps: ['Gom các mục cần xóa', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
     try {
@@ -2086,7 +2116,7 @@
           : `Lưu ${totalAll} tổ hợp chưa lưu của ${RL.weaponLabel(rc.weapon)}`)
       : 'Không có tổ hợp nào chưa lưu';
     return el('button', {
-      type: 'button', class: 'btn small primary', 'data-save-all': '1', disabled: !latest() || !totalAll || Boolean(rc.bulk),
+      type: 'button', class: 'btn small primary', 'data-save-all': '1', disabled: !totalAll || Boolean(rc.bulk),
       title,
       onclick: guard(() => saveAll()),
     }, icon('check'), el('span', { class: 'save-all-label' }, otherCount > 0 ? `Lưu (${totalAll} · ${RL.weaponLabel(rc.weapon)}: ${currentGunPending})` : `Lưu tất cả${totalAll ? ` (${totalAll})` : ''}`));
@@ -2099,7 +2129,7 @@
     const currentGunPending = pendingSaves(rc.weapon).length;
     const otherCount = totalAll - currentGunPending;
     for (const b of document.querySelectorAll('[data-save-all]')) {
-      b.disabled = !latest() || !totalAll || Boolean(rc.bulk);
+      b.disabled = !totalAll || Boolean(rc.bulk);
       b.title = totalAll
         ? (otherCount > 0
             ? `Lưu ${currentGunPending} tổ hợp của ${RL.weaponLabel(rc.weapon)} (${otherCount} tổ hợp súng khác)`
@@ -2115,7 +2145,6 @@
   }
 
   async function saveAll(targetWeapon = null) {
-    if (!latest()) { toast('Chỉ lưu được khi đang xem "Mới nhất", không lưu vào bản sao lưu cũ.', true); return; }
     if (rc.bulk) { toast('Đang tạo mốc: đợi xong hoặc bấm "Dừng" rồi hãy lưu tất cả.', true); return; }
     if (rc.bad.size) { toast('Có ô nhập không phải số hợp lệ. Sửa các ô viền đỏ trước khi lưu.', true); return; }
 
@@ -2231,6 +2260,7 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: `Xác nhận lưu ${plan.length} tổ hợp`, primary: true }],
     });
     if (ok !== 'save') return;
+    if (!(await oldSourceOk())) return;
 
     const bar = window.Ui.progressDialog({ title: `Đang lưu ${plan.length} tổ hợp…`, steps: ['Áp dụng từng tổ hợp', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
     try {
@@ -2900,7 +2930,7 @@
     const label = comboText(o);
     const zero = RL.isZeroWeapon(o.weapon); // the app ignores this gun's data: nothing to save
     const fire = zero ? null : RL.fireOf(o.weapon); // time to empty one magazine: the length of the curve, its points are spread evenly over it
-    const canSave = () => rc.dirty && latest() && !zero && rc.bad.size === 0;
+    const canSave = () => rc.dirty && !zero && rc.bad.size === 0;
 
     const chartWrap = el('div', { class: 'chart-box my-3' });
     const ptsSlot = el('div', { class: 'table-wrap my-2 overflow-x-auto' });

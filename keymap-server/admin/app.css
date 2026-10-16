@@ -1833,3 +1833,8 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .chart-hint { margin: 0 0 8px; }
 
 .chart.draggable { touch-action: none; }
+
+/* daily backups: tick boxes and the bar with the delete buttons */
+.day-tools { align-items: center; gap: 8px 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.day-tools .check { display: inline-flex; align-items: center; gap: 6px; }
+.day-pick { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }

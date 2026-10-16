@@ -160,3 +160,24 @@ test('old backup days with the earlier layout still list and read', async () => 
     assert.deepEqual((await raw(port, 'GET', '/admin/api/sync/backups/2026-01-02/databases')).json.files.map((f) => f.name), ['a.xml']);
   });
 });
+
+test('deleting days of backups frees them and leaves the rest alone', async () => {
+  const c = clock();
+  await withServer({}, async ({ port, dir }) => {
+    await push(port, [file('A.xml', 1)]);
+    c.now += 30 * HOUR; await push(port, [file('A.xml', 2)]);
+    c.now += 30 * HOUR; await push(port, [file('A.xml', 3)]);
+    const before = days(dir);
+    assert.equal(before.length, 3);
+    const r = await raw(port, 'POST', '/admin/api/sync/backups/delete', { headers: W, body: { days: [before[0], before[1], '2020-01-01'] } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.deleted, [before[0], before[1]]);
+    assert.deepEqual(r.json.missing, ['2020-01-01']);
+    assert.ok(r.json.freed > 0);
+    assert.deepEqual(days(dir), [before[2]]);
+    for (const bad of [{}, { days: [] }, { days: ['../x'] }, { days: ['2026-1-1'] }, { days: [5] }]) {
+      assert.equal((await raw(port, 'POST', '/admin/api/sync/backups/delete', { headers: W, body: bad })).status, 400);
+    }
+    assert.deepEqual(days(dir), [before[2]]);
+  }, { clock: c.fn });
+});

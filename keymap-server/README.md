@@ -161,7 +161,7 @@ Giao diện phẳng, ít chữ: nền xám nhạt, thẻ trắng viền mảnh, 
   hộp cảnh báo liệt kê thay đổi, từ chối ghi đè nếu file đã bị nơi khác sửa (HTTP 409). File lớn (cache keymap) chỉ xem và tải.
 - **So sánh ngày**: chọn một file và hai thời điểm (hoặc bản mới nhất); liệt kê mục thêm/mất/đổi; với file cache, mục đổi có nút "Chi tiết"
   để xem từng giá trị JSON thay đổi.
-- **Sao lưu theo ngày**: mỗi ngày một thư mục (Timeline); xem và tải từng file. Có thẻ **Kiểm tra đồng bộ** với hai nút:
+- **Sao lưu theo ngày**: mỗi ngày một thư mục (Timeline); xem và tải từng file; **Xóa** từng ngày, tick chọn nhiều ngày hoặc **Dọn cũ…** (giữ N ngày mới nhất). Có thẻ **Kiểm tra đồng bộ** với hai nút:
   - *trên server*: so bản **mới nhất** của từng file với bản sao lưu của **ngày mới nhất** bằng dấu vân tay sha-256; báo file khác, thiếu hoặc thừa trong bản sao lưu;
   - *trên app*: gửi lệnh cho máy tính bảng tự so các file của nó với server (bản mới nhất và ngày mới nhất); kết quả từng máy hiện ngay trên trang (cần app đang bật Chạy ngầm).
   Cả hai cũng có trong Tìm nhanh (Ctrl+K).
@@ -195,6 +195,7 @@ Dùng cùng lớp bảo vệ với trang web (`Host` hợp lệ, header `X-Admin
 | `GET /admin/api/sync/backups` | Danh sách ngày sao lưu (mới nhất trước) |
 | `GET …/backups/<YYYY-MM-DD>/databases` | Cả bộ file của một ngày (tên thật, có dấu và CJK) |
 | `GET …/backups/<YYYY-MM-DD>/databases/<tên>` | Một file của một ngày |
+| `POST …/backups/delete` `{days:[…]}` | Xóa các ngày sao lưu để giải phóng dung lượng (file mới nhất và lịch sử phiên bản không bị ảnh hưởng) |
 | `POST …/hello`, `GET …/devices`, `DELETE …/devices/<id>`, `POST /admin/api/presence` | Kết nối app ↔ web. Câu trả lời của `hello` có `commands`: các lệnh đang chờ thiết bị đó |
 | `POST /admin/api/cache/delete` | `{file, ids, etag, labels}`: cắt các mục khỏi file cache trên server (cần `etag` hiện hành, 409 nếu file đã đổi; 404 nếu id không có ở đâu; 400 nếu id/file sai) và tạo lệnh cho các thiết bị đã biết |
 | `GET /admin/api/cache/commands` | Các lệnh gần đây (50 mới nhất) với trạng thái `pending` / `done` / `attention` / `server_only` / `expired` và kết quả từng thiết bị |
