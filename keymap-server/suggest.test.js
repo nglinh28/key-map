@@ -242,3 +242,82 @@ test('comboCandidates: impact candidates are spread over kinds (at most perKind 
   assert.ok(Object.values(per).every((n) => n <= 2), JSON.stringify(per));
   assert.ok(Object.keys(per).length >= 2, 'two kinds are both far off: both appear');
 });
+
+// ---- robustness near zero values, template copies, and the leave-one-out check
+test('distance: a point at ~0 on one curve only is a modest gap, not an explosion', () => {
+  const a = [[0, 0], [500, 2], [1000, 4]];
+  const b = [[0, 0.3], [500, 2], [1000, 4]];
+  const c = [[0, 0], [500, 2.2], [1000, 4.4]];
+  assert.ok(S.distance(a, b) < 0.4, `${S.distance(a, b)}`);
+  assert.ok(S.distance(a, b) > S.distance(a, c), 'still a difference');
+  assert.equal(S.distance(a, a), 0);
+});
+
+test('analogCurve: a coefficient curve at ~0 does not blow the factor up, and the factor stays within 0.5..2', () => {
+  const BASE0 = [[0, 0.001], [100, 80], [200, 60]];
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE0)],
+    M416: [E(0, 0, 0, 0, BASE0), E(0, MUZ, 0, 0, [[0, 0.5], [100, 72], [200, 54]])],
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.factor.max <= 2 + 1e-9 && r.factor.min >= 0.5 - 1e-9, JSON.stringify(r.factor));
+  assert.ok(r.curve.every(([, v]) => Number.isFinite(v)));
+});
+
+test('analogCurve: corrections are averaged as multipliers (0.5 and 2 cancel out)', () => {
+  const real = (k) => E(0, MUZ, 0, 0, times(BASE, 0.9 * k));
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE)],
+    M416: [E(0, 0, 0, 0, BASE), real(0.5)],
+    Scar: [E(0, 0, 0, 0, BASE), real(2)],
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  r.curve.forEach(([, v], i) => assert.ok(near(v, BASE[i][1] * 0.9, 1e-6), `${v}`));
+});
+
+test('similarGuns: guns with the same base curve and the same own entry count once', () => {
+  const combo = E(0, MUZ, 0, 0, times(BASE, 0.9));
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE)],
+    M416: [E(0, 0, 0, 0, BASE), combo],
+    Scar: [E(0, 0, 0, 0, BASE), combo],
+    AKM: [E(0, 0, 0, 0, times(BASE, 1.3)), E(0, MUZ, 0, 0, times(BASE, 1.2))],
+  });
+  const sims = S.similarGuns(idx, target());
+  assert.equal(sims.length, 2);
+  assert.ok(near(sims.reduce((n, s) => n + s.weight, 0), 1, 1e-9));
+});
+
+test('kindErrors: template copies count once, a ~0 truth value does not blow the error up, disabled guns are skipped', () => {
+  const idx = build({
+    M416: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+    Scar: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+    AKM: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+  });
+  const k = S.kindErrors(idx).get(`0|010`);
+  assert.equal(k.n, 1, 'identical truth curves are one sample');
+  assert.ok(k.median < 1, `${k.median}`);
+  R.setDisabledGuns(['M416', 'Scar', 'AKM']);
+  try { assert.equal(S.kindErrors(idx).size, 0); } finally { R.setDisabledGuns([]); }
+});
+
+test('backtest: hides each own entry, rebuilds it from the others, and beats the plain coefficient curve when similar guns agree', () => {
+  // every gun deviates from its coefficient curve by the same 0.8 (compensator) and 0.7 (vertical grip)
+  const guns = {};
+  ['M416', 'Scar', 'AKM', 'M762', 'QBZ', 'G36C'].forEach((n, i) => {
+    const k = 1 + i * 0.03;
+    guns[n] = [E(0, 0, 0, 0, times(BASE, k)), E(0, MUZ, 0, 0, times(BASE, k * 0.9 * 0.8)), E(VERT, 0, 0, 0, times(BASE, k * 0.85 * 0.7))];
+  });
+  const idx = build(guns);
+  const before = JSON.stringify([...idx.map.keys()]);
+  const r = S.backtest(idx);
+  assert.equal(JSON.stringify([...idx.map.keys()]), before, 'the index is restored');
+  assert.equal(r.n, 12);
+  assert.equal(r.covered, 12);
+  assert.ok(r.analog.mean < 0.01, JSON.stringify(r));
+  assert.ok(r.computed.mean > 0.2, JSON.stringify(r));
+  assert.equal(r.better, 1);
+  assert.equal(S.backtest(idx, { only: (o) => o.grip === VERT }).n, 6);
+});
