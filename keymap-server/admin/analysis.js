@@ -19,6 +19,7 @@
   const AUTO_KEY = 'ftAdminAutoStep';
   const loadAutoStep = () => { try { return localStorage.getItem(AUTO_KEY) !== 'off'; } catch { return true; } };
   const vn = (n) => String(n).replace('.', ','); // 1.02 -> 1,02
+  const secondsText = (ms) => vn(Math.round(ms / 10) / 100); // 2465 -> 2,47 (from the whole ms)
   let aiStatusP = null;
   let aiStatusAt = 0;
   const aiStatus = (force = false) => {
@@ -2686,11 +2687,13 @@
     const curve = rc.editCurve;
     const label = comboText(o);
     const zero = RL.isZeroWeapon(o.weapon); // the app ignores this gun's data: nothing to save
+    const fire = zero ? null : RL.fireOf(o.weapon); // time to empty one magazine: the length of the curve, its points are spread evenly over it
     const canSave = () => rc.dirty && latest() && !zero && rc.bad.size === 0;
 
     const chartWrap = el('div', { class: 'chart-box my-3' });
     const ptsSlot = el('div', { class: 'table-wrap my-2 overflow-x-auto' });
     const summarySlot = el('span', {}, '');
+    const fireSlot = el('div', { class: 'meta fire-line' });
     const dirtyBadgeSlot = el('span', {}, '');
 
     // two buttons (a node can only sit in one place): one beside the title, one under the table of points; both follow canSave()
@@ -2732,6 +2735,11 @@
       const st = RL.curveStats(curve);
       chartWrap.replaceChildren(chart(curve));
       summarySlot.textContent = `${st.points} mốc, ${st.duration} ms, giá trị ${num(st.min)} … ${num(st.max)}`;
+      if (!zero) {
+        const gap = fire ? RL.durationGap(curve, fire.emptyMs) : 0;
+        fireSlot.replaceChildren(...[fire ? el('span', {}, `Hết băng: ${secondsText(fire.emptyMs)} s (${fire.magazine} viên × ${vn(fire.interval)} s)`) : el('span', { class: 'muted' }, 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng): các mốc dùng bước thời gian cũ.'),
+          gap > 0.05 ? badge(`Thời lượng ${secondsText(st.duration)} s, lệch ${Math.round(gap * 100)}% so với băng đạn`, 'warn', { dot: true }) : null].filter(Boolean));
+      }
       for (const b of saveBtns) b.disabled = !canSave();
       resetBtn.disabled = !rc.dirty;
       const untouched = rc.freshBase && JSON.stringify(curve) === rc.freshBase;
@@ -2783,7 +2791,9 @@
     // A box was left (or Enter): with "Tự tính các mốc sau" on, every later point of THAT column continues from the one before it.
     function committed(i, col) {
       if (!rc.autoStep || rc.bad.has(`${i}:${col}`)) return;
-      if (RL.cascadeFrom(curve, i, col, Math.random, rc.stepDir)) { rc.dirty = true; syncRows(i + 1); updateLive(); }
+      // a gun with fire data: the later TIMES are spread evenly from this one to the end of the magazine; the values keep adding up step by step
+      const changed = col === 0 && fire ? RL.spreadAfter(curve, i, fire.emptyMs) : RL.cascadeFrom(curve, i, col, Math.random, rc.stepDir);
+      if (changed) { rc.dirty = true; syncRows(i + 1); updateLive(); }
     }
 
     function renderPts() {
@@ -2818,6 +2828,7 @@
           disabled: curve.length <= 1,
           onclick: () => {
             curve.splice(i, 1);
+            if (fire) curve.splice(0, curve.length, ...RL.withEvenTimes(curve, fire.emptyMs)); // the rest stay evenly spaced over the magazine
             rc.dirty = true;
             renderPts();
             updateLive();
@@ -2856,13 +2867,17 @@
     const addBtn = el('button', {
       type: 'button',
       class: 'btn small',
-      title: 'Thêm 1 mốc dựa vào xu hướng các mốc trước đó (hoặc bước chuẩn)',
+      title: fire ? 'Thêm 1 mốc: các mốc chia đều trên thời gian bắn hết băng, hình dạng đường cong giữ nguyên' : 'Thêm 1 mốc dựa vào xu hướng các mốc trước đó (hoặc bước chuẩn)',
       onclick: () => {
+        if (fire) {
+          curve.splice(0, curve.length, ...RL.resample(curve, curve.length + 1, fire.emptyMs)); // one more point, the shape is kept, all points evenly spaced
+        } else {
         const ext = RL.extendCurve(curve, 1, { method: 'trend', dir: rc.stepDir });
         if (ext.length > curve.length) {
           curve.push(ext[ext.length - 1]);
         } else {
           curve.push(RL.nextPoint(curve, Math.random, rc.stepDir));
+        }
         }
         rc.dirty = true;
         renderPts();
@@ -2871,6 +2886,20 @@
         if (last) last.t.focus();
       },
     }, icon('plus'), 'Thêm mốc');
+
+    const retimeBtn = el('button', {
+      type: 'button',
+      class: 'btn small',
+      disabled: !fire,
+      title: fire ? `Chia đều các mốc trên thời gian bắn hết băng (${secondsText(fire.emptyMs)} s); hình dạng đường cong giữ nguyên, chưa ghi vào file` : 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng)',
+      onclick: () => {
+        curve.splice(0, curve.length, ...RL.retime(curve, fire.emptyMs));
+        rc.dirty = true;
+        renderPts();
+        updateLive();
+        toast(`Đã chia đều ${curve.length} mốc trên ${secondsText(fire.emptyMs)} s. Bấm Lưu để ghi vào file.`);
+      },
+    }, icon('clock'), 'Chia đều thời gian theo băng đạn');
 
     const gunDisabled = RL.isGunDisabled(o.weapon);
     const batchAddPointsBtn = el('button', {
@@ -2922,15 +2951,16 @@
         el('h2', {}, el('span', { class: 'sr-only' }, `${RL.weaponLabel(o.weapon)} · ${POSTURE_VN[o.gesture]} · ${RL.LABELS.SCOPES[o.scope]} · `), `Tay cầm: ${optText('GRIPS', o.grip)} · Nòng: ${optText('MUZZLES', o.muzzle)} · Báng: ${optText('STOCKS', o.stock)}`),
         el('div', { class: 'head-actions' }, dirtyBadgeSlot, saveBtns[0], more)),
       el('div', { class: 'meta' }, sourceTag(r), summarySlot),
+      zero ? null : fireSlot,
       r.copies > 1 ? alert('info', el('span', {}, `Có ${r.copies} mục trùng khóa (${r.distinct} nội dung khác nhau). App dùng mục xuất hiện cuối cùng.`)) : null,
       r.notes.length ? el('ul', { class: 'muted text-xs' }, r.notes.map((n) => el('li', {}, n))) : null,
       chartWrap,
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
-      el('div', { class: 'row' }, addBtn, batchAddPointsBtn, suggestBtn, resetBtn),
+      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, suggestBtn, resetBtn),
       el('div', { class: 'row' }, saveBtns[1]),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
-        el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, stepHint()))),
+        el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Cách tính và hệ số'),
         el('div', { class: 'disclosure-body' }, how ? el('p', { class: 'muted' }, how) : null, parts ? el('p', { class: 'mono' }, `Hệ số nhân: ${parts}`) : null,
           el('h2', {}, 'So sánh tư thế (cùng phụ kiện, ống ngắm)'), compare,
