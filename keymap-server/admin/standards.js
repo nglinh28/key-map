@@ -25,7 +25,7 @@
   const WAITING = new Set(['Mosin', 'M1014', 'MP5K', 'P90', 'AMR']);
   const SHORT = {
     muzzle: { COMPENSATOR: 'hãm giật', FLASH_HIDER: 'ẩn tia lửa', SUPPRESSOR: 'giảm thanh', BRAKE: 'brake', EXTENDER: 'nối dài', BRAKE_NEW: 'brake (mới)' },
-    grip: { VERTICAL: 'đứng', HORIZONTAL: 'tam giác', THUMB: 'ngón cái', HALF: 'half', LIGHT: 'nhẹ', LASER: 'laser', ERGONOMIC: 'công thái học' },
+    grip: { VERTICAL: 'đứng', HORIZONTAL: 'tam giác', THUMB: 'ngón cái', HALF: 'hồng', LIGHT: 'nhẹ', LASER: 'laser', ERGONOMIC: 'công thái học' },
     stock: { GENERAL: 'báng chiến thuật', GENERAL_NEW: 'báng (mới)' },
   };
   const listText = (set, enumNames, map) => [...set].sort((a, b) => a - b).map((i) => map[enumNames[i]] || enumNames[i]).join(', ');

@@ -67,7 +67,7 @@ Hệ thống dùng bảng này ở mọi chỗ **thêm hoặc gợi ý** tổ h�
 | AR chỉ nòng | `AKM` `FAMAS` | 3 loại | không | không | đến 6x |
 | Groza | `Groza` | chỉ giảm thanh | không | không | đến 6x |
 | Micro UZI | `UZI` | 3 loại | không | báng riêng | chỉ 1x |
-| Vector | `Vector` | 3 loại | đứng, nhẹ, Half, Laser | báng chiến thuật | đến 6x |
+| Vector | `Vector` | 3 loại | đứng, nhẹ, Hồng (Tay cầm nửa), Laser | báng chiến thuật | đến 6x |
 | UMP45 | `UMP45` | 3 loại | 5 + Laser | không | đến 6x |
 | Tommy Gun | `Thomson` | chỉ giảm thanh | chỉ tay cầm đứng | không | chỉ 1x |
 | Bizon | `Bison` | 3 loại | không | không | đến 6x |
@@ -80,7 +80,7 @@ Hệ thống dùng bảng này ở mọi chỗ **thêm hoặc gợi ý** tổ h�
 | Shotgun, súng máy, nỏ | `DBS` `DP28` `MG3` `CrossBow` | không | không | không | đến 6x |
 | Cần lever | `Win94` | không | không | không | không lắp được |
 
-"3 loại" = Nòng hãm giật, ẩn tia lửa, giảm thanh (`COMPENSATOR`, `FLASH_HIDER`, `SUPPRESSOR`). "5" = đứng, tam giác (Angled = `HORIZONTAL`), ngón cái, Half, nhẹ. Laser (`LASER`) nằm trong nhóm tay cầm của Tencent. `MK12`, `FAMAS` lấy từ AppMedia (bản toàn cầu 2022) vì Tencent không có.
+"3 loại" = Nòng hãm giật, ẩn tia lửa, giảm thanh (`COMPENSATOR`, `FLASH_HIDER`, `SUPPRESSOR`). "5" = đứng, tam giác (Angled = `HORIZONTAL`), ngón cái, Hồng (Tay cầm nửa), nhẹ. Laser (`LASER`) nằm trong nhóm tay cầm của Tencent. `MK12`, `FAMAS` lấy từ AppMedia (bản toàn cầu 2022) vì Tencent không có.
 
 Cách hiểu cần biết:
 - Các lựa chọn của app mà **không nguồn nào** nhắc tới được coi là không hỗ trợ: tay cầm công thái học (`ERGONOMIC`), nòng `BRAKE`, `EXTENDER`, `BRAKE_NEW`, báng `GENERAL_NEW`. Ốp má, Bullet Loops, Quiver, Choke, Duckbill, băng đạn không có trong danh sách phụ kiện của app nên không áp dụng.
