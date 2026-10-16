@@ -11,15 +11,21 @@ class GunStandards {
   constructor({ file = '' } = {}) {
     this.file = file;
     let saved = {};
-    if (file) { try { saved = JSON.parse(fs.readFileSync(file, 'utf8')).overrides || {}; } catch { saved = {}; } }
-    this.overrides = R.setRuleOverrides(saved); // what is not valid any more is dropped
+    if (file) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        saved = raw && typeof raw === 'object' ? raw : {};
+      } catch { saved = {}; }
+    }
+    this.overrides = R.setRuleOverrides(saved.overrides || {}); // what is not valid any more is dropped
+    this.disabled = R.setDisabledGuns(saved.disabled || []);
   }
 
   save() {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ overrides: this.overrides }, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify({ overrides: this.overrides, disabled: this.listDisabled() }, null, 2));
     fs.renameSync(tmp, this.file);
   }
 
@@ -37,6 +43,17 @@ class GunStandards {
     return { ok: true };
   }
 
+  // code: gun code (RecoilLib.WEAPONS); disabled: boolean (true = turn off, false = turn on)
+  setDisabled(code, disabled = true) {
+    if (typeof code !== 'string' || !R.WEAPONS.includes(code) || code === R.WEAPONS[0]) return { ok: false, error: 'Mã súng không hợp lệ.' };
+    const current = new Set(this.listDisabled());
+    if (disabled) current.add(code);
+    else current.delete(code);
+    this.disabled = R.setDisabledGuns([...current]);
+    this.save();
+    return { ok: true, disabled: this.disabled };
+  }
+
   // back to the built-in table for this gun
   reset(code) {
     if (!Object.prototype.hasOwnProperty.call(this.overrides, code)) return { ok: false, error: 'Súng này chưa được sửa.' };
@@ -48,6 +65,7 @@ class GunStandards {
   }
 
   list() { return R.getRuleOverrides(); }
+  listDisabled() { return R.getDisabledGuns(); }
 }
 
 module.exports = { GunStandards };

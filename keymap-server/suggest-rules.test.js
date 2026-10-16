@@ -14,6 +14,10 @@ const COEF = { compensatorMuzzle: 0.9, flashHidderMuzzle: 0.8, suppressorMuzzle:
 const BASE = [[0, 100], [100, 80], [200, 60]];
 const times = (c, k) => c.map(([t, v]) => [t, v * k]);
 
+test.afterEach(() => {
+  R.setDisabledGuns([]);
+});
+
 function build(guns) {
   const groups = Array.from({ length: 70 }, () => ({ v: [], coefficients: Array.from({ length: 13 }, () => ({ ...COEF })) }));
   for (const [name, entries] of Object.entries(guns)) groups[W(name)].v.push(...entries);
@@ -68,3 +72,31 @@ test('gaps respect the rules too', () => {
   assert.ok(g.candidates.every((c) => c.stock === 0 && c.grip !== G('LASER')), JSON.stringify(g.candidates.map((c) => [c.grip, c.muzzle, c.stock])));
   assert.equal(S.comboGaps(idx, { weapon: W('AUG'), scope: SC('X1'), gesture: 0 }, { minSupport: 2, allowed: () => true }).candidates.some((c) => c.stock !== 0), true);
 });
+
+test('disabled guns are excluded from candidates, gaps, analogCurve, and similar guns', () => {
+  const idx = build({ AUG: [base('X1')], Scar: [base('X1', 0.95)], ...template('X1') });
+  R.setDisabledGuns(['AUG']);
+
+  // Disabled target weapon is rejected
+  const cand = S.comboCandidates(idx, { weapon: W('AUG'), scope: SC('X1'), gesture: 0 }, all());
+  assert.equal(cand.ok, false);
+  assert.match(cand.reason, /đã bị tắt/);
+  assert.deepEqual(cand.candidates, []);
+
+  const gaps = S.comboGaps(idx, { weapon: W('AUG'), scope: SC('X1'), gesture: 0 }, { minSupport: 2 });
+  assert.equal(gaps.ok, false);
+  assert.match(gaps.reason, /đã bị tắt/);
+  assert.deepEqual(gaps.candidates, []);
+
+  const curve = S.analogCurve(idx, { weapon: W('AUG'), scope: SC('X1'), gesture: 0, grip: 0, muzzle: 0, stock: 0 });
+  assert.equal(curve.ok, false);
+  assert.match(curve.reason, /đã bị tắt/);
+
+  // When another weapon asks for similar guns, the disabled gun AUG is not included
+  const sim = S.similarGuns(idx, { weapon: W('Scar'), scope: SC('X1'), gesture: 0, grip: 0, muzzle: 0, stock: 0 });
+  assert.ok(!sim.some((g) => g.weapon === W('AUG')), 'AUG should not be among similar guns');
+
+  const simByBase = S.similarByBase(idx, W('Scar'), SC('X1'));
+  assert.ok(!simByBase.some((g) => g.weapon === W('AUG')), 'AUG should not be in similarByBase');
+});
+

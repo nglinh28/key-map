@@ -41,6 +41,7 @@ const PAGES = {
   '/admin/cachexml.js': ['cachexml.js', 'text/javascript; charset=utf-8'],
   '/admin/ui.js': ['ui.js', 'text/javascript; charset=utf-8'],
   '/admin/analysis.js': ['analysis.js', 'text/javascript; charset=utf-8'],
+  '/admin/ai-settings.js': ['ai-settings.js', 'text/javascript; charset=utf-8'],
   '/admin/palette.js': ['palette.js', 'text/javascript; charset=utf-8'],
   '/admin/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
   '/admin/app.css': ['app.css', 'text/css; charset=utf-8'],
@@ -97,14 +98,26 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
 
   function servePage(res, pathname) {
     const [file, type] = PAGES[pathname];
-    let body = pageCache.get(file);
-    if (!body) {
-      body = fs.readFileSync(path.join(PAGE_DIR, file));
-      pageCache.set(file, body);
+    const filePath = path.join(PAGE_DIR, file);
+    try {
+      const mtime = fs.statSync(filePath).mtimeMs;
+      let cached = pageCache.get(file);
+      if (!cached || cached.mtime !== mtime) {
+        cached = { body: fs.readFileSync(filePath), mtime };
+        pageCache.set(file, cached);
+      }
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Content-Length': cached.body.length,
+        'Cache-Control': 'no-cache, must-revalidate',
+        ...SECURITY_HEADERS,
+      });
+      res.end(cached.body);
+    } catch {
+      return err(res, 404, 'File not found');
     }
-    res.writeHead(200, { 'Content-Type': type, 'Content-Length': body.length, ...SECURITY_HEADERS });
-    res.end(body);
   }
+
 
   async function jsonBody(req) {
     const text = await readBody(req, Math.max(cfg.maxBody, MAX_ADMIN_BODY));
@@ -164,6 +177,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     const ok = (v, n) => Number.isInteger(v) && v >= 0 && v < n;
     if (!c || typeof c !== 'object' || !ok(c.weapon, RecoilLib.WEAPONS.length) || !ok(c.scope, RecoilLib.SCOPES.length) || !ok(c.gesture, RecoilLib.POSTURES.length)
       || (!partial && (!ok(c.grip, RecoilLib.GRIPS.length) || !ok(c.muzzle, RecoilLib.MUZZLES.length) || !ok(c.stock, RecoilLib.STOCKS.length)))) return { status: 400, error: 'Invalid combination' };
+    if (RecoilLib.isGunDisabled(c.weapon)) return { status: 400, error: `Súng ${RecoilLib.weaponLabel(c.weapon)} đã bị tắt không sử dụng.` };
     const file = databases.read(CACHE_FILE);
     if (!file) return { status: 404, error: `File ${CACHE_FILE} chưa có trên server` };
     if (analysisCache.etag !== file.etag) {
@@ -290,17 +304,28 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       return json(res, 200, { ok: true, ranking, model: r.model, ms: r.ms, dataset: ctx.dataset });
     }
     // ---- "Tiêu chuẩn súng": the user's corrections of what each gun can take (the page loads them into its own RecoilLib)
-    if (p === '/admin/api/standards' && method === 'GET') return json(res, 200, { overrides: standards.list() });
+    if (p === '/admin/api/standards' && method === 'GET') return json(res, 200, { overrides: standards.list(), disabled: standards.listDisabled() });
     if ((m = /^\/admin\/api\/standards\/([^/]+)$/.exec(p)) && (method === 'PUT' || method === 'DELETE')) {
       const code = safeDecode(m[1]);
       let r;
       if (method === 'DELETE') r = standards.reset(code);
       else {
         const body = await jsonBody(req);
-        r = body && Object.prototype.hasOwnProperty.call(body, 'rule') ? standards.set(code, body.rule) : { ok: false, error: 'Thiếu "rule".' };
+        if (!body || typeof body !== 'object') return err(res, 400, 'Invalid request body');
+        if (Object.prototype.hasOwnProperty.call(body, 'disabled')) {
+          r = standards.setDisabled(code, Boolean(body.disabled));
+          if (r.ok && Object.prototype.hasOwnProperty.call(body, 'rule')) {
+            const r2 = standards.set(code, body.rule);
+            if (!r2.ok) r = r2;
+          }
+        } else if (Object.prototype.hasOwnProperty.call(body, 'rule')) {
+          r = standards.set(code, body.rule);
+        } else {
+          return err(res, 400, 'Thiếu "rule" hoặc "disabled".');
+        }
       }
       if (!r.ok) return err(res, 400, r.error);
-      return json(res, 200, { ok: true, overrides: standards.list() });
+      return json(res, 200, { ok: true, overrides: standards.list(), disabled: standards.listDisabled() });
     }
     // ---- "Cài đặt AI": the endpoints and their order. Keys never come back; the address of the environment endpoint neither.
     if (p === '/admin/api/ai/providers' && method === 'GET') return json(res, 200, { providers: aiProviders.publicList() });
@@ -312,12 +337,42 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     }
     if (p === '/admin/api/ai/providers/test' && method === 'POST') {
       const body = await jsonBody(req);
-      const one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
+      let one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
+      if (body && body.provider && typeof body.provider === 'object') {
+        const bp = body.provider;
+        if (bp.baseUrl) {
+          const key = bp.apiKey !== undefined && bp.apiKey !== '' ? bp.apiKey : ((one && one.apiKey) || '');
+          if (key) {
+            one = { id: (one && one.id) || bp.id || 'custom-test', name: bp.name || (one && one.name) || 'AI Test', baseUrl: bp.baseUrl, apiKey: key, model: bp.model || (one && one.model) || 'auto' };
+          }
+        }
+      }
       if (!one) return err(res, 404, 'Không tìm thấy nguồn AI này');
       const ac = new AbortController();
       res.on('close', () => { if (!res.writableEnded) ac.abort(); });
       return json(res, 200, await ai.test(one, { signal: ac.signal }));
     }
+    if (p === '/admin/api/ai/providers/models' && method === 'POST') {
+      const body = await jsonBody(req);
+      let one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
+      if (body && body.provider && typeof body.provider === 'object') {
+        const bp = body.provider;
+        if (bp.baseUrl) {
+          one = {
+            id: (one && one.id) || bp.id || 'custom-models',
+            name: bp.name || (one && one.name) || 'AI',
+            baseUrl: bp.baseUrl,
+            apiKey: bp.apiKey !== undefined && bp.apiKey !== '' ? bp.apiKey : ((one && one.apiKey) || ''),
+            model: bp.model || (one && one.model) || 'auto',
+          };
+        }
+      }
+      if (!one || !one.baseUrl) return err(res, 404, 'Không tìm thấy thông tin nguồn AI (cần địa chỉ Base URL)');
+      const ac = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) ac.abort(); });
+      return json(res, 200, await ai.listModels(one, { signal: ac.signal }));
+    }
+
     // ---- "Quét tất cả": the server finds which own entries of a gun look odd (no AI), then the page asks the AI to review those one by one
     if (p === '/admin/api/recoil/review-scan' && method === 'POST') {
       const ctx = recoilContext(await jsonBody(req), { partial: true });
@@ -431,7 +486,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       fs.mkdirSync(dest, { recursive: true });
       const moved = [];
       for (const n of ['backups', 'databases']) {
-        const from = path.join(cfg.dataDir, n);
+        const from = n === 'databases' && databases && databases.dir ? databases.dir : path.join(cfg.dataDir, n);
         if (fs.existsSync(from)) { fs.renameSync(from, path.join(dest, n)); moved.push(n); }
       }
       return json(res, 200, { ok: true, moved, kept_in: `_wiped/${stamp}` });

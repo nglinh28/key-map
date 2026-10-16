@@ -16,10 +16,26 @@ const { loadAiConfig } = require('./ai');
 
 function loadConfig(env = process.env) {
   const list = (v) => (v ? v.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  const dataDir = path.resolve(env.DATA_DIR || path.join(__dirname, 'data'));
+  let databasesDir = env.DATABASES_DIR ? path.resolve(env.DATABASES_DIR) : '';
+  if (!databasesDir) {
+    if (env.DATA_DIR) {
+      databasesDir = path.join(dataDir, 'databases');
+    } else {
+      const siblingDb = path.resolve(__dirname, '..', 'databases');
+      const defaultDb = path.join(dataDir, 'databases');
+      if (fs.existsSync(siblingDb) && fs.existsSync(path.join(siblingDb, 'gamwing_keymap_cache.xml'))) {
+        databasesDir = siblingDb;
+      } else {
+        databasesDir = defaultDb;
+      }
+    }
+  }
   return {
     port: Number(env.PORT || 8787),
     host: env.HOST || '0.0.0.0',
-    dataDir: path.resolve(env.DATA_DIR || path.join(__dirname, 'data')),
+    dataDir,
+    databasesDir,
     maxBody: Number(env.MAX_BODY_BYTES || 8 * 1024 * 1024),
     tlsKey: env.TLS_KEY || '',
     tlsCert: env.TLS_CERT || '',
@@ -61,7 +77,7 @@ function createServer(cfg = loadConfig()) {
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   const clock = cfg.clock || Date.now; // tests can pass a fake clock
   const devices = new Devices({ file: path.join(cfg.dataDir, 'devices.json'), clock });
-  const databases = new DatabasesStore({ dir: path.join(cfg.dataDir, 'databases'), clock });
+  const databases = new DatabasesStore({ dir: cfg.databasesDir || path.join(cfg.dataDir, 'databases'), clock });
   const commands = new Commands({ file: path.join(cfg.dataDir, 'commands.json'), clock });
   const backups = new DailyBackups({
     dir: path.join(cfg.dataDir, 'backups'), tz: cfg.backupTz, keepDays: cfg.backupKeepDays, clock,
@@ -73,6 +89,11 @@ function createServer(cfg = loadConfig()) {
     try {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname === '/health') return send(res, 200, { ok: true });
+      if (cfg.adminEnabled && url.pathname === '/') {
+        res.writeHead(302, { Location: '/admin' });
+        res.end();
+        return;
+      }
       if (cfg.adminEnabled && (url.pathname === '/admin' || url.pathname.startsWith('/admin/'))) return await admin(req, res, url);
       return send(res, 404, { error: 'Not found' });
     } catch (e) {
@@ -96,7 +117,7 @@ if (require.main === module) {
   const cfg = loadConfig();
   createServer(cfg).listen(cfg.port, cfg.host, () => {
     const scheme = cfg.tlsKey && cfg.tlsCert ? 'https' : 'http';
-    console.log(`ft-keymap-server listening on ${scheme}://${cfg.host}:${cfg.port}  data=${cfg.dataDir}`);
+    console.log(`ft-keymap-server listening on ${scheme}://${cfg.host}:${cfg.port}  data=${cfg.dataDir}  databases=${cfg.databasesDir}`);
     if (scheme === 'http') console.log('Warning: plain HTTP, no login. Use it only on a trusted network.');
   });
 }

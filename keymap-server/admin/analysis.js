@@ -4,7 +4,7 @@
 // (recoil.js checks and applies the edit; replaceMapItem in cachexml.js writes the one item back, the rest of the file byte for byte).
 // Items can be deleted: from the file on the server at once, and on the tablet by the app (a command it picks up).
 (() => {
-  const { $, el, svgEl, icon, pageHead: head, fmtBytes, short, textBytes, clockDateTime, toast, api, guard, showModal, badge, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, copyText, labelStacked } = window.Ui;
+  const { $, el, svgEl, icon, pageHead: head, fmtBytes, short, textBytes, clockDateTime, toast, api, guard, showModal, badge, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, copyText, labelStacked, choiceCard } = window.Ui;
   const CX = window.CacheXml;
   const LL = window.LayoutLib;
   const RL = window.RecoilLib;
@@ -19,16 +19,32 @@
   const AUTO_KEY = 'ftAdminAutoStep';
   const loadAutoStep = () => { try { return localStorage.getItem(AUTO_KEY) !== 'off'; } catch { return true; } };
   const vn = (n) => String(n).replace('.', ','); // 1.02 -> 1,02
-  let aiStatusP = null; // { enabled, model } of the AI on the server, asked once
-  const aiStatus = () => (aiStatusP || (aiStatusP = api('GET', '/ai/status').catch(() => ({ enabled: false, model: '' }))));
+  let aiStatusP = null;
+  let aiStatusAt = 0;
+  const aiStatus = (force = false) => {
+    if (force || !aiStatusP || Date.now() - aiStatusAt > 10000) {
+      aiStatusAt = Date.now();
+      aiStatusP = api('GET', '/ai/status').catch(() => ({ enabled: false, model: '' }));
+    }
+    return aiStatusP;
+  };
   const DIR_KEY = 'ftAdminStepDir';
   const loadStepDir = () => { try { const d = localStorage.getItem(DIR_KEY); return RL.DIRECTIONS.includes(d) ? d : 'up'; } catch { return 'up'; } };
   const DIR_VN = { up: 'Tăng (+)', down: 'Giảm (−)', random: 'Tăng hoặc giảm (ngẫu nhiên)' };
   const stepHint = () => `Mốc mới và các mốc sau nối tiếp mốc đứng trước, cộng dồn: thời gian +${RL.STEP.time[0]}–${RL.STEP.time[1]} ms; giá trị +${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Tăng) hoặc −${vn(RL.STEP.value[0])}–${vn(RL.STEP.value[1])} (hướng Giảm).`;
 
   const S = { src: '', days: [], data: null, error: '', pick: '', sel: null, refs: new Map(), cmds: [], pending: '' };
-  const lay = { screenId: null, origin: 'topleft', custom: { w: 2960, h: 1848 }, bg: { url: null, opacity: 0.5 }, selected: null };
-  const rc = { mode: 'touch', weapon: RL.WEAPONS.indexOf('AUG'), scope: 1, gesture: 0, showAll: false, picked: null, docId: null, idx: null, editCurve: null, editKey: '', dirty: false, bad: new Set(), autoStep: loadAutoStep(), stepDir: loadStepDir(), sugg: null, filters: {}, sort: null, drafts: new Map(), bulk: null, fresh: false, freshBase: null, itemId: '' }; // drafts: recoilKey -> { curve, source } points made for an added combination, not saved yet; bulk: the "AI tạo mốc" run // filters / sort: the Excel-like filter buttons of the combinations table // bad: boxes ("row:col") holding something that is not a finite number
+  const defaultWeapon = () => {
+    const aug = RL.WEAPONS.indexOf('AUG');
+    if (!RL.isGunDisabled(aug)) return aug;
+    for (let w = 1; w < RL.WEAPONS.length; w++) {
+      if (!RL.isZeroWeapon(w) && !RL.isGunDisabled(w)) return w;
+    }
+    return aug;
+  };
+  const rc = { mode: 'touch', weapon: defaultWeapon(), category: null, scope: 1, gesture: 0, showAll: false, picked: null, docId: null, idx: null, editCurve: null, editKey: '', dirty: false, bad: new Set(), autoStep: loadAutoStep(), stepDir: loadStepDir(), sugg: null, filters: {}, sort: null, drafts: new Map(), bulk: null, fresh: false, freshBase: null, itemId: '' }; // drafts: recoilKey -> { curve, source } points made for an added combination, not saved yet; bulk: the "AI tạo mốc" run // filters / sort: the Excel-like filter buttons of the combinations table // bad: boxes ("row:col") holding something that is not a finite number
+  const lay = { screenId: '', origin: 'topleft', custom: { w: 2960, h: 1848 }, selected: null, bg: { url: null, opacity: 0.3 } };
+
 
   let active = false; // false once another tab is open: a slow reload must not draw over it
   let pollTimer = null;
@@ -72,8 +88,75 @@
       actions: [{ id: 'stay', label: 'Ở lại' }, { id: 'drop', label: 'Bỏ thay đổi', danger: true }],
     });
     if (ok !== 'drop') return false;
+    rc.dirty = false;
+    rc.editCurve = null;
     rc.bad.clear();
     return true;
+  }
+
+  // Count unsaved drafts and custom combos for a weapon vs other weapons in memory
+  function weaponDraftStats(targetWeapon = null) {
+    let mine = 0;
+    let others = 0;
+    const otherWeapons = new Set();
+    const currentW = targetWeapon !== null ? targetWeapon : rc.weapon;
+
+    if (rc.customCombos) {
+      for (const k of rc.customCombos) {
+        const w = Number(k.split('|')[0]);
+        if (w === currentW) mine++;
+        else { others++; otherWeapons.add(w); }
+      }
+    }
+    if (rc.drafts) {
+      for (const [k, d] of rc.drafts) {
+        const w = d && d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(k.split('|')[0]);
+        if (w === currentW) mine++;
+        else { others++; otherWeapons.add(w); }
+      }
+    }
+    if (rc.picked && rc.dirty && rc.editCurve) {
+      if (rc.weapon === currentW) mine++;
+      else { others++; otherWeapons.add(rc.weapon); }
+    }
+    return { mine, others, otherWeapons: [...otherWeapons] };
+  }
+
+  function clearDraftsForWeapon(w) {
+    if (rc.customCombos) {
+      for (const k of [...rc.customCombos]) {
+        if (Number(k.split('|')[0]) === w) rc.customCombos.delete(k);
+      }
+    }
+    if (rc.drafts) {
+      for (const [k, d] of [...rc.drafts]) {
+        const gun = d && d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(k.split('|')[0]);
+        if (gun === w) rc.drafts.delete(k);
+      }
+    }
+    if (rc.weapon === w) {
+      rc.picked = null;
+      rc.editCurve = null;
+      rc.dirty = false;
+      rc.bad.clear();
+    }
+    if (typeof paintSaveAll === 'function') paintSaveAll();
+  }
+
+  function clearDraftsForOtherWeapons(keepWeapon = rc.weapon) {
+    if (rc.customCombos) {
+      for (const k of [...rc.customCombos]) {
+        const w = Number(k.split('|')[0]);
+        if (w !== keepWeapon) rc.customCombos.delete(k);
+      }
+    }
+    if (rc.drafts) {
+      for (const [k, d] of [...rc.drafts]) {
+        const w = d && d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(k.split('|')[0]);
+        if (w !== keepWeapon) rc.drafts.delete(k);
+      }
+    }
+    if (typeof paintSaveAll === 'function') paintSaveAll();
   }
 
   async function loadRefs(day) {
@@ -592,6 +675,10 @@
   }
 
   async function showComboModal(ix, initialCombo = null) {
+    if (RL.isGunDisabled(rc.weapon)) {
+      toast('Súng này đã bị tắt trong Tiêu chuẩn súng: không thể thêm tổ hợp.', true);
+      return;
+    }
     if (!rc.customCombos) rc.customCombos = new Set();
     const specs = getAccessorySpecs(ix.idx, rc.weapon, rc.scope);
     // what the gun takes (RecoilLib.attachmentsFor): other options stay in the list but are greyed out; the one being edited stays choosable
@@ -835,6 +922,7 @@
   const suggKey = () => `${S.data.file.etag}|${S.sel.id}|${rc.mode}|${rc.weapon}|${rc.scope}|${rc.gesture}|${JSON.stringify(filterConstraints())}`;
 
   function startSuggestions() {
+    if (RL.isGunDisabled(rc.weapon)) return null;
     const key = suggKey();
     if (rc.sugg && rc.sugg.key === key) return rc.sugg;
     stopSuggestions();
@@ -924,7 +1012,13 @@
   // scrolls sideways, so the button is always in view. The few best candidates come first (the AI's order); "Hiện thêm" shows all the others
   // the gun can still take, and "Thêm tất cả" adds them all.
   function ghostList(ix, listedKeys, model) {
+    if (RL.isGunDisabled(rc.weapon)) {
+      return el('div', { class: 'ghost-list', role: 'region', 'aria-label': 'Gợi ý thêm tổ hợp' },
+        el('div', { class: 'ghost-head' }, el('span', {}, 'Gợi ý thêm tổ hợp')),
+        el('p', { class: 'muted text-sm' }, 'Súng này đã bị tắt trong Tiêu chuẩn súng: hệ thống và AI không gợi ý hoặc thêm tổ hợp.'));
+    }
     const st = startSuggestions();
+    if (!st) return el('div', { class: 'ghost-list', role: 'region', 'aria-label': 'Gợi ý thêm tổ hợp' });
     const box = el('div', { class: 'ghost-list', role: 'region', 'aria-label': 'Gợi ý thêm tổ hợp' });
     const paint = () => {
       const rank = (c) => (st.ai.rank.has(comboId(c)) ? st.ai.rank.get(comboId(c)).rank : 99);
@@ -942,7 +1036,7 @@
         title: 'Thêm vào danh sách mọi tổ hợp súng này lắp được mà chưa có mục riêng (theo bộ lọc của bảng). Chưa lưu gì.',
         onclick: guard(() => addAllSuggested(everyMissing)),
       }, icon('plus'), `Thêm tất cả (${everyMissing.length})`);
-      const unsaved = pendingSaves().length;
+      const unsaved = pendingSaves(rc.weapon).length;
       if (!shown.length) {
         // said only when the filter is what left nothing (suggestions that are already rows of the table are not "hidden by the filter")
         const byFilter = TF.countActive(rc.filters) > 0 && (st.status === 'none' || (st.status === 'ok' && open.length > 0) || (st.missing.length > 0 && !everyMissing.length));
@@ -987,6 +1081,15 @@
   }
 
   function recoilView(doc) {
+    if (RL.isGunDisabled(rc.weapon)) {
+      rc.weapon = defaultWeapon();
+      rc.picked = null;
+      rc.editCurve = null;
+      rc.dirty = false;
+    }
+    if (!rc.category || (rc.category !== 'all' && RL.gunClass(rc.weapon) !== rc.category)) {
+      rc.category = RL.gunClass(rc.weapon) || 'ar';
+    }
     const ix = recoilIndex(doc);
     const modeSel = el('select', { 'aria-label': 'Bộ dữ liệu', onchange: async (e) => {
       if (!(await discardOk())) { e.target.value = rc.mode; return; }
@@ -996,11 +1099,170 @@
     const field = (label, control) => el('label', { class: 'numfield' }, label, control);
     if (!ix.ds) return el('div', { class: 'card' }, el('div', { class: 'row' }, field('Bộ dữ liệu', modeSel)), el('p', {}, 'Bản này không có trường recoil_data.'));
     const sums = ix.sums;
-    const weaponSel = el('select', { 'aria-label': 'Súng', onchange: async (e) => {
-      if (!(await discardOk())) { e.target.value = rc.weapon; return; }
-      rc.weapon = Number(e.target.value); rc.picked = null; rc.editCurve = null; rc.dirty = false; redraw();
-    } },
-      sums.map((s, w) => el('option', { value: w, selected: w === rc.weapon }, `${RL.weaponLabel(w)} — ${s.keys} khóa${s.entries > s.keys ? `, ${s.entries} mục` : ''}`)));
+
+    const catSel = el('select', {
+      'aria-label': 'Loại súng',
+      class: 'category-select',
+      onchange: async (e) => {
+        const newCat = e.target.value;
+        if (newCat === rc.category) return;
+
+        if (newCat === 'all' || RL.gunClass(rc.weapon) === newCat) {
+          rc.category = newCat;
+          redraw();
+          return;
+        }
+
+        if (!(await discardOk())) {
+          e.target.value = rc.category;
+          return;
+        }
+
+        const prevW = rc.weapon;
+        const prevStats = weaponDraftStats(prevW);
+        if (prevStats.mine > 0) {
+          const choice = await showModal({
+            title: 'Chuyển sang loại súng khác?', tone: 'warn',
+            body: [
+              el('p', {}, `Súng hiện tại (${RL.weaponLabel(prevW)}) đang có ${prevStats.mine} bản nháp/tổ hợp chưa lưu.`),
+              el('p', { class: 'muted text-sm' }, 'Bạn muốn giữ lại các bản nháp này để quay lại lưu sau, hay xóa bỏ bản nháp của súng này?'),
+            ],
+            actions: [
+              { id: 'stay', label: 'Ở lại' },
+              { id: 'drop', label: `Xóa nháp ${RL.weaponLabel(prevW)}`, danger: true },
+              { id: 'keep', label: `Giữ nháp ${RL.weaponLabel(prevW)}`, primary: true },
+            ],
+          });
+          if (choice === 'stay' || !choice) {
+            e.target.value = rc.category;
+            return;
+          }
+          if (choice === 'drop') {
+            clearDraftsForWeapon(prevW);
+          }
+        }
+
+        let targetW = null;
+        for (let w = 1; w < RL.WEAPONS.length; w++) {
+          if (RL.gunClass(w) === newCat && !RL.isGunDisabled(w) && !RL.isZeroWeapon(w)) {
+            targetW = w;
+            break;
+          }
+        }
+        if (!targetW) {
+          for (let w = 1; w < RL.WEAPONS.length; w++) {
+            if (RL.gunClass(w) === newCat && !RL.isGunDisabled(w)) {
+              targetW = w;
+              break;
+            }
+          }
+        }
+        if (!targetW) {
+          for (let w = 1; w < RL.WEAPONS.length; w++) {
+            if (RL.gunClass(w) === newCat) {
+              targetW = w;
+              break;
+            }
+          }
+        }
+
+        rc.category = newCat;
+        if (targetW) {
+          rc.weapon = targetW;
+          rc.picked = null;
+          rc.editCurve = null;
+          rc.dirty = false;
+        }
+        redraw();
+      }
+    },
+      ...RL.GUN_CLASSES.map((cls) => el('option', { value: cls.id, selected: rc.category === cls.id }, cls.name)),
+      el('option', { value: 'all', selected: rc.category === 'all' }, 'Tất cả loại súng')
+    );
+
+    const makeWeaponOption = (w) => {
+      const s = sums[w] || { keys: 0, entries: 0, byGesture: [0, 0, 0], byScope: [] };
+      const dis = RL.isGunDisabled(w);
+      const isCur = w === rc.weapon;
+      const name = RL.weaponLabel(w);
+      const countText = `${s.keys} khóa${s.entries > s.keys ? `, ${s.entries} mục` : ''}`;
+      const labelText = `${isCur ? '● ' : ''}${name}${dis ? ' (đã tắt)' : ''} — ${countText}${isCur ? ' [đang chọn]' : ''}`;
+      return el('option', {
+        value: w,
+        selected: isCur,
+        disabled: dis,
+        class: isCur ? 'opt-current' : undefined,
+      }, labelText);
+    };
+
+    let weaponOptions = [];
+    if (rc.category === 'all') {
+      weaponOptions = RL.GUN_CLASSES.map((cls) => {
+        const gunsInClass = [];
+        for (let w = 1; w < RL.WEAPONS.length; w++) {
+          if (RL.gunClass(w) === cls.id) {
+            gunsInClass.push(makeWeaponOption(w));
+          }
+        }
+        return el('optgroup', { label: cls.name }, gunsInClass);
+      });
+    } else {
+      for (let w = 1; w < RL.WEAPONS.length; w++) {
+        if (RL.gunClass(w) === rc.category) {
+          weaponOptions.push(makeWeaponOption(w));
+        }
+      }
+    }
+
+    const weaponSel = el('select', {
+      'aria-label': 'Súng',
+      class: 'weapon-select',
+      onchange: async (e) => {
+        const val = Number(e.target.value);
+        if (RL.isGunDisabled(val)) {
+          toast('Súng này đã bị tắt trong Tiêu chuẩn súng: không thể chọn.', true);
+          e.target.value = rc.weapon;
+          return;
+        }
+        if (!(await discardOk())) {
+          e.target.value = rc.weapon;
+          return;
+        }
+
+        const prevW = rc.weapon;
+        const prevStats = weaponDraftStats(prevW);
+        if (prevStats.mine > 0 && prevW !== val) {
+          const choice = await showModal({
+            title: `Chuyển sang súng ${RL.weaponLabel(val)}?`, tone: 'warn',
+            body: [
+              el('p', {}, `Súng hiện tại (${RL.weaponLabel(prevW)}) đang có ${prevStats.mine} bản nháp/tổ hợp chưa lưu.`),
+              el('p', { class: 'muted text-sm' }, 'Bạn muốn giữ lại các bản nháp này để quay lại lưu sau, hay xóa bỏ bản nháp của súng này?'),
+            ],
+            actions: [
+              { id: 'stay', label: 'Ở lại' },
+              { id: 'drop', label: `Xóa nháp ${RL.weaponLabel(prevW)}`, danger: true },
+              { id: 'keep', label: `Giữ nháp ${RL.weaponLabel(prevW)}`, primary: true },
+            ],
+          });
+          if (choice === 'stay' || !choice) {
+            e.target.value = rc.weapon;
+            return;
+          }
+          if (choice === 'drop') {
+            clearDraftsForWeapon(prevW);
+          }
+        }
+
+        rc.weapon = val;
+        if (rc.category !== 'all') {
+          rc.category = RL.gunClass(val);
+        }
+        rc.picked = null;
+        rc.editCurve = null;
+        rc.dirty = false;
+        redraw();
+      }
+    }, weaponOptions);
     const sum = sums[rc.weapon] || { keys: 0, entries: 0, byGesture: [0, 0, 0], byScope: [] };
     const postureSeg = segmented({
       label: 'Tư thế',
@@ -1101,7 +1363,7 @@
         rc.dirty = false;
         redraw();
       } },
-        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
+        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && draft.source === 'add_points' ? el('span', { class: 'tag warn', title: `Đã thêm mốc, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
         el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
         el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
         el('td', { 'data-label': 'Nguồn' }, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
@@ -1128,11 +1390,13 @@
       el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', { colspan: 9, class: 'muted' }, filtered ? el('span', {}, 'Không có tổ hợp nào khớp bộ lọc. ', el('button', { type: 'button', class: 'btn small', onclick: clearFilters }, 'Xóa bộ lọc')) : 'Không có tổ hợp nào.'))));
     const ghosts = ghostList(ix, new Set(combos.map((c) => comboId(c))), model);
 
+    const gunDisabled = RL.isGunDisabled(rc.weapon);
+
     const addComboBtn = el('button', {
       type: 'button',
       class: 'btn primary small',
-      disabled: zero,
-      title: zero ? 'Súng này luôn dùng đường cong 0 trong app' : undefined,
+      disabled: zero || gunDisabled,
+      title: zero ? 'Súng này luôn dùng đường cong 0 trong app' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : undefined,
       onclick: () => showComboModal(ix)
     }, icon('plus'), 'Thêm tổ hợp');
 
@@ -1143,24 +1407,45 @@
     }, icon('layers'), 'Danh sách trường & hệ số');
 
     const aiBtn = el('button', {
-      type: 'button', class: 'btn small', 'data-bulk': 'ai', disabled: zero || !latest() || (!rc.bulk && !aiTargets().length),
-      title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
+      type: 'button', class: 'btn small', 'data-bulk': 'ai', disabled: zero || gunDisabled || !latest() || (!rc.bulk && !aiTargets().length),
+      title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
       onclick: guard(() => aiCreateAll()),
     }, icon(rc.bulk ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, bulkLabel()));
     const fillBtn = el('button', {
-      type: 'button', class: 'btn small', disabled: zero || !latest() || Boolean(rc.bulk),
-      title: 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
+      type: 'button', class: 'btn small', disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
       onclick: guard(() => fillGun(ix)),
     }, icon('layers'), 'Tạo đủ cho cả súng');
     const scanAllBtn = el('button', {
-      type: 'button', class: 'btn small', disabled: zero || !latest() || Boolean(rc.bulk),
-      title: 'Rà soát MỌI mục riêng của súng này (mọi ống ngắm × tư thế): server tìm mục lệch so với súng tương tự hoặc không nhất quán, AI xem lại từng mục theo bảng chuẩn và đề xuất mốc mới. Chưa lưu gì: bấm "Lưu tất cả".',
+      type: 'button', class: 'btn small', disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Rà soát MỌI mục riêng của súng này (mọi ống ngắm × tư thế): server tìm mục lệch so với súng tương tự hoặc không nhất quán, AI xem lại từng mục theo bảng chuẩn và đề xuất mốc mới. Chưa lưu gì: bấm "Lưu tất cả".',
       onclick: guard(() => scanAll()),
     }, icon('search'), 'Quét tất cả');
-    const aiSettingsBtn = el('button', { type: 'button', class: 'btn small ghost', title: 'Các nguồn AI (địa chỉ, khóa API, model) và thứ tự ưu tiên', onclick: guard(() => showAiSettings()) }, icon('command'), 'Cài đặt AI');
+    const aiSettingsBtn = el('button', {
+      type: 'button', class: 'btn small ghost',
+      title: 'Mở tab Cài đặt AI (địa chỉ, khóa API, model và thứ tự ưu tiên)',
+      onclick: () => (window.goTo ? window.goTo('ai') : showAiSettings()),
+    }, icon('sparkles'), 'Cài đặt AI');
     const saveAllBtn = saveAllButton(model);
     rc.model = model;
-    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, scanAllBtn, saveAllBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
+    const otherStats = weaponDraftStats(rc.weapon);
+    const dropOthersBtn = otherStats.others > 0 ? el('button', {
+      type: 'button', class: 'btn small ghost danger',
+      title: `Xóa ${otherStats.others} bản nháp của các súng khác (${otherStats.otherWeapons.map((w) => RL.weaponLabel(w)).join(', ')}) đang lưu tạm trong bộ nhớ để không bị lưu nhầm`,
+      onclick: async () => {
+        const ok = await showModal({
+          title: 'Xóa bản nháp của các súng khác?', tone: 'warn',
+          body: el('p', {}, `Xóa ${otherStats.others} bản nháp của: ${otherStats.otherWeapons.map((w) => RL.weaponLabel(w)).join(', ')}? Các thay đổi chưa lưu của những súng này sẽ bị hủy. Súng hiện tại (${RL.weaponLabel(rc.weapon)}) được giữ nguyên.`),
+          actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'drop', label: 'Xóa nháp súng khác', danger: true }],
+        });
+        if (ok === 'drop') {
+          clearDraftsForOtherWeapons(rc.weapon);
+          redraw();
+          toast(`Đã xóa ${otherStats.others} bản nháp của các súng khác.`);
+        }
+      },
+    }, icon('trash'), `Bỏ nháp súng khác (${otherStats.others})`) : null;
+    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, scanAllBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
     const audit = auditOf(ix);
     const mine = audit.filter((e) => e.weapon === rc.weapon);
     const auditBtn = el('button', {
@@ -1169,9 +1454,10 @@
     }, icon(audit.length ? 'alert' : 'check'), `Kiểm tra theo chuẩn${audit.length ? ` (${audit.length})` : ''}`);
     const auditNote = mine.length ? alert('warn', el('span', {}, `${RL.weaponLabel(rc.weapon)} có ${mine.length} mục riêng không đúng chuẩn phụ kiện (${[...new Set(mine.flatMap((e) => e.problems.map((p) => SLOT_VN[p.slot])))].join(', ')}). `,
       el('button', { type: 'button', class: 'btn small', onclick: guard(() => showAuditModal(ix)) }, 'Xem và xóa'))) : null;
+    const disabledNote = gunDisabled ? alert('warn', el('span', {}, `Súng ${RL.weaponLabel(rc.weapon)} (${RL.WEAPONS[rc.weapon]}) đã bị TẮT KHÔNG SỬ DỤNG trong Tiêu chuẩn súng. Các chức năng Thêm tổ hợp, Tạo đủ cho cả súng, Quét tất cả và AI gợi ý mốc bị vô hiệu hóa cho súng này.`)) : null;
     const rule = RL.describeAttachments(rc.weapon);
     const selectors = el('div', { class: 'card' },
-      el('div', { class: 'row selector-row' }, field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), auditBtn, refFieldsBtn),
+      el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), auditBtn, refFieldsBtn),
       el('div', { class: 'muted text-sm mb-2' }, 'Ống ngắm'),
       el('div', { class: 'chips' }, mainScopes.map(scopeChip)),
       el('details', { class: 'disclosure flat' }, el('summary', {}, `Ống ngắm khác (${otherScopes.length}) và phụ kiện ${RL.weaponLabel(rc.weapon)} lắp được`),
@@ -1186,6 +1472,7 @@
           el('span', { class: 'muted', title: filtered ? `Đang lọc: ${TF.describe(rc.filters, { grip: 'Tay cầm', muzzle: 'Nòng', stock: 'Báng', source: 'Nguồn', v0: 'Giá trị t=0', vEnd: 'Giá trị cuối', duration: 'Thời lượng', points: 'Mốc' })}` : undefined }, filtered ? `${visible.length}/${model.length}` : String(model.length)),
           filtered || rc.sort ? el('button', { type: 'button', class: 'btn small ghost', onclick: clearFilters }, icon('x'), `Xóa bộ lọc${filtered ? ` (${TF.countActive(rc.filters)})` : ''}`) : null,
           addComboBtn),
+        disabledNote,
         auditNote,
         bulkRow,
         el('label', { class: 'row auto-step' },
@@ -1207,7 +1494,10 @@
   // editor as an unsaved change. Returns true when points were put in.
   async function suggestPoints(o) {
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return false; }
-    if (RL.isZeroWeapon(o.weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để tính.', true); return false; }
+    if (RL.isZeroWeapon(o.weapon) || RL.isGunDisabled(o.weapon)) {
+      toast(RL.isGunDisabled(o.weapon) ? 'Súng này đã bị tắt trong Tiêu chuẩn súng: không thể tính mốc.' : 'Súng này luôn dùng đường cong 0 trong app: không có gì để tính.', true);
+      return false;
+    }
     const status = await aiStatus();
     const res = await window.SuggestUi.compare({
       label: comboText(o),
@@ -1466,11 +1756,12 @@
 
   // every added combination of this item that has no own entry yet, whatever its gun, scope or posture: [{ o, r, key }]
   // (what "Lưu tất cả" saves and "AI tạo mốc" makes the points for is not only what the list shows now)
-  function pendingCombos() {
+  function pendingCombos(weaponFilter = null) {
     const out = [];
     if (!rc.idx || !rc.customCombos) return out;
     for (const k of rc.customCombos) {
       const [weapon, scope, gesture, grip, muzzle, stock] = k.split('|').map(Number);
+      if (weaponFilter !== null && weapon !== weaponFilter) continue;
       const o = { weapon, scope, gesture, grip, muzzle, stock };
       const r = RL.resolve(rc.idx.idx, o);
       if (isNewCombo(o, r)) out.push({ o, r, key: recoilKey(o) });
@@ -1479,9 +1770,9 @@
   }
 
   // [{ key, o, curve, how }] = what "Lưu tất cả" would write
-  function pendingSaves() {
+  function pendingSaves(weaponFilter = null) {
     const items = [];
-    for (const p of pendingCombos()) {
+    for (const p of pendingCombos(weaponFilter)) {
       const open = rc.editKey === p.key && rc.editCurve;
       const draft = rc.drafts.get(p.key);
       items.push({ key: p.key, o: p.o, curve: open ? rc.editCurve : draft ? draft.curve : p.r.curve, how: draft ? ({ ai: 'AI', server: 'server', coef: 'theo hệ số' }[draft.source] || 'đã sửa') : open && rc.dirty && rc.freshBase && JSON.stringify(rc.editCurve) !== rc.freshBase ? 'đã sửa' : 'theo hệ số' });
@@ -1489,19 +1780,24 @@
     // "Quét tất cả": proposals of the AI for entries that already exist (only those of the dataset shown: touch / gyro / raw)
     for (const [key, d] of rc.drafts) {
       if (!d.review || !key.endsWith(`|${rc.mode}`) || items.some((i) => i.key === key)) continue;
+      const gun = d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(key.split('|')[0]);
+      if (weaponFilter !== null && gun !== weaponFilter) continue;
       const open = rc.editKey === key && rc.editCurve;
       items.push({ key, o: d.o, curve: open ? rc.editCurve : d.curve, how: 'AI đề xuất' });
     }
     // the open combination that already has an own entry and was edited
     if (rc.picked && rc.dirty && rc.editCurve && rc.editKey === recoilKey(rcCombo(rc.picked)) && !items.some((i) => i.key === rc.editKey)) {
-      items.push({ key: rc.editKey, o: rcCombo(rc.picked), curve: rc.editCurve, how: 'đang sửa' });
+      if (weaponFilter === null || rc.weapon === weaponFilter) {
+        items.push({ key: rc.editKey, o: rcCombo(rc.picked), curve: rc.editCurve, how: 'đang sửa' });
+      }
     }
     return items;
   }
 
   // the added combinations that have no points of their own yet (and are not being edited by hand)
   function aiTargets() {
-    return pendingCombos().filter((p) => !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
+    if (RL.isGunDisabled(rc.weapon)) return [];
+    return pendingCombos(rc.weapon).filter((p) => p.o.weapon === rc.weapon && !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
   }
 
   const bulkLabel = () => {
@@ -1583,32 +1879,115 @@
   }
 
   function saveAllButton(model) {
-    const n = pendingSaves().length;
+    const totalAll = pendingSaves().length;
+    const currentGunPending = pendingSaves(rc.weapon).length;
+    const otherCount = totalAll - currentGunPending;
+    const title = totalAll
+      ? (otherCount > 0
+          ? `Lưu ${currentGunPending} tổ hợp của ${RL.weaponLabel(rc.weapon)} (${otherCount} tổ hợp súng khác)`
+          : `Lưu ${totalAll} tổ hợp chưa lưu của ${RL.weaponLabel(rc.weapon)}`)
+      : 'Không có tổ hợp nào chưa lưu';
     return el('button', {
-      type: 'button', class: 'btn small primary', 'data-save-all': '1', disabled: !latest() || !n || Boolean(rc.bulk),
-      title: n ? 'Lưu một lần mọi tổ hợp mới và tổ hợp đang sửa của mục này (cả các ống ngắm và tư thế khác)' : 'Không có tổ hợp nào chưa lưu',
+      type: 'button', class: 'btn small primary', 'data-save-all': '1', disabled: !latest() || !totalAll || Boolean(rc.bulk),
+      title,
       onclick: guard(() => saveAll()),
-    }, icon('check'), el('span', { class: 'save-all-label' }, `Lưu tất cả${n ? ` (${n})` : ''}`));
+    }, icon('check'), el('span', { class: 'save-all-label' }, otherCount > 0 ? `Lưu (${totalAll} · ${RL.weaponLabel(rc.weapon)}: ${currentGunPending})` : `Lưu tất cả${totalAll ? ` (${totalAll})` : ''}`));
   }
 
   // after a change that does not redraw the page (typing in the points): every "Lưu tất cả" button shows the new count
   function paintSaveAll() {
     if (!rc.model) return;
-    const n = pendingSaves().length;
+    const totalAll = pendingSaves().length;
+    const currentGunPending = pendingSaves(rc.weapon).length;
+    const otherCount = totalAll - currentGunPending;
     for (const b of document.querySelectorAll('[data-save-all]')) {
-      b.disabled = !latest() || !n || Boolean(rc.bulk);
-      b.title = n ? 'Lưu một lần mọi tổ hợp mới và tổ hợp đang sửa của mục này (cả các ống ngắm và tư thế khác)' : 'Không có tổ hợp nào chưa lưu';
+      b.disabled = !latest() || !totalAll || Boolean(rc.bulk);
+      b.title = totalAll
+        ? (otherCount > 0
+            ? `Lưu ${currentGunPending} tổ hợp của ${RL.weaponLabel(rc.weapon)} (${otherCount} tổ hợp súng khác)`
+            : `Lưu ${totalAll} tổ hợp chưa lưu của ${RL.weaponLabel(rc.weapon)}`)
+        : 'Không có tổ hợp nào chưa lưu';
       const label = b.querySelector('.save-all-label');
-      if (label) label.textContent = `Lưu tất cả${n ? ` (${n})` : ''}`;
+      if (label) {
+        label.textContent = otherCount > 0
+          ? `Lưu (${totalAll} · ${RL.weaponLabel(rc.weapon)}: ${currentGunPending})`
+          : `Lưu tất cả${totalAll ? ` (${totalAll})` : ''}`;
+      }
     }
   }
 
-  async function saveAll() {
+  async function saveAll(targetWeapon = null) {
     if (!latest()) { toast('Chỉ lưu được khi đang xem "Mới nhất", không lưu vào bản sao lưu cũ.', true); return; }
     if (rc.bulk) { toast('Đang tạo mốc: đợi xong hoặc bấm "Dừng" rồi hãy lưu tất cả.', true); return; }
     if (rc.bad.size) { toast('Có ô nhập không phải số hợp lệ. Sửa các ô viền đỏ trước khi lưu.', true); return; }
-    const items = pendingSaves();
-    if (!items.length) { toast('Không có gì chưa lưu.'); return; }
+
+    let allItems = pendingSaves();
+    if (!allItems.length) { toast('Không có gì chưa lưu.'); return; }
+
+    const guns = [...new Set(allItems.map((p) => p.o.weapon))];
+    let selectedWeapon = targetWeapon;
+    let dropOthers = false;
+
+    // If targetWeapon was specified, enforce it. If not, and drafts exist for multiple guns, ask user!
+    if (selectedWeapon === null && guns.length > 1) {
+      const currentGun = rc.weapon;
+      const currentItems = allItems.filter((p) => p.o.weapon === currentGun);
+      const otherGuns = guns.filter((w) => w !== currentGun);
+      const otherItemsCount = allItems.length - currentItems.length;
+
+      const currentRadio = el('input', { type: 'radio', name: 'save-scope', value: 'current', checked: true });
+      const allRadio = el('input', { type: 'radio', name: 'save-scope', value: 'all' });
+      const dropCheckbox = el('input', { type: 'checkbox', checked: false });
+
+      const saveCards = el('div', { class: 'choice-group' },
+        choiceCard({
+          input: currentRadio,
+          title: `Chỉ lưu súng đang chọn: ${RL.weaponLabel(currentGun)}`,
+          desc: `Chỉ ghi các thay đổi của ${RL.weaponLabel(currentGun)} vào server. Các súng khác được giữ nguyên trong bản nháp.`,
+          badge: badge(`${currentItems.length} tổ hợp`, 'accent'),
+          checked: true,
+        }),
+        choiceCard({
+          input: allRadio,
+          title: 'Lưu tất cả các súng',
+          desc: `Ghi toàn bộ ${guns.length} súng (${guns.map((w) => `${RL.weaponLabel(w)}: ${allItems.filter((p) => p.o.weapon === w).length}`).join(', ')}) vào file trên server.`,
+          badge: badge(`${allItems.length} tổ hợp`, 'info'),
+        })
+      );
+
+      const dropCard = otherItemsCount > 0 ? el('div', { class: 'choice-group mt-2' },
+        choiceCard({
+          input: dropCheckbox,
+          warn: true,
+          title: 'Đồng thời xóa các bản nháp của súng khác',
+          desc: `Hủy bỏ các thay đổi tạm thời của (${otherGuns.map((w) => RL.weaponLabel(w)).join(', ')}) để tránh nhầm lẫn sau này.`,
+          badge: badge(`${otherItemsCount} tổ hợp sẽ hủy`, 'warn'),
+        })
+      ) : null;
+
+      const choiceModal = await showModal({
+        title: 'Chọn phạm vi lưu dữ liệu', tone: 'warn',
+        body: [
+          el('p', {}, `Phát hiện bản nháp chưa lưu của ${guns.length} súng khác nhau (${guns.map((w) => RL.weaponLabel(w)).join(', ')}). Bạn muốn lưu súng nào?`),
+          saveCards,
+          dropCard,
+        ],
+        actions: [
+          { id: 'cancel', label: 'Hủy' },
+          { id: 'proceed', label: 'Tiếp tục lưu', primary: true },
+        ],
+      });
+
+      if (choiceModal !== 'proceed') return;
+      if (currentRadio.checked) {
+        selectedWeapon = currentGun;
+      }
+      dropOthers = Boolean(dropCheckbox.checked);
+    }
+
+    const items = selectedWeapon !== null ? allItems.filter((p) => p.o.weapon === selectedWeapon) : allItems;
+    if (!items.length) { toast('Không có tổ hợp nào thuộc súng đã chọn cần lưu.'); return; }
+
     const doc = S.data.analysis.docs.get(S.sel.id);
     if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
     // everything is checked before anything is written: one bad curve stops the whole save
@@ -1619,20 +1998,38 @@
       plan.push({ ...it, curve: checked.curve });
     }
     const places = new Set(plan.map((p) => `${p.o.weapon}|${p.o.scope}|${p.o.gesture}`)).size;
-    const guns = new Set(plan.map((p) => p.o.weapon)).size;
+    const planGuns = new Set(plan.map((p) => p.o.weapon));
+    const gunsText = [...planGuns].map((w) => RL.weaponLabel(w)).join(', ');
     const bySource = {};
     for (const p of plan) bySource[p.how] = (bySource[p.how] || 0) + 1;
-    const shown = plan.slice(0, 10);
+    const statPills = el('div', { class: 'save-stat-pills' },
+      el('span', { class: 'stat-pill' }, el('strong', {}, String(plan.length)), ' tổ hợp'),
+      el('span', { class: 'stat-pill' }, el('strong', {}, String(planGuns.size)), ` súng (${gunsText})`),
+      el('span', { class: 'stat-pill' }, el('strong', {}, String(places)), ' dạng ống ngắm × tư thế')
+    );
+
+    const planList = el('div', { class: 'save-plan-list' },
+      shown.map((p) => el('div', { class: 'save-plan-item' },
+        el('span', { class: 'save-plan-combo' }, fullLine(p.o)),
+        badge(p.how || 'mới', 'accent')
+      )),
+      plan.length > shown.length ? el('div', { class: 'save-plan-more' }, `… và ${plan.length - shown.length} tổ hợp nữa`) : null
+    );
+
     const ok = await showModal({
       title: `Lưu ${plan.length} tổ hợp vào ${CACHE_FILE}?`,
+      tone: 'info',
       body: [
-        el('p', {}, `${plan.length} tổ hợp của ${guns} súng, ${places} cặp ống ngắm × tư thế, mỗi tổ hợp được ghi thành một mục riêng (tổ hợp đã có mục riêng thì được sửa). Nguồn mốc: ${Object.entries(bySource).map(([k, n]) => `${k} ${n}`).join(', ')}.`),
-        el('ul', {}, shown.map((p) => el('li', {}, fullLine(p.o), ' ', badge(p.how)))),
-        plan.length > shown.length ? el('p', { class: 'muted' }, `… và ${plan.length - shown.length} tổ hợp nữa.`) : null,
-        el('p', { class: 'muted' }, 'Ghi một lần: bản hiện tại trên server được giữ một bản trong lịch sử (tối đa 10 bản cũ để khôi phục).'),
-        alert('warn', window.Ui.webEditNote()),
+        el('p', { class: 'muted text-sm' }, `Mỗi tổ hợp sẽ được ghi thành một mục riêng trên server (tổ hợp đã có sẽ được cập nhật). Nguồn: ${Object.entries(bySource).map(([k, n]) => `${k} (${n})`).join(', ')}.`),
+        statPills,
+        el('div', { class: 'field mt-2' },
+          el('span', { class: 'font-semibold text-sm' }, 'Xem trước các tổ hợp sẽ lưu:'),
+          planList
+        ),
+        dropOthers ? el('div', { class: 'modal-callout warn' }, icon('alert'), el('div', { class: 'modal-callout-text' }, 'Sau khi lưu xong, các bản nháp chưa lưu của súng khác sẽ được tự động xóa bỏ theo lựa chọn của bạn.')) : null,
+        el('div', { class: 'modal-callout info' }, icon('info'), el('div', { class: 'modal-callout-text' }, 'Bản hiện tại trên server được lưu tự động vào lịch sử trước khi ghi đè (tối đa 10 bản sao lưu để khôi phục). ' + window.Ui.webEditNote())),
       ],
-      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: `Lưu ${plan.length} tổ hợp`, primary: true }],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'save', label: `Xác nhận lưu ${plan.length} tổ hợp`, primary: true }],
     });
     if (ok !== 'save') return;
 
@@ -1648,6 +2045,9 @@
       bar.update({ step: 0, pct: 45, detail: `Đã áp dụng ${plan.length}/${plan.length} tổ hợp` });
       const saved = await putRecoilItem(editor.doc, `Đã lưu ${plan.length} tổ hợp vào ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => {
         for (const p of plan) { rc.drafts.delete(p.key); if (rc.customCombos) rc.customCombos.delete(RL.comboKey(p.o)); }
+        if (dropOthers && selectedWeapon !== null) {
+          clearDraftsForOtherWeapons(selectedWeapon);
+        }
       });
       if (saved) await bar.finish(`Đã lưu ${plan.length} tổ hợp.`); else bar.close();
     } catch (e) {
@@ -1665,12 +2065,13 @@
   async function scanAll() {
     if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
     const weapon = rc.weapon;
+    if (RL.isGunDisabled(weapon)) { toast('Súng này đã bị tắt trong Tiêu chuẩn súng.', true); return; }
     if (RL.isZeroWeapon(weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để rà soát.', true); return; }
     if (rc.bulk || rc.filling) return;
     if (!(await discardOk())) return;
     aiStatusP = null;
     const status = await aiStatus();
-    if (!status.enabled) { toast('AI chưa được bật: thêm một nguồn AI trong "Cài đặt AI".', true); return; }
+    if (!status.enabled) { toast('AI chưa được bật: vui lòng chuyển sang tab "Cài đặt AI" để bật và cấu hình.', true); return; }
     const gun = RL.weaponLabel(weapon);
     const itemId = S.sel.id;
     const mode = rc.mode;
@@ -1697,7 +2098,51 @@
       paintEstimate();
     };
     limitBox.oninput = paintEstimate;
-    const choice = (all, text) => el('label', { class: 'field row' }, el('input', { type: 'radio', name: 'scan-pick', checked: pick.all === all, disabled: !all && !flagged.length, onchange: () => { pick.all = all; setLimit(); } }), text);
+    const scanRadioFlagged = el('input', { type: 'radio', name: 'scan-pick', value: 'flagged', checked: !pick.all, disabled: !flagged.length });
+    const scanRadioAll = el('input', { type: 'radio', name: 'scan-pick', value: 'all', checked: pick.all });
+
+    scanRadioFlagged.onchange = () => { if (scanRadioFlagged.checked) { pick.all = false; setLimit(); } };
+    scanRadioAll.onchange = () => { if (scanRadioAll.checked) { pick.all = true; setLimit(); } };
+
+    const scanScopeCards = el('div', { class: 'choice-group' },
+      choiceCard({
+        input: scanRadioFlagged,
+        title: 'Chỉ các mục server thấy lạ / nghi vấn',
+        desc: 'Tập trung AI rà soát các tổ hợp có độ lệch lớn so với súng tương tự hoặc không nhất quán.',
+        badge: badge(`${flagged.length} mục`, flagged.length ? 'warn' : 'neutral'),
+        disabled: !flagged.length,
+        checked: !pick.all,
+      }),
+      choiceCard({
+        input: scanRadioAll,
+        title: 'Tất cả mục riêng của súng',
+        desc: 'Quét toàn bộ mọi mục riêng hiện có của súng để đối soát toàn diện.',
+        badge: badge(`${scan.total} mục`, 'info'),
+        checked: pick.all,
+      })
+    );
+
+    const setLimitVal = (v) => {
+      const max = Number(limitBox.max) || 30;
+      limitBox.value = String(Math.max(1, Math.min(max, v)));
+      paintEstimate();
+    };
+
+    const limitStepper = el('div', { class: 'stepper-wrap' },
+      el('div', { class: 'stepper-control' },
+        el('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Giảm', onclick: () => setLimitVal((Number(limitBox.value) || 1) - 5) }, icon('back')),
+        limitBox,
+        el('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Tăng', onclick: () => setLimitVal((Number(limitBox.value) || 1) + 5) }, icon('plus'))
+      ),
+      el('div', { class: 'stepper-presets' },
+        [10, 20, 30, 50].map((num) => el('button', {
+          type: 'button',
+          class: 'pill-preset',
+          onclick: () => setLimitVal(num),
+        }, `${num} mục`))
+      )
+    );
+
     setLimit();
     const shown = flagged.slice(0, 8);
     const go = await showModal({
@@ -1706,11 +2151,13 @@
         el('p', {}, `${gun} có ${scan.total} mục riêng (mọi ống ngắm × tư thế, không tính đường cong nền và mục sai bảng chuẩn). Server thấy ${flagged.length} mục đáng xem lại${flagged.length ? ':' : '.'}`),
         shown.length ? el('ul', {}, shown.map((f) => el('li', {}, `${RL.LABELS.SCOPES[f.scope]} · ${POSTURE_VN[f.gesture]} · ${comboLine(f)}: ${f.reasons.join('; ')}`))) : null,
         flagged.length > shown.length ? el('p', { class: 'muted' }, `… và ${flagged.length - shown.length} mục nữa.`) : null,
-        choice(false, `Chỉ các mục server thấy lạ (${flagged.length})`),
-        choice(true, `Tất cả mục riêng (${scan.total})`),
-        el('label', { class: 'field' }, 'Rà soát tối đa bao nhiêu mục', limitBox),
-        estimate,
-        el('p', { class: 'muted text-sm' }, `AI xem lại từng mục với dữ liệu súng tương tự, các mục khác của súng và bảng phụ kiện chuẩn. Câu trả lời được kiểm tra so với mục hiện tại; thay đổi dưới ${Math.round(REVIEW_MIN_CHANGE * 100)}% coi như giữ nguyên. Mọi đề xuất chỉ là bản nháp ("AI đề xuất"), chưa ghi gì.`),
+        scanScopeCards,
+        el('div', { class: 'field mt-2' },
+          el('span', { class: 'font-semibold text-sm' }, 'Rà soát tối đa bao nhiêu mục:'),
+          limitStepper
+        ),
+        el('div', { class: 'modal-callout info' }, icon('clock'), el('div', { class: 'modal-callout-text' }, estimate)),
+        el('p', { class: 'muted text-xs' }, `AI xem lại từng mục với dữ liệu súng tương tự, các mục khác của súng và bảng phụ kiện chuẩn. Câu trả lời được kiểm tra so với mục hiện tại; thay đổi dưới ${Math.round(REVIEW_MIN_CHANGE * 100)}% coi như giữ nguyên. Mọi đề xuất chỉ là bản nháp ("AI đề xuất"), chưa ghi gì.`),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Bắt đầu rà soát', primary: true }],
     });
@@ -1746,17 +2193,247 @@
     rc.picked = null; rc.editCurve = null; rc.dirty = false; rc.bad.clear();
     redraw();
     if (!b) return;
-    const total = pendingSaves().length;
+    const currentGunPending = pendingSaves(weapon).length;
+    const totalAll = pendingSaves().length;
+    const otherCount = totalAll - currentGunPending;
     const end = await showModal({
       title: `${b.ac.signal.aborted ? 'Đã dừng' : 'Rà soát xong'}: ${gun}`, tone: b.changed ? 'warn' : 'info',
       body: [
         el('p', {}, `Đã rà soát ${b.done}/${b.total} mục: AI đề xuất đổi ${b.changed}, giữ nguyên ${b.same}${b.failed ? `, không dùng được ${b.failed}` : ''}.`),
         b.changed ? el('p', {}, 'Các mục có đề xuất mang nhãn "AI đề xuất n%" trong bảng (đổi ống ngắm/tư thế để xem hết). Mở một dòng để xem đồ thị, sửa tiếp hoặc "Hoàn tác" để bỏ đề xuất đó.') : null,
+        otherCount > 0 ? alert('warn', `Lưu ý: Có ${otherCount} bản nháp của súng khác đang lưu tạm trong bộ nhớ. Nút bấm dưới đây sẽ chỉ lưu riêng cho súng ${gun}.`) : null,
         errors.length ? el('ul', { class: 'muted text-sm' }, errors.map((x) => el('li', {}, x))) : null,
       ],
-      actions: b.changed && total ? [{ id: 'close', label: 'Đóng, xem lại trong bảng' }, { id: 'save', label: `Lưu tất cả (${total})`, primary: true }] : [{ id: 'close', label: 'Đóng', primary: true }],
+      actions: b.changed && currentGunPending ? [{ id: 'close', label: 'Đóng, xem lại trong bảng' }, { id: 'save', label: `Lưu ${gun} (${currentGunPending})`, primary: true }] : [{ id: 'close', label: 'Đóng', primary: true }],
     });
-    if (end === 'save') await guard(saveAll)();
+    if (end === 'save') await guard(() => saveAll(weapon))();
+  }
+
+  // ---------------------------------------------------------------- "Thêm mốc cho súng": batch add points across all scopes and postures
+  async function showBatchAddPointsModal(ix) {
+    if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
+    const weapon = rc.weapon;
+    if (RL.isGunDisabled(weapon)) { toast('Súng này đã bị tắt trong Tiêu chuẩn súng: không thể thêm mốc.', true); return; }
+    if (RL.isZeroWeapon(weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để thêm.', true); return; }
+    if (rc.bulk || rc.filling) return;
+
+    const gunName = RL.weaponLabel(weapon);
+
+    // 1. Identify existing own combinations for this weapon in ix.idx.map and customCombos
+    const ownCombos = [];
+    const seenKeys = new Set();
+    if (ix.idx && ix.idx.map) {
+      for (const k of ix.idx.map.keys()) {
+        const [w, s, g, m, st, ge] = k.split('|').map(Number);
+        if (w === weapon) {
+          const cKey = `${s}|${ge}|${g}|${m}|${st}`;
+          if (!seenKeys.has(cKey)) {
+            seenKeys.add(cKey);
+            ownCombos.push({ weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st });
+          }
+        }
+      }
+    }
+    if (rc.customCombos) {
+      for (const k of rc.customCombos) {
+        const [w, s, ge, g, m, st] = k.split('|').map(Number);
+        if (w === weapon) {
+          const cKey = `${s}|${ge}|${g}|${m}|${st}`;
+          if (!seenKeys.has(cKey)) {
+            seenKeys.add(cKey);
+            ownCombos.push({ weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st });
+          }
+        }
+      }
+    }
+
+    // 2. All valid combinations according to attachment rules
+    const allValidCombos = [];
+    const allSeen = new Set();
+    const scopes = scopesOf(weapon);
+    for (const s of scopes) {
+      for (const ge of [0, 1, 2]) {
+        const combosHere = RL.exactCombos(ix.idx, weapon, s, ge);
+        if (!combosHere.some((c) => !c.grip && !c.muzzle && !c.stock)) {
+          combosHere.unshift({ grip: 0, muzzle: 0, stock: 0 });
+        }
+        for (const c of combosHere) {
+          const cKey = `${s}|${ge}|${c.grip}|${c.muzzle}|${c.stock}`;
+          if (!allSeen.has(cKey)) {
+            allSeen.add(cKey);
+            allValidCombos.push({ weapon, scope: s, gesture: ge, grip: c.grip, muzzle: c.muzzle, stock: c.stock });
+          }
+        }
+      }
+    }
+
+    // Modal UI elements
+    const countInput = el('input', {
+      type: 'number',
+      min: '1',
+      max: '20',
+      step: '1',
+      value: '1',
+      class: 'fp-num',
+      'aria-label': 'Số lượng mốc cần thêm',
+    });
+
+    const setStepCount = (v) => {
+      const cur = Math.max(1, Math.min(20, v));
+      countInput.value = String(cur);
+      updateSummary();
+    };
+
+    const stepper = el('div', { class: 'stepper-wrap' },
+      el('div', { class: 'stepper-control' },
+        el('button', {
+          type: 'button',
+          class: 'btn icon small',
+          'aria-label': 'Giảm 1 mốc',
+          onclick: () => setStepCount((Number(countInput.value) || 1) - 1),
+        }, icon('back')),
+        countInput,
+        el('button', {
+          type: 'button',
+          class: 'btn icon small',
+          'aria-label': 'Tăng 1 mốc',
+          onclick: () => setStepCount((Number(countInput.value) || 1) + 1),
+        }, icon('plus'))
+      ),
+      el('div', { class: 'stepper-presets' },
+        [1, 2, 3, 5, 10].map((num) => el('button', {
+          type: 'button',
+          class: 'pill-preset',
+          onclick: () => setStepCount(num),
+        }, `+${num} mốc`))
+      )
+    );
+
+    const methodTrend = el('input', { type: 'radio', name: 'batch-method', value: 'trend', checked: true });
+    const methodStep = el('input', { type: 'radio', name: 'batch-method', value: 'step' });
+
+    const scopeOwn = el('input', { type: 'radio', name: 'batch-scope', value: 'own', checked: ownCombos.length > 0 });
+    const scopeAll = el('input', { type: 'radio', name: 'batch-scope', value: 'all', checked: ownCombos.length === 0 });
+
+    const summaryText = el('div', { class: 'modal-callout-text' });
+    const summaryCard = el('div', { class: 'modal-callout info' }, icon('sparkles'), summaryText);
+
+    const updateSummary = () => {
+      const n = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
+      const isAll = scopeAll.checked;
+      const countTargets = isAll ? allValidCombos.length : ownCombos.length;
+      const method = methodTrend.checked ? 'theo xu hướng mốc trước' : 'theo bước chuẩn ngẫu nhiên';
+      summaryText.textContent = `Sẽ thêm ${n} mốc (${method}) vào ${countTargets} tổ hợp của ${gunName} (bộ dữ liệu: ${MODE_VN[rc.mode]}).`;
+    };
+
+    countInput.oninput = updateSummary;
+    methodTrend.onchange = updateSummary;
+    methodStep.onchange = updateSummary;
+    scopeOwn.onchange = updateSummary;
+    scopeAll.onchange = updateSummary;
+    updateSummary();
+
+    const methodCards = el('div', { class: 'choice-group' },
+      choiceCard({
+        input: methodTrend,
+        title: 'Theo xu hướng mốc trước',
+        desc: 'Tính bước nhảy thời gian Δt và độ bù giật Δv giữa các mốc cuối của từng đường cong để kéo dài tự nhiên, mượt mà.',
+        badge: badge('Khuyên dùng', 'accent'),
+        checked: true,
+      }),
+      choiceCard({
+        input: methodStep,
+        title: 'Theo bước chuẩn của hệ thống',
+        desc: `Thời gian +${RL.STEP.time[0]}..${RL.STEP.time[1]} ms, giá trị +${RL.STEP.value[0]}..${RL.STEP.value[1]} (hướng ${DIR_VN[rc.stepDir] || 'Tăng'}).`,
+      })
+    );
+
+    const scopeCards = el('div', { class: 'choice-group' },
+      choiceCard({
+        input: scopeOwn,
+        title: `Chỉ các mục riêng hiện có của ${gunName}`,
+        desc: 'Chỉ cập nhật các đường cong đã được tạo và lưu riêng cho súng này.',
+        badge: badge(`${ownCombos.length} tổ hợp`, ownCombos.length ? 'info' : 'neutral'),
+        disabled: ownCombos.length === 0,
+      }),
+      choiceCard({
+        input: scopeAll,
+        title: `Tất cả tổ hợp hợp lệ của ${gunName}`,
+        desc: 'Bao gồm cả các tổ hợp chưa có mục riêng (sẽ tạo bản nháp mới từ đường cong nền × hệ số).',
+        badge: badge(`${allValidCombos.length} tổ hợp`, 'accent'),
+      })
+    );
+
+    const choice = await showModal({
+      title: `Thêm mốc cho súng ${gunName}`,
+      tone: 'info',
+      body: [
+        el('p', { class: 'muted' }, `Thêm mốc nối tiếp cho ${gunName} ở tất cả tư thế (Đứng, Ngồi, Nằm) và ống ngắm.`),
+        el('div', { class: 'field' },
+          el('span', { class: 'font-semibold text-sm' }, 'Số lượng mốc cần thêm vào mỗi tổ hợp (1–20 mốc):'),
+          stepper
+        ),
+        el('div', { class: 'field' },
+          el('span', { class: 'font-semibold text-sm' }, 'Quy tắc tính mốc tiếp theo:'),
+          methodCards
+        ),
+        el('div', { class: 'field' },
+          el('span', { class: 'font-semibold text-sm' }, 'Phạm vi tổ hợp áp dụng:'),
+          scopeCards
+        ),
+        summaryCard,
+        el('p', { class: 'muted text-xs' }, 'Lưu ý: Mọi thay đổi sau khi tính sẽ được lưu tạm thành bản nháp (chưa ghi đè trực tiếp). Bạn có thể xem lại biểu đồ của từng tổ hợp, sau đó bấm "Lưu tất cả" để ghi vào file trên server (có bản sao lưu lịch sử).'),
+      ],
+      actions: [
+        { id: 'cancel', label: 'Hủy' },
+        { id: 'apply', label: 'Bắt đầu thêm mốc', primary: true },
+      ],
+    });
+
+    if (choice !== 'apply') return;
+
+    const count = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
+    const method = methodTrend.checked ? 'trend' : 'step';
+    const targets = scopeAll.checked ? allValidCombos : ownCombos;
+
+    if (!targets.length) {
+      toast(`${gunName}: không có tổ hợp nào phù hợp với phạm vi đã chọn.`, true);
+      return;
+    }
+
+    let modified = 0;
+    for (const o of targets) {
+      const key = recoilKey(o);
+      let baseCurve;
+      const draft = rc.drafts.get(key);
+      if (draft && draft.curve) {
+        baseCurve = draft.curve;
+      } else if (rc.editKey === key && rc.editCurve) {
+        baseCurve = rc.editCurve;
+      } else {
+        const r = RL.resolve(ix.idx, o);
+        baseCurve = r.curve;
+      }
+
+      const newCurve = RL.extendCurve(baseCurve, count, { method, dir: rc.stepDir });
+      rc.drafts.set(key, {
+        o,
+        curve: newCurve,
+        review: true,
+        source: 'add_points',
+        how: `+${count} mốc`,
+        change: 0,
+      });
+
+      if (rc.editKey === key && rc.editCurve) {
+        rc.editCurve = newCurve;
+        rc.dirty = true;
+      }
+      modified++;
+    }
+
+    redraw();
+    toast(`Đã thêm ${count} mốc cho ${modified} tổ hợp của ${gunName}. Bấm "Lưu tất cả" để ghi vào server.`);
   }
 
   // ---------------------------------------------------------------- "Cài đặt AI": the endpoints and the order they are tried in
@@ -1853,6 +2530,7 @@
   async function fillGun(ix) {
     if (!latest()) { toast('Chỉ làm được khi đang xem "Mới nhất".', true); return; }
     const weapon = rc.weapon;
+    if (RL.isGunDisabled(weapon)) { toast('Súng này đã bị tắt trong Tiêu chuẩn súng.', true); return; }
     if (RL.isZeroWeapon(weapon)) { toast('Súng này luôn dùng đường cong 0 trong app: không có gì để tạo.', true); return; }
     if (rc.bulk || rc.filling) return;
     if (!(await discardOk())) return;
@@ -1971,9 +2649,9 @@
           aiLimit ? `AI: ${aiOk} tổ hợp dùng được${aiBad ? `, ${aiBad} không dùng được (lệch quá hoặc lỗi) nên giữ kết quả của server/hệ số` : ''}${stopAi ? '; đã dừng sớm' : ''}.` : 'Không dùng AI.',
           `Kiểm tra lại: ${made.size - fixed}/${made.size} đường cong hợp lệ${fixed ? ` (${fixed} cái đã đổi về hệ số)` : ''}; ${againstTable ? `${againstTable} tổ hợp SAI bảng chuẩn` : 'không tổ hợp nào sai bảng chuẩn'}; quét lại ${still.length ? `còn thiếu ${still.length} tổ hợp` : 'không còn thiếu tổ hợp nào'}; ${suspect ? `${suspect} tổ hợp lệch nhiều so với hệ số (đánh dấu "xem lại" trong bảng)` : 'không có tổ hợp nào lệch bất thường'}.`,
         ];
-        const total = pendingSaves().length;
+        const currentGun = pendingSaves(rc.weapon).length;
         await bar.result(lines, [
-          { label: `Lưu tất cả (${total})`, primary: true, onclick: () => guard(saveAll)() },
+          { label: `Lưu ${gun} (${currentGun})`, primary: true, onclick: () => guard(() => saveAll(rc.weapon))() },
           { label: 'Đóng, xem lại trong danh sách' },
         ]);
       } catch (e) {
@@ -2167,13 +2845,18 @@
     renderPts();
     updateLive();
 
-    // "Thêm mốc": the new point continues from the last one (time and value both step up, see RecoilLib.STEP)
+    // "Thêm mốc": the new point continues from the last one (extrapolated from previous points or step)
     const addBtn = el('button', {
       type: 'button',
       class: 'btn small',
-      title: stepHint(),
+      title: 'Thêm 1 mốc dựa vào xu hướng các mốc trước đó (hoặc bước chuẩn)',
       onclick: () => {
-        curve.push(RL.nextPoint(curve, Math.random, rc.stepDir));
+        const ext = RL.extendCurve(curve, 1, { method: 'trend', dir: rc.stepDir });
+        if (ext.length > curve.length) {
+          curve.push(ext[ext.length - 1]);
+        } else {
+          curve.push(RL.nextPoint(curve, Math.random, rc.stepDir));
+        }
         rc.dirty = true;
         renderPts();
         updateLive();
@@ -2182,11 +2865,19 @@
       },
     }, icon('plus'), 'Thêm mốc');
 
+    const gunDisabled = RL.isGunDisabled(o.weapon);
+    const batchAddPointsBtn = el('button', {
+      type: 'button',
+      class: 'btn small',
+      disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Thêm mốc nối tiếp cho súng này ở tất cả tư thế và ống ngắm dựa vào dữ liệu mốc trước đó.',
+      onclick: guard(() => showBatchAddPointsModal(ix)),
+    }, icon('plus'), 'Thêm mốc cho súng');
     const suggestBtn = el('button', {
       type: 'button',
       class: 'btn small',
-      disabled: !latest() || zero,
-      title: 'Server tính từ các súng tương tự và AI tính song song; bạn so sánh rồi chọn một kết quả để điền vào bảng bên dưới (chưa lưu).',
+      disabled: !latest() || zero || gunDisabled,
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server tính từ các súng tương tự và AI tính song song; bạn so sánh rồi chọn một kết quả để điền vào bảng bên dưới (chưa lưu).',
       onclick: guard(() => suggestPoints(o)),
     }, icon('sparkles'), 'Tính mốc (server + AI)');
 
@@ -2229,7 +2920,7 @@
       chartWrap,
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
-      el('div', { class: 'row' }, addBtn, suggestBtn, resetBtn),
+      el('div', { class: 'row' }, addBtn, batchAddPointsBtn, suggestBtn, resetBtn),
       el('div', { class: 'row' }, saveBtns[1]),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, stepHint()))),
@@ -2254,7 +2945,8 @@
 
   window.Analysis = {
     // called when the tab opens: fetches the file again, then returns the page
-    async view() { active = true; S.sel = null; await load(); return draw(); },
-    leave() { active = false; stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (lay.bg.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
+    async view() { active = true; aiStatusP = null; S.sel = null; await load(); return draw(); },
+    leave() { active = false; stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (typeof lay !== 'undefined' && lay?.bg?.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
+    discardOk,
   };
 })();

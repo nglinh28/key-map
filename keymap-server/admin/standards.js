@@ -40,12 +40,14 @@
       const code = RL.WEAPONS[w];
       const a = RL.attachmentsFor(w);
       const zero = RL.isZeroWeapon(w);
+      const disabled = RL.isGunDisabled(w);
       const off = Object.prototype.hasOwnProperty.call(RL.getRuleOverrides(), code) && !a; // the user switched the rule off
       const status = a ? (a.edited ? 'Đã sửa' : 'Có chuẩn') : off ? 'Đã tắt chuẩn' : zero ? 'Luôn 0' : WAITING.has(code) ? 'Chờ xác nhận' : 'Chưa có nguồn';
       const label = RL.weaponLabel(w);
       const c = st.counts && st.counts.get(w);
       out.push({
-        w, code, label, tag: `${code} (${w})`, cls: CLASS_VN[GUN_CLASS[code]] || '—', a, status, edited: Boolean((a && a.edited) || off), zero,
+        w, code, label, tag: `${code} (${w})`, cls: CLASS_VN[RL.gunClass(w)] || CLASS_VN[GUN_CLASS[code]] || '—', a, status, edited: Boolean((a && a.edited) || off), zero, disabled,
+        use: disabled ? 'Đã tắt' : 'Đang dùng',
         muzzles: a ? (a.muzzles.size ? listText(a.muzzles, RL.MUZZLES, SHORT.muzzle) : none) : '—',
         grips: a ? (a.grips.size ? listText(a.grips, RL.GRIPS, SHORT.grip) : none) : '—',
         stocks: a ? (a.stocks.size ? listText(a.stocks, RL.STOCKS, SHORT.stock) : none) : '—',
@@ -58,7 +60,7 @@
   }
 
   const COLS = [
-    ['tag', 'Súng (số)', {}], ['cls', 'Loại', {}], ['muzzles', 'Nòng', {}], ['grips', 'Tay cầm', {}], ['stocks', 'Báng', {}],
+    ['tag', 'Súng (số)', {}], ['cls', 'Loại', {}], ['use', 'Sử dụng', {}], ['muzzles', 'Nòng', {}], ['grips', 'Tay cầm', {}], ['stocks', 'Báng', {}],
     ['zoom', 'Ống ngắm', {}], ['status', 'Trạng thái', {}],
   ];
   const COUNT_COLS = [['own', 'Mục riêng', { numeric: true }], ['bad', 'Sai chuẩn', { numeric: true }]];
@@ -105,10 +107,24 @@
   async function saveOverrides(promise, done) {
     const r = await promise;
     RL.setRuleOverrides(r.overrides);
+    if (r.disabled) RL.setDisabledGuns(r.disabled);
     if (st.counts) compute(); // "Sai chuẩn" follows the new table
     toast(done);
     refresh();
   }
+  async function toggleGunUsage(r, willEnable) {
+    const enabling = willEnable !== undefined ? willEnable : r.disabled;
+    if (!enabling) {
+      const ok = await showModal({
+        title: `Tắt không sử dụng ${r.tag}?`, tone: 'warn',
+        body: el('p', {}, `Khi tắt, các chức năng AI gợi ý mốc, hệ thống tìm súng tương tự và "Thêm tổ hợp" trong Phân tích cache sẽ không chọn và không sử dụng ${r.tag}. Dữ liệu hiện có của súng trong file không bị xóa.`),
+        actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'disable', label: 'Tắt súng', danger: true }],
+      });
+      if (ok !== 'disable') return;
+    }
+    await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { disabled: !enabling }), enabling ? `${r.code}: đã bật sử dụng súng.` : `${r.code}: đã tắt không sử dụng súng.`);
+  }
+
   async function editRule(r) {
     const a = r.a;
     const pick = {
@@ -124,10 +140,13 @@
     const zoom = el('select', { 'aria-label': 'Ống ngắm tối đa' }, ZOOM_CHOICES.map(([v, t]) => el('option', { value: v === null ? '' : String(v), selected: current === v }, t)));
     const note = el('textarea', { rows: '2', maxlength: '300', placeholder: 'Ví dụ: đã kiểm tra trong game tháng 10/2026' });
     note.value = a && a.source === 'edited' ? a.note || '' : '';
+    const useCheck = el('input', { type: 'checkbox', checked: !r.disabled });
+    const useRow = el('label', { class: 'field row card my-2' }, useCheck, el('span', {}, 'Sử dụng súng này trong hệ thống và AI (bỏ tích = tắt súng, không gợi ý và không thêm tổ hợp)'));
     const id = await showModal({
       title: `Sửa tiêu chuẩn: ${r.tag}`, tone: 'info', className: 'wide',
       body: [
         el('p', { class: 'muted' }, 'Tích đúng những gì súng này lắp được trong game. Bảng này là cơ sở để kiểm tra dữ liệu ("Sai chuẩn"), gợi ý và tạo tổ hợp, "Quét tất cả", và là điều AI được báo khi tính mốc: không tích = súng không lắp được.'),
+        useRow,
         group('Đầu nòng', RL.MUZZLES, RL.LABELS.MUZZLES, 'muzzles'),
         group('Tay cầm', RL.GRIPS, RL.LABELS.GRIPS, 'grips'),
         group('Báng', RL.STOCKS, RL.LABELS.STOCKS, 'stocks'),
@@ -138,12 +157,12 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, ...(a ? [{ id: 'off', label: 'Tắt chuẩn (cho phép mọi tổ hợp)' }] : []), { id: 'save', label: 'Lưu tiêu chuẩn', primary: true }],
     });
     if (id === 'off') {
-      await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { rule: null }), `${r.code}: đã tắt tiêu chuẩn.`);
+      await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { rule: null, disabled: !useCheck.checked }), `${r.code}: đã tắt tiêu chuẩn.`);
       return;
     }
     if (id !== 'save') return;
     const rule = { muzzles: [...pick.muzzles], grips: [...pick.grips], stocks: [...pick.stocks], maxZoom: zoom.value === '' ? null : Number(zoom.value), note: note.value };
-    await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { rule }), `${r.code}: đã lưu tiêu chuẩn mới. Mọi phép kiểm tra từ giờ dùng bảng này.`);
+    await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { rule, disabled: !useCheck.checked }), `${r.code}: đã lưu tiêu chuẩn mới. Mọi phép kiểm tra từ giờ dùng bảng này.`);
   }
   async function resetRule(r) {
     const ok = await showModal({
@@ -162,7 +181,8 @@
     if (!r) return el('section', { class: 'card' }, emptyState('list', 'Chọn một súng', 'để xem đủ tiêu chuẩn phụ kiện và nguồn của nó.'));
     const a = r.a;
     return el('section', { class: 'card' },
-      el('div', { class: 'row' }, el('h2', {}, r.tag), statusBadge(r.status)),
+      el('div', { class: 'row' }, el('h2', {}, r.tag), r.disabled ? badge('Đã tắt sử dụng', 'danger') : badge('Đang sử dụng', 'ok'), statusBadge(r.status)),
+      r.disabled ? alert('warn', el('span', {}, 'Súng này đang BỊ TẮT KHÔNG SỬ DỤNG. Các chức năng AI, hệ thống gợi ý và Phân tích cache -> Thêm tổ hợp sẽ không chọn và không sử dụng súng này.')) : null,
       el('p', { class: 'muted' }, [r.label !== r.code ? r.label : null, r.cls !== '—' ? r.cls : null].filter(Boolean).join(' · ') || ' '),
       a ? el('dl', { class: 'kv' },
         el('dt', {}, 'Nòng'), el('dd', {}, r.muzzles),
@@ -178,6 +198,7 @@
       a ? el('p', { class: 'muted text-sm' }, a.note) : null,
       el('div', { class: 'row mt-4' },
         r.zero ? null : el('button', { type: 'button', class: 'btn small primary', onclick: guard(() => editRule(r)) }, icon('pencil'), 'Sửa tiêu chuẩn'),
+        el('button', { type: 'button', class: `btn small ${r.disabled ? 'ok' : 'danger'}`, onclick: guard(() => toggleGunUsage(r)) }, icon(r.disabled ? 'check' : 'x'), r.disabled ? 'Bật sử dụng súng' : 'Tắt không sử dụng'),
         r.edited ? el('button', { type: 'button', class: 'btn small', onclick: guard(() => resetRule(r)) }, icon('history'), 'Khôi phục mặc định') : null,
         el('button', { type: 'button', class: 'btn small ghost', onclick: () => copyText(r.tag, 'Đã sao chép mã súng') }, icon('copy'), 'Sao chép mã')));
   }
@@ -195,12 +216,13 @@
     const body = visible.map((r) => {
       const select = () => { st.pick = r.code; refresh(); };
       const td = (col, label, content, cls = '') => el('td', { 'data-label': label, class: cls }, content);
-      return el('tr', { class: `pick${r.code === st.pick ? ' active' : ''}${hasRule(r.status) ? '' : ' dim'}`, tabindex: '0', onclick: select, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } } },
+      return el('tr', { class: `pick${r.code === st.pick ? ' active' : ''}${hasRule(r.status) ? '' : ' dim'}${r.disabled ? ' gun-disabled' : ''}`, tabindex: '0', onclick: select, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } } },
         td('tag', 'Súng', el('span', { class: 'name' }, r.tag), r.label !== r.code ? el('span', { class: 'sub' }, r.label) : null),
         td('cls', 'Loại', r.cls),
+        td('use', 'Sử dụng', el('button', { type: 'button', class: `btn mini ${r.disabled ? 'ghost' : 'ok'}`, title: r.disabled ? 'Đang tắt: bấm để bật sử dụng' : 'Đang dùng: bấm để tắt sử dụng', onclick: (e) => { e.stopPropagation(); toggleGunUsage(r); } }, r.disabled ? 'Đã tắt' : 'Đang dùng')),
         td('muzzles', 'Nòng', r.muzzles), td('grips', 'Tay cầm', r.grips), td('stocks', 'Báng', r.stocks),
         td('zoom', 'Ống ngắm', r.zoom),
-        td('status', 'Trạng thái', statusBadge(r.status)),
+        td('status', 'Trạng thái', el('div', { class: 'inline-flex items-center gap-1' }, r.disabled ? badge('Đã tắt', 'danger') : null, statusBadge(r.status))),
         ...(st.counts ? [td('own', 'Mục riêng', r.own == null ? '—' : String(r.own), 'num'), td('bad', 'Sai chuẩn', r.bad == null ? '—' : String(r.bad), `num${r.bad ? ' bad' : ''}`)] : []));
     });
     const table = el('table', { class: 'std-table' },
@@ -209,6 +231,7 @@
 
     const withRule = all.filter((r) => hasRule(r.status)).length;
     const edited = all.filter((r) => r.edited).length;
+    const disabledCount = all.filter((r) => r.disabled).length;
     const compare = el('div', { class: 'row' },
       el('button', { type: 'button', class: 'btn small', disabled: st.loading, onclick: guard(loadCounts) }, icon('refresh'), st.loading ? 'Đang đọc dữ liệu…' : st.counts ? 'Đối chiếu lại' : 'Đối chiếu với dữ liệu thật'),
       st.docs.length > 1 ? el('select', { 'aria-label': 'Mục độ giật', onchange: (e) => { st.docId = e.target.value; compute(); refresh(); } }, st.docs.map((d) => el('option', { value: d.id, selected: d.id === st.docId }, d.name))) : null,
@@ -218,7 +241,7 @@
 
     return el('div', {},
       pageHead('Tiêu chuẩn súng', 'Phụ kiện và ống ngắm mà mỗi súng lắp được, theo dữ liệu chính thức 和平精英. Trang kiểm tra dữ liệu theo bảng này; số trong ngoặc là số thứ tự của súng trong dữ liệu.',
-        el('span', { class: 'muted' }, `${withRule}/${all.length} súng đã có chuẩn${edited ? ` · ${edited} súng bạn đã sửa` : ''}`)),
+        el('span', { class: 'muted' }, `${withRule}/${all.length} súng đã có chuẩn${edited ? ` · ${edited} súng bạn đã sửa` : ''}${disabledCount ? ` · ${disabledCount} súng đã tắt` : ''}`)),
       st.error ? alert('danger', el('span', {}, st.error)) : null,
       compare,
       el('div', { class: 'split' }, el('section', { class: 'card flush table-card std-card' }, table), el('aside', { class: 'inspector', 'aria-label': 'Chi tiết súng' }, inspector(pick))));

@@ -157,6 +157,7 @@ function validateReview(points, current) {
 const REVIEW_ANALOG = 0.08;
 const meanValue = (c) => (c.length ? c.reduce((n, [, v]) => n + Math.abs(v), 0) / c.length : 0);
 function reviewScan(idx, weapon) {
+  if (R.isGunDisabled(weapon)) return { ok: false, reason: 'Súng này đã bị tắt không sử dụng trong Tiêu chuẩn súng.', total: 0, flagged: [], clean: 0, entries: [] };
   const own = [];
   for (const [key, list] of idx.map) {
     const [w, s, g, m, st, ge] = key.split('|').map(Number);
@@ -412,13 +413,77 @@ function createAi(cfg = {}, { fetchImpl = globalThis.fetch, providers = null } =
     return typeof r.content === 'string' && r.content.trim() ? { ok: true, model: r.model, ms: r.ms } : { ok: false, reason: `${p.name}: trả lời trống` };
   }
 
+  // Query available models from endpoint (OpenAI /models or Ollama /api/tags)
+  async function listModels(p, opts = {}) {
+    if (!p || !p.baseUrl) return { ok: false, reason: 'Chưa có địa chỉ Base URL.' };
+    const base = String(p.baseUrl).trim().replace(/\/+$/, '');
+    const clean = (s) => String(s).split(p.apiKey || '').join('***').split(base).join('…').replace(/\s+/g, ' ').slice(0, 160);
+    const headers = { Accept: 'application/json' };
+    if (p.apiKey) headers.Authorization = `Bearer ${p.apiKey}`;
+
+    const tryFetch = async (url) => {
+      try {
+        const res = await fetchImpl(url, {
+          method: 'GET',
+          headers,
+          signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
+        });
+        const text = await res.text();
+        return { status: res.status, ok: res.ok, text };
+      } catch (e) {
+        if (opts.signal && opts.signal.aborted) return { error: 'Đã hủy yêu cầu tải model.' };
+        return { error: e.name === 'TimeoutError' ? 'Quá thời gian chờ phản hồi (15s)' : 'Không kết nối được tới endpoint' };
+      }
+    };
+
+    let res = await tryFetch(`${base}/models`);
+    if (res.error) return { ok: false, reason: res.error };
+
+    if (res.status === 404) {
+      if (!/\/v1$/i.test(base)) {
+        const f1 = await tryFetch(`${base}/v1/models`);
+        if (!f1.error) res = f1;
+      }
+      if (res.status === 404) {
+        const f2 = await tryFetch(`${base}/api/tags`);
+        if (!f2.error) res = f2;
+      }
+    }
+
+    if (!res.ok) {
+      return { ok: false, reason: `Endpoint trả lỗi HTTP ${res.status}${res.text ? `: ${clean(res.text)}` : ''}` };
+    }
+
+    let data;
+    try { data = JSON.parse(res.text); } catch {
+      return { ok: false, reason: 'Nội dung trả về từ endpoint không phải JSON hợp lệ.' };
+    }
+
+    let rawList = [];
+    if (Array.isArray(data)) rawList = data;
+    else if (Array.isArray(data.data)) rawList = data.data;
+    else if (Array.isArray(data.models)) rawList = data.models;
+    else {
+      return { ok: false, reason: 'Dữ liệu trả về không chứa danh sách model (thiếu mảng data hoặc models).' };
+    }
+
+    const ids = [];
+    for (const item of rawList) {
+      const id = typeof item === 'string' ? item.trim() : (item && (item.id || item.name || item.model));
+      if (typeof id === 'string' && id.trim()) ids.push(id.trim());
+    }
+
+    const unique = Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    return { ok: true, models: unique };
+  }
+
   // the model of the first endpoint that will be asked (the page shows it); which endpoints exist is GET /ai/providers
   function status() {
     const list = listOf();
     return { enabled: list.length > 0, model: list.length ? list[0].model || 'auto' : cfg.model || 'auto', concurrency };
   }
 
-  return { status, suggest, review, rankCombos, test };
+  return { status, suggest, review, rankCombos, test, listModels };
 }
 
 module.exports = { createAi, loadAiConfig, parseAnswer, parseRanking, validatePoints, validateReview, reviewScan, buildMessages, buildRankMessages, buildReviewMessages, curveChange, MAX_POINTS, REVIEW_ANALOG };

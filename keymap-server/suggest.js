@@ -58,7 +58,7 @@ function rankedByBase(idx, target) {
   if (!tBase) return null;
   const found = [];
   for (let w = 0; w < idx.groups.length; w++) {
-    if (w === target.weapon || R.isZeroWeapon(w)) continue;
+    if (w === target.weapon || R.isZeroWeapon(w) || R.isGunDisabled(w)) continue;
     const base = lastCurve(idx.map.get(keyOf(w, target.scope, 0, 0, 0, 0)));
     if (base) found.push({ weapon: w, name: R.WEAPONS[w] || `nhóm ${w}`, distance: distance(tBase, base), base });
   }
@@ -88,7 +88,7 @@ function similarByBase(idx, target, { limit = 5 } = {}) {
 // -> { ok:true, candidates:[{ grip, muzzle, stock, n, of, support, names }], similar } or { ok:false, reason, candidates:[] }
 function comboGaps(idx, target, { similar = 8, minSupport = 2, limit = 10, allowed } = {}) {
   const fits = allowed || rulesAllowed(target);
-  if (R.isZeroWeapon(target.weapon)) return { ok: false, reason: 'Súng này luôn dùng đường cong 0 trong app: không có tổ hợp nào để thêm.', candidates: [] };
+  if (R.isZeroWeapon(target.weapon) || R.isGunDisabled(target.weapon)) return { ok: false, reason: R.isGunDisabled(target.weapon) ? 'Súng này đã bị tắt không sử dụng: không có tổ hợp nào để thêm.' : 'Súng này luôn dùng đường cong 0 trong app: không có tổ hợp nào để thêm.', candidates: [] };
   if (!idx.map.get(keyOf(target.weapon, target.scope, 0, 0, 0, 0))) return { ok: false, reason: 'Súng này chưa có đường cong nền (không phụ kiện, đứng) ở ống ngắm này, nên chưa có gì để so sánh.', candidates: [] };
   const sims = similarByBase(idx, target, { limit: similar });
   if (!sims.length) return { ok: false, reason: 'Không có súng nào để so sánh với súng này.', candidates: [] };
@@ -229,7 +229,7 @@ const ratio = (a, b) => (Math.abs(b) < 1e-9 ? 1 : a / b);
 // -> { ok:true, curve, computed, factor:{min,max,mean}, stretch, similar:[{weapon,name,distance,weight}], method:'analog' }
 //    or { ok:false, reason, computed } when there is nothing to learn from (the coefficient curve is still returned)
 function analogCurve(idx, target, opts = {}) {
-  if (R.isZeroWeapon(target.weapon)) return { ok: false, reason: 'Súng này luôn dùng đường cong 0 trong app: không có gì để tính.', computed: [[0, 0]] };
+  if (R.isZeroWeapon(target.weapon) || R.isGunDisabled(target.weapon)) return { ok: false, reason: R.isGunDisabled(target.weapon) ? 'Súng này đã bị tắt không sử dụng.' : 'Súng này luôn dùng đường cong 0 trong app: không có gì để tính.', computed: [[0, 0]] };
   const comp = R.computedFor(idx, target);
   const computed = comp.curve;
   if (comp.baseMissing) return { ok: false, reason: 'Súng này chưa có đường cong nền (không phụ kiện, đứng) ở ống ngắm này, nên không có gì để hiệu chỉnh.', computed };

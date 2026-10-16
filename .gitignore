@@ -10,6 +10,7 @@ android-sync/.gradle/
 android-sync/**/build/
 android-sync/local.properties
 *.log
+*.tar
 
 # sản phẩm build/test của các kỹ năng
 __pycache__/

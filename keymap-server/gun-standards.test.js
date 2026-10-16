@@ -13,7 +13,10 @@ const X6 = R.SCOPES.indexOf('X6');
 const VERTICAL = R.GRIPS.indexOf('VERTICAL');
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'std-')), 'gun-standards.json');
 
-test.afterEach(() => R.setRuleOverrides({})); // RecoilLib is shared by the whole process
+test.afterEach(() => {
+  R.setRuleOverrides({}); // RecoilLib is shared by the whole process
+  R.setDisabledGuns([]);
+});
 
 test('a correction changes what the checks allow, is kept on disk, and "Khôi phục mặc định" brings the table back', () => {
   const file = tmpFile();
@@ -45,6 +48,41 @@ test('a gun without a rule can get one, and a rule can be switched off (null = n
   assert.equal(R.attachmentsFor(W('M416')), null);
 });
 
+test('disabling and enabling a gun is persisted and reflected in RecoilLib.isGunDisabled', () => {
+  const file = tmpFile();
+  const s = new GunStandards({ file });
+  assert.equal(R.isGunDisabled('AUG'), false);
+  assert.equal(R.isGunDisabled(W('AUG')), false);
+  assert.deepEqual(s.listDisabled(), []);
+
+  const res = s.setDisabled('AUG', true);
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.disabled, ['AUG']);
+  assert.deepEqual(s.listDisabled(), ['AUG']);
+  assert.equal(R.isGunDisabled('AUG'), true);
+  assert.equal(R.isGunDisabled(W('AUG')), true);
+  assert.equal(R.attachmentsFor(W('AUG')).disabled, true);
+
+  // A new instance (simulating server restart) reads disabled guns back
+  R.setDisabledGuns([]);
+  assert.equal(R.isGunDisabled('AUG'), false);
+  const again = new GunStandards({ file });
+  assert.deepEqual(again.listDisabled(), ['AUG']);
+  assert.equal(R.isGunDisabled('AUG'), true);
+  assert.equal(R.isGunDisabled(W('AUG')), true);
+
+  // Re-enable the gun
+  assert.equal(again.setDisabled('AUG', false).ok, true);
+  assert.deepEqual(again.listDisabled(), []);
+  assert.equal(R.isGunDisabled('AUG'), false);
+  assert.equal(R.isGunDisabled(W('AUG')), false);
+
+  // Bad weapon code is refused
+  assert.equal(s.setDisabled('NOPE', true).ok, false);
+  assert.equal(s.setDisabled(R.WEAPONS[0], true).ok, false);
+  assert.equal(s.setDisabled(123, true).ok, false);
+});
+
 test('bad corrections are refused and change nothing', () => {
   const s = new GunStandards({ file: tmpFile() });
   assert.equal(s.set('NOPE', { muzzles: [], grips: [], stocks: [] }).ok, false);
@@ -55,3 +93,4 @@ test('bad corrections are refused and change nothing', () => {
   assert.deepEqual(s.list(), {});
   assert.equal(R.attachmentsFor(W('AUG')).edited, false);
 });
+

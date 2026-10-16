@@ -14,6 +14,11 @@ const RC = 'com.zjx.pubg.rcConfig2';
 const KEY = 'freellmapi-routes-secret-0123456789';
 const wi = (n) => R.WEAPONS.indexOf(n);
 const SC = R.SCOPES.indexOf('X1');
+
+test.afterEach(() => {
+  R.setDisabledGuns([]);
+  R.setRuleOverrides({});
+});
 const MUZ = R.MUZZLES.indexOf('COMPENSATOR');
 const COEF = { compensatorMuzzle: 0.9, flashHidderMuzzle: 0.8, suppressorMuzzle: 0.95, verticalGrip: 0.85, horizontalGrip: 0.97, halfGrip: 0.93, lightGrip: 0.98, thumbGrip: 0.8, laserGrip: 0.99, generalStock: 0.9, crouch: 0.8, prone: 0.6, stand: 1 };
 const BASE = [[0, 100], [100, 80], [200, 60]];
@@ -292,3 +297,44 @@ test('rank combos: the AI orders the server\'s candidates by accessories (not by
     });
   } finally { await down.close(); }
 });
+
+test('disabled guns return 400 Bad Request on recoil and AI suggestion endpoints', async () => {
+  await withServer({}, async ({ port }) => {
+    await push(port, cacheXml(DOC()));
+    // Disable AUG
+    const putRes = await raw(port, 'PUT', '/admin/api/standards/AUG', { headers: W, body: { disabled: true } });
+    assert.equal(putRes.status, 200);
+    assert.deepEqual(putRes.json.disabled, ['AUG']);
+
+    // GET /admin/api/standards returns AUG in disabled
+    const getRes = await raw(port, 'GET', '/admin/api/standards', { headers: W });
+    assert.equal(getRes.status, 200);
+    assert.deepEqual(getRes.json.disabled, ['AUG']);
+
+    // /recoil/suggest returns 400
+    const sug = await post(port, '/admin/api/recoil/suggest', { id: ID, mode: 'touch', combo: combo() });
+    assert.equal(sug.status, 400);
+    assert.match(sug.text, /đã bị tắt/);
+
+    // /recoil/combo-suggestions returns 400
+    const comboSug = await post(port, '/admin/api/recoil/combo-suggestions', { id: ID, mode: 'touch', combo: where() });
+    assert.equal(comboSug.status, 400);
+    assert.match(comboSug.text, /đã bị tắt/);
+
+    // /ai/rank-combos returns 400
+    const rank = await post(port, '/admin/api/ai/rank-combos', { id: ID, mode: 'touch', combo: where() });
+    assert.equal(rank.status, 400);
+    assert.match(rank.text, /đã bị tắt/);
+
+    // Re-enable AUG
+    const enableRes = await raw(port, 'PUT', '/admin/api/standards/AUG', { headers: W, body: { disabled: false } });
+    assert.equal(enableRes.status, 200);
+    assert.deepEqual(enableRes.json.disabled, []);
+
+    // /recoil/suggest works again
+    const sugAgain = await post(port, '/admin/api/recoil/suggest', { id: ID, mode: 'touch', combo: combo() });
+    assert.equal(sugAgain.status, 200);
+    assert.equal(sugAgain.json.ok, true);
+  });
+});
+

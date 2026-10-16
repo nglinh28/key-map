@@ -2,7 +2,7 @@
 // Admin page: the shell (sidebar, toolbar, command palette, theme) and the tabs "Tệp cài đặt", "So sánh ngày",
 // "Sao lưu theo ngày", "Thiết bị". The tab "Phân tích cache" lives in analysis.js.
 (() => {
-  const { $, el, icon, pageHead, fmtBytes, textBytes, clockTime, clockDateTime, toast, api, guard, showModal, changesList, downloadText,
+  const { $, el, icon, pageHead, fmtBytes, textBytes, clockTime, clockDateTime, toast, api, guard, showModal, confirmModal, alertModal, changesList, downloadText,
     badge, alert, emptyState, menuButton, skeleton, setCrumbs, theme, copyText, labelStacked } = window.Ui;
   const CX = window.CacheXml;
   const EL = window.EditLib;
@@ -14,18 +14,41 @@
   const state = { view: 'analysis', dbEdit: null, filePick: '', autorun: '', cmp: { file: CACHE_FILE, a: null, b: '' } };
 
   // ---------------------------------------------------------------- shell: sidebar navigation, toolbar, theme, command palette
-  const VIEWS = [['analysis', 'Phân tích cache', 'layers'], ['standards', 'Tiêu chuẩn súng', 'list'], ['files', 'Tệp cài đặt', 'file'], ['compare', 'So sánh ngày', 'compare'], ['backups', 'Sao lưu theo ngày', 'clock'], ['devices', 'Thiết bị', 'tablet']];
-  const labelOf = (id) => VIEWS.find((v) => v[0] === id)[1];
+  const VIEWS = [
+    ['analysis', 'Phân tích cache', 'layers'],
+    ['standards', 'Tiêu chuẩn súng', 'list'],
+    ['ai', 'Cài đặt AI', 'sparkles'],
+    ['files', 'Tệp cài đặt', 'file'],
+    ['compare', 'So sánh ngày', 'compare'],
+    ['backups', 'Sao lưu theo ngày', 'clock'],
+    ['devices', 'Thiết bị', 'tablet']
+  ];
+  const labelOf = (id) => (VIEWS.find((v) => v[0] === id) || ['', id])[1];
   const dbDirty = () => !!state.dbEdit && state.dbEdit.text !== state.dbEdit.original;
-  const dbEditDiscardOk = () => !dbDirty() || confirm('Bỏ các thay đổi chưa lưu của file cài đặt?');
+  const dbEditDiscardOk = async () => {
+    if (!dbDirty()) return true;
+    return confirmModal({
+      title: 'Bỏ thay đổi chưa lưu?',
+      tone: 'warn',
+      danger: true,
+      body: 'Bỏ các thay đổi chưa lưu của file cài đặt?',
+      confirmLabel: 'Bỏ thay đổi',
+      cancelLabel: 'Ở lại',
+    });
+  };
 
-  function goTo(id) {
-    if (!dbEditDiscardOk()) return;
+  async function goTo(id) {
+    if (state.view === id) return;
+    if (!(await dbEditDiscardOk())) return;
+    if (state.view === 'analysis' && window.Analysis?.discardOk && !(await window.Analysis.discardOk())) return;
+    if (state.view === 'ai' && window.AiSettings?.discardOk && !(await window.AiSettings.discardOk())) return;
     state.dbEdit = null;
-    window.Analysis.leave();
+    if (window.Analysis?.leave) window.Analysis.leave();
     state.view = id;
     render();
   }
+  window.goTo = goTo;
+
 
   function renderNav() {
     $('#nav').replaceChildren(...VIEWS.map(([id, label, ic]) => el('button', {
@@ -100,7 +123,10 @@
   // the user's corrections of the table of accessories ("Tiêu chuẩn súng"), loaded once before any tab is drawn: every check of the page uses them
   let standardsP = null;
   const loadStandards = () => (standardsP || (standardsP = api('GET', '/standards')
-    .then((r) => { window.RecoilLib.setRuleOverrides(r.overrides); })
+    .then((r) => {
+      window.RecoilLib.setRuleOverrides(r.overrides);
+      if (r.disabled) window.RecoilLib.setDisabledGuns(r.disabled);
+    })
     .catch(() => { standardsP = null; }))); // tried again next time
 
   let renderSeq = 0;
@@ -114,7 +140,15 @@
     let node;
     await loadStandards();
     try {
-      const view = { analysis: () => window.Analysis.view(), standards: () => window.Standards.view(), files: viewFiles, compare: viewCompare, backups: viewBackups, devices: viewDevices }[state.view];
+      const view = {
+        analysis: () => window.Analysis.view(),
+        standards: () => window.Standards.view(),
+        ai: () => window.AiSettings.view(),
+        files: viewFiles,
+        compare: viewCompare,
+        backups: viewBackups,
+        devices: viewDevices
+      }[state.view];
       node = await view();
     } catch (e) { node = alert('danger', el('b', {}, 'Không tải được trang này'), el('span', {}, e.message)); }
     clearTimeout(wait);
@@ -136,8 +170,16 @@
 
   // ---------------------------------------------------------------- who is connected (phone app <-> this page)
   // This page pings the server every 10 s so the Android app can show "web: open"; the app sends a heartbeat every 15 s
-  // and this page shows it. "Connected" means a sign of life in the last 40 s (devices) / 30 s (pages), not an open socket.
-  const SESSION = `web-${Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  const randomSessionId = () => {
+    try {
+      const arr = new Uint8Array(8);
+      (window.crypto || crypto).getRandomValues(arr);
+      return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      return Math.random().toString(16).slice(2, 10) + Math.random().toString(16).slice(2, 10);
+    }
+  };
+  const SESSION = `web-${randomSessionId()}`;
   const STATE_VN = { idle: 'Đang chờ', watching: 'Đang theo dõi thư mục', syncing: 'Đang đồng bộ', error: 'Có lỗi' };
 
   async function pingPresence() {
@@ -195,7 +237,25 @@
             el('dt', {}, 'Android / phiên bản app'), el('dd', {}, `${d.android || '—'} / ${d.app_version || '—'}`),
             el('dt', {}, 'Lần đẩy gần nhất'), el('dd', {}, d.last_push ? `${push}, giữ nguyên ${d.last_push.unchanged ?? 0}, bỏ qua ${d.last_push.skipped ?? 0}` : 'chưa có'),
             el('dt', {}, 'Thấy lần đầu'), el('dd', {}, clockDateTime(d.first_seen))))),
-        el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn small danger', onclick: guard(async () => { if (!confirm(`Quên thiết bị "${d.name}"? Nó sẽ hiện lại nếu app kết nối lần nữa.`)) return; await api('DELETE', `/sync/devices/${d.id}`); await render(); refreshConn(); }) }, icon('trash'), 'Quên thiết bị')));
+        el('div', { class: 'row' }, el('button', {
+          type: 'button',
+          class: 'btn small danger',
+          onclick: guard(async () => {
+            const ok = await confirmModal({
+              title: 'Quên thiết bị?',
+              tone: 'danger',
+              danger: true,
+              body: `Quên thiết bị "${d.name}"? Nó sẽ hiện lại nếu app kết nối lần nữa.`,
+              confirmLabel: 'Quên thiết bị',
+              cancelLabel: 'Hủy',
+            });
+            if (!ok) return;
+            await api('DELETE', `/sync/devices/${d.id}`);
+            await render();
+            refreshConn();
+          }),
+        }, icon('trash'), 'Quên thiết bị')));
+
     });
     return el('div', {}, pageHead('Thiết bị', 'Máy tính bảng gửi nhịp "còn sống" mỗi 15 giây; quá 40 giây không có nhịp thì coi là ngắt kết nối.', el('span', { class: 'muted' }, `${web.sessions} trang web đang mở`)),
       devices.length ? cards : el('div', { class: 'card' }, emptyState('tablet', 'Chưa có thiết bị nào', 'Mở app "KeyMap Sync" trên máy tính bảng, nhập địa chỉ server này là máy sẽ xuất hiện ở đây.')));
@@ -361,7 +421,8 @@
       e.stale ? alert('danger', el('span', {}, 'File đã đổi trên server từ lúc bạn mở. '), el('button', { type: 'button', class: 'btn small', onclick: guard(() => openDbEditor(e.name)) }, 'Tải lại bản mới (bỏ thay đổi hiện tại)')) : null,
       area, status,
       el('div', { class: 'row' },
-        el('button', { type: 'button', class: 'btn', onclick: guard(async () => { if (!dbEditDiscardOk()) return; state.dbEdit = null; await render(); }) }, 'Hủy'),
+        el('button', { type: 'button', class: 'btn', onclick: guard(async () => { if (!(await dbEditDiscardOk())) return; state.dbEdit = null; await render(); }) }, 'Hủy'),
+
         el('button', { type: 'button', class: 'btn', onclick: guard(dbHistory) }, icon('history'), 'Bản cũ…'),
         el('button', { type: 'button', class: 'btn', disabled: !dbDirty(), onclick: () => showModal({ title: 'Thay đổi so với bản đang lưu', tone: 'info', body: diffNode(e.original, e.text), actions: [{ id: 'close', label: 'Đóng' }] }) }, 'Xem thay đổi'),
         el('button', { type: 'button', class: 'btn', onclick: guard(async () => { e.text = e.original; await render(); }) }, 'Hoàn tác về bản đang lưu'),

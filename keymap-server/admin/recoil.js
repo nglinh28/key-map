@@ -45,6 +45,46 @@
   const weaponLabel = (i) => (i >= WEAPONS.length ? `(nhóm ${i})` : WEAPON_VI[WEAPONS[i]] || WEAPONS[i]);
   const coefLabel = (key) => COEF_LABELS[key] || key;
 
+  // Weapon classification categories (Assault Rifles, Snipers, DMRs, SMGs, LMGs, Shotguns, Others)
+  const GUN_CLASS_MAP = {
+    // Súng trường tấn công (AR)
+    AKM: 'ar', M16: 'ar', M416: 'ar', Scar: 'ar', Groza: 'ar', AUG: 'ar', QBZ: 'ar', M762: 'ar',
+    MK47: 'ar', G36C: 'ar', ASM: 'ar', ACVAL: 'ar', HB: 'ar', FAMAS: 'ar', ACE32: 'ar', ARX: 'ar', ABAKAN: 'ar',
+
+    // Súng bắn tỉa (SR)
+    AWM: 'sr', Kar98K: 'sr', M24: 'sr', Mosin: 'sr', Win94: 'sr', AMR: 'sr', M200: 'sr', M338: 'sr', AS50: 'sr', M1: 'sr',
+
+    // Súng trường thiện xạ (DMR)
+    MK14: 'dmr', SKS: 'dmr', SLR: 'dmr', QBU: 'dmr', MK12: 'dmr', VSS: 'dmr', Mini14: 'dmr', M417: 'dmr', MK20H: 'dmr', SVD: 'dmr',
+
+    // Súng tiểu liên (SMG)
+    UZI: 'smg', Thomson: 'smg', UMP45: 'smg', Vector: 'smg', Bison: 'smg', MP5K: 'smg', P90: 'smg', AKS: 'smg', JS9: 'smg', MP7: 'smg',
+
+    // Súng máy (LMG)
+    M249: 'lmg', DP28: 'lmg', MG3: 'lmg', PKM: 'lmg', MG36: 'lmg', MG97: 'lmg',
+
+    // Shotgun (SG)
+    S12K: 'sg', S1897: 'sg', S686: 'sg', DBS: 'sg', M1014: 'sg', SPAS12: 'sg', AA12G: 'sg',
+
+    // Khác
+    CrossBow: 'other', Bow: 'other', TacticsBow: 'other', FireCompositeBow: 'other', SHIELD: 'other', MORTAR: 'other', ChiXiao: 'other', Empty: 'other',
+  };
+
+  const GUN_CLASSES = [
+    { id: 'ar', name: 'Súng trường tấn công (AR)' },
+    { id: 'sr', name: 'Súng bắn tỉa (SR)' },
+    { id: 'dmr', name: 'Súng trường thiện xạ (DMR)' },
+    { id: 'smg', name: 'Súng tiểu liên (SMG)' },
+    { id: 'lmg', name: 'Súng máy (LMG)' },
+    { id: 'sg', name: 'Súng Shotgun' },
+    { id: 'other', name: 'Vũ khí khác' },
+  ];
+
+  const gunClass = (weapon) => {
+    const code = typeof weapon === 'number' ? WEAPONS[weapon] : typeof weapon === 'string' ? weapon : null;
+    return (code && GUN_CLASS_MAP[code]) || 'other';
+  };
+
   // coefficient name per option; options absent here (None, BRAKE, EXTENDER, ERGONOMIC, GENERAL_NEW) mean factor 1
   const MUZZLE_COEF = { COMPENSATOR: 'compensatorMuzzle', FLASH_HIDER: 'flashHidderMuzzle', SUPPRESSOR: 'suppressorMuzzle' };
   const GRIP_COEF = { VERTICAL: 'verticalGrip', HORIZONTAL: 'horizontalGrip', HALF: 'halfGrip', LIGHT: 'lightGrip', THUMB: 'thumbGrip', LASER: 'laserGrip' };
@@ -215,6 +255,22 @@
   const MAX_ZOOMS = [null, 0, 1, 2, 3, 4, 6, 8]; // null = no limit
   let ruleOverrides = {};
   const hasOverride = (name) => Object.prototype.hasOwnProperty.call(ruleOverrides, name);
+  let disabledGuns = new Set();
+  function setDisabledGuns(list) {
+    const next = new Set();
+    for (const item of Array.isArray(list) ? list : []) {
+      const code = typeof item === 'number' ? WEAPONS[item] : typeof item === 'string' ? item : null;
+      if (code && WEAPONS.includes(code) && code !== WEAPONS[0]) next.add(code);
+    }
+    disabledGuns = next;
+    attachCache.clear();
+    return getDisabledGuns();
+  }
+  const getDisabledGuns = () => [...disabledGuns];
+  function isGunDisabled(weapon) {
+    const code = typeof weapon === 'number' ? WEAPONS[weapon] : typeof weapon === 'string' ? weapon : null;
+    return Boolean(code && disabledGuns.has(code));
+  }
   // a rule from the page -> { ok, rule } with the names checked against the app's lists, or { ok:false, error }
   function checkRule(r) {
     if (!r || typeof r !== 'object') return { ok: false, error: 'Tiêu chuẩn không hợp lệ.' };
@@ -250,12 +306,12 @@
   // the rule in force for a gun code: the user's correction if any, else the table above (null = none)
   const ruleOf = (name) => (hasOverride(name) ? ruleOverrides[name] : ATTACHMENT_RULES[name] || null);
 
-  // -> { name, grips:Set, muzzles:Set, stocks:Set (enum indexes), maxZoom, source, sourceLabel, note, edited } or null when no rule covers the gun
+  // -> { name, grips:Set, muzzles:Set, stocks:Set (enum indexes), maxZoom, source, sourceLabel, note, edited, disabled } or null when no rule covers the gun
   function attachmentsFor(weapon) {
     const name = WEAPONS[weapon];
     const r = name && ruleOf(name);
     if (!r) return null;
-    if (!attachCache.has(name)) attachCache.set(name, { name, grips: toSet(GRIPS, r.grips), muzzles: toSet(MUZZLES, r.muzzles), stocks: toSet(STOCKS, r.stocks), maxZoom: r.maxZoom, source: r.source, sourceLabel: SOURCES[r.source] || r.source, note: r.note, edited: hasOverride(name) });
+    if (!attachCache.has(name)) attachCache.set(name, { name, grips: toSet(GRIPS, r.grips), muzzles: toSet(MUZZLES, r.muzzles), stocks: toSet(STOCKS, r.stocks), maxZoom: r.maxZoom, source: r.source, sourceLabel: SOURCES[r.source] || r.source, note: r.note, edited: hasOverride(name), disabled: isGunDisabled(name) });
     return attachCache.get(name);
   }
 
@@ -429,6 +485,34 @@
     return n;
   }
 
+  // Extends a curve by adding `count` points continuing from previous points.
+  // method: 'trend' (extrapolates from the last 2 points' delta t and delta v, fallback to step)
+  //         'step'  (uses nextPoint: time +450..678 ms, value +1.02..1.35 per dir)
+  function extendCurve(curve, count = 1, { method = 'trend', rnd = Math.random, dir = 'up' } = {}) {
+    if (!Array.isArray(curve)) return [];
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    const out = curve.map(([t, v]) => [Number(t), Number(v)]);
+    for (let k = 0; k < n; k++) {
+      if (out.length === 0) {
+        out.push([0, 0]);
+        continue;
+      }
+      if (out.length === 1 || method === 'step') {
+        out.push(nextPoint(out, rnd, dir));
+        continue;
+      }
+      const last = out[out.length - 1];
+      const prev = out[out.length - 2];
+      let dt = last[0] - prev[0];
+      let dv = last[1] - prev[1];
+      if (dt <= 0) dt = stepTime(0, rnd);
+      const nextT = Math.round(last[0] + dt);
+      const nextV = Number((last[1] + dv).toFixed(6));
+      out.push([nextT, nextV]);
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- combinations
   const comboKey = (o) => `${o.weapon}|${o.scope}|${o.gesture}|${o.grip}|${o.muzzle}|${o.stock}`;
   // Is this combination already in the list? { kind: 'exact' (has its own entry in the file) | 'custom' (added on the page, not saved yet)
@@ -468,5 +552,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, comboKey, findDuplicateCombo };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });

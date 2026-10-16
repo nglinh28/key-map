@@ -13,7 +13,7 @@ test('admin page is served with a strict CSP and without any login', async () =>
     assert.match(r.headers['content-type'], /text\/html/);
     assert.match(r.headers['content-security-policy'], /default-src 'none'/);
     assert.match(r.headers['content-security-policy'], /frame-ancestors 'none'/);
-    for (const f of ['app.js', 'app.css', 'recoil.js', 'edit.js', 'layout.js', 'cachexml.js', 'ui.js', 'analysis.js', 'palette.js', 'theme.js']) assert.equal((await raw(port, 'GET', `/admin/${f}`)).status, 200, f);
+    for (const f of ['app.js', 'app.css', 'recoil.js', 'edit.js', 'layout.js', 'cachexml.js', 'ui.js', 'analysis.js', 'ai-settings.js', 'palette.js', 'theme.js']) assert.equal((await raw(port, 'GET', `/admin/${f}`)).status, 200, f);
     // Path traversal: the URL normalises to /server.js, which is not an admin route; it must never serve the source.
     for (const p of ['/admin/../server.js', '/admin/%2e%2e/server.js', '/admin/..%2fserver.js', '/admin/admin/app.js']) {
       const r2 = await raw(port, 'GET', p);
@@ -88,3 +88,17 @@ test('a large (7 MB) file is accepted and read back whole', async () => {
     assert.equal(got.json.text.length, big.length);
   });
 });
+
+test('POST /admin/api/ai/providers/models: returns error when missing baseUrl, handles model loading', async () => {
+  await withServer({}, async ({ port }) => {
+    const r1 = await raw(port, 'POST', '/admin/api/ai/providers/models', { headers: W, body: {} });
+    assert.equal(r1.status, 404);
+    assert.match(r1.json.error, /Base URL/);
+
+    const r2 = await raw(port, 'POST', '/admin/api/ai/providers/models', { headers: W, body: { provider: { baseUrl: 'http://127.0.0.1:9/v1' } } });
+    assert.equal(r2.status, 200);
+    assert.equal(r2.json.ok, false);
+    assert.match(r2.json.reason, /kết nối/);
+  });
+});
+

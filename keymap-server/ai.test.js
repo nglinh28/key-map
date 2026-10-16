@@ -284,3 +284,45 @@ test('concurrency: AI_CONCURRENCY decides how many points-requests may be out at
     assert.equal((await ai.suggest(idx, target)).ok, true, 'free again');
   } finally { release(); await f.close(); }
 });
+
+test('listModels: fetches models from /models, supports OpenAI and Ollama formats, handles errors gracefully', async () => {
+  const f = await fake((req) => {
+    if (req.url === '/v1/models') {
+      return { body: { data: [{ id: 'gpt-4o' }, { id: 'deepseek-chat' }, { id: 'gpt-4o-mini' }] } };
+    }
+    if (req.url === '/ollama/api/tags') {
+      return { body: { models: [{ name: 'llama3.2:latest' }, { name: 'qwen2.5:7b' }] } };
+    }
+    if (req.url.includes('/unauthorized/')) {
+      return { status: 401, body: { error: 'Invalid API key' } };
+    }
+    return { status: 404, body: { error: 'Not found' } };
+
+  });
+  try {
+    const ai = createAi({ baseUrl: f.url, apiKey: KEY });
+    // OpenAI format
+    const r1 = await ai.listModels({ baseUrl: f.url, apiKey: KEY });
+    assert.equal(r1.ok, true);
+    assert.deepEqual(r1.models, ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini']);
+
+    // Ollama fallback (/ollama/models -> 404, /ollama/v1/models -> 404, /ollama/api/tags -> 200)
+    const ollamaUrl = `${f.url.replace(/\/v1$/, '')}/ollama`;
+    const r2 = await ai.listModels({ baseUrl: ollamaUrl });
+    assert.equal(r2.ok, true);
+    assert.deepEqual(r2.models, ['llama3.2:latest', 'qwen2.5:7b']);
+
+
+    // Error handling
+    const r3 = await ai.listModels({ baseUrl: `${ollamaUrl}/unauthorized`, apiKey: 'bad-key' });
+    assert.equal(r3.ok, false);
+    assert.match(r3.reason, /401/);
+    assert.ok(!r3.reason.includes('bad-key'), 'key is masked in error');
+
+    // Missing baseUrl
+    const r4 = await ai.listModels({});
+    assert.equal(r4.ok, false);
+    assert.match(r4.reason, /Base URL/);
+  } finally { await f.close(); }
+});
+

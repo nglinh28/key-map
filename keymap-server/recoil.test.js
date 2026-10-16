@@ -363,6 +363,30 @@ test('cascadeFrom: only the points after the edited one change, one column at a 
   assert.equal(R.checkCurve(r).ok, true);
 });
 
+test('extendCurve: adds N points based on previous points trend or step', () => {
+  // trend from last 2 points
+  const base = [[0, 10], [200, 15]]; // dt = 200, dv = 5
+  const ext2 = R.extendCurve(base, 2, { method: 'trend' });
+  assert.equal(ext2.length, 4);
+  assert.deepEqual(ext2, [[0, 10], [200, 15], [400, 20], [600, 25]]);
+
+  // count 0 returns copy
+  assert.deepEqual(R.extendCurve(base, 0), [[0, 10], [200, 15]]);
+
+  // 1-point curve falls back to step
+  const one = [[0, 20]];
+  const extOne = R.extendCurve(one, 1, { method: 'trend', rnd: lo });
+  assert.equal(extOne.length, 2);
+  assert.equal(extOne[1][0], 450); // 0 + 450
+  assert.ok(near(extOne[1][1], 21.02)); // 20 + 1.02
+
+  // step method
+  const stepExt = R.extendCurve([[0, 10], [100, 12]], 1, { method: 'step', rnd: lo });
+  assert.equal(stepExt.length, 3);
+  assert.equal(stepExt[2][0], 550); // 100 + 450
+  assert.ok(near(stepExt[2][1], 13.02)); // 12 + 1.02
+});
+
 // ---- adding a combination that is already there
 const keyOf2 = (o) => `${o.weapon}|${o.scope}|${o.gesture}|${o.grip}|${o.muzzle}|${o.stock}`;
 test('findDuplicateCombo: an own entry, one added on the page, or the default row counts as already there', () => {

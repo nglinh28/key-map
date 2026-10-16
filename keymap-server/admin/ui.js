@@ -13,6 +13,20 @@
       if (k === 'class') n.className = v;
       else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
       else if (k === 'text') n.textContent = v;
+      else if (k === 'style') {
+        if (typeof v === 'string') {
+          for (const rule of v.split(';')) {
+            const idx = rule.indexOf(':');
+            if (idx > -1) {
+              const prop = rule.slice(0, idx).trim();
+              const val = rule.slice(idx + 1).trim();
+              if (prop && val) n.style.setProperty(prop, val);
+            }
+          }
+        } else if (typeof v === 'object' && v) {
+          Object.assign(n.style, v);
+        }
+      }
       else n.setAttribute(k, v === true ? '' : v);
     }
     for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) n.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
@@ -55,6 +69,7 @@
     info: [{ c: [12, 12, 10] }, 'M12 16v-4', 'M12 8h.01'],
     refresh: ['M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8', 'M21 3v5h-5', 'M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16', 'M8 16H3v5'],
     eye: ['M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z', { c: [12, 12, 3] }],
+    eyeOff: ['M9.88 9.88a3 3 0 1 0 4.24 4.24', 'M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68', 'M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61', 'm2 2 20 20'],
     pencil: ['M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'],
     folder: ['M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'],
     history: ['M3 12a9 9 0 1 0 3-6.7L3 8', 'M3 3v5h5', 'M12 7v5l4 2'],
@@ -259,44 +274,113 @@
   // and waits for the user to close it.
   function progressDialog({ title, steps = [] }) {
     const bar = progressBar(0);
-    const pctText = el('span', { class: 'progress-pct' }, '0%');
-    const detail = el('div', { class: 'muted', role: 'status', 'aria-live': 'polite' }, 'Đang bắt đầu…');
-    const items = steps.map((s) => el('li', { class: 'step' }, el('span', { class: 'step-mark', 'aria-hidden': 'true' }), el('span', {}, s)));
+    const pctBadge = el('div', { class: 'progress-pct-badge' }, '0%');
+    const statusDot = el('span', { class: 'status-pulse-dot' });
+    const detailText = el('span', { class: 'progress-detail-text' }, 'Đang bắt đầu…');
+    const statusBox = el('div', { class: 'progress-status-box' }, statusDot, detailText);
+
+    const stepItems = steps.map((s, i) => {
+      const mark = el('div', { class: 'p-step-indicator' }, String(i + 1));
+      const label = el('span', { class: 'p-step-label' }, s);
+      return { li: el('li', { class: 'p-step waiting' }, mark, label), mark, label };
+    });
+
+    const stepperList = el('ol', { class: 'progress-stepper' }, stepItems.map((item) => item.li));
+    const stepsCard = steps.length ? el('div', { class: 'progress-steps-card' },
+      el('div', { class: 'progress-steps-title' }, 'Tiến trình các bước'),
+      stepperList
+    ) : null;
+
+    const toneBadge = el('div', { class: 'modal-tone-badge progress-spin' }, icon('refresh'));
+    const modalHead = el('div', { class: 'modal-head' },
+      el('div', { class: 'modal-title-wrap' },
+        toneBadge,
+        el('div', { class: 'modal-title-text' },
+          el('div', { class: 'modal-step' }, 'Tiến trình hệ thống'),
+          el('h2', { id: 'progress-title' }, title)
+        )
+      ),
+      pctBadge
+    );
+
+    const modalBody = el('div', { class: 'modal-body' },
+      el('div', { class: 'progress-bar-wrap' }, bar.node),
+      statusBox,
+      stepsCard
+    );
+
     const actions = el('div', { class: 'modal-actions' });
     const card = el('div', { class: 'modal-card progress-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'progress-title', tabindex: '-1' },
-      el('h2', { id: 'progress-title' }, title), el('div', { class: 'progress-line' }, bar.node, pctText), detail, el('ol', { class: 'steps' }, items), actions);
+      modalHead, modalBody, actions);
     const overlay = el('div', { class: 'modal' }, card);
+
     const block = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); } };
     document.body.append(overlay);
     document.addEventListener('keydown', block, true);
     card.focus();
     let closed = false;
     const close = () => { if (closed) return; closed = true; document.removeEventListener('keydown', block, true); overlay.remove(); };
-    const mark = (step) => items.forEach((li, i) => { li.className = `step${i < step ? ' done' : i === step ? ' active' : ''}`; });
+
+    const mark = (stepIndex) => {
+      stepItems.forEach((item, i) => {
+        if (i < stepIndex) {
+          item.li.className = 'p-step done';
+          item.mark.replaceChildren(icon('check'));
+        } else if (i === stepIndex) {
+          item.li.className = 'p-step active';
+          item.mark.textContent = String(i + 1);
+        } else {
+          item.li.className = 'p-step waiting';
+          item.mark.textContent = String(i + 1);
+        }
+      });
+    };
+
+    if (steps.length) mark(0);
+
     return {
       update({ step, pct, detail: text }) {
-        if (pct != null) { bar.set(pct); pctText.textContent = `${Math.round(pct)}%`; }
-        if (text != null) detail.textContent = text;
+        if (pct != null) {
+          bar.set(pct);
+          pctBadge.textContent = `${Math.round(pct)}%`;
+        }
+        if (text != null) detailText.textContent = text;
         if (step != null) mark(step);
       },
       finish(text) {
-        bar.set(100); pctText.textContent = '100%'; mark(items.length); if (text) detail.textContent = text;
+        bar.set(100);
+        pctBadge.textContent = '100%';
+        mark(stepItems.length);
+        toneBadge.className = 'modal-tone-badge progress-done';
+        toneBadge.replaceChildren(icon('check'));
+        statusDot.className = 'status-pulse-dot done';
+        if (text) detailText.textContent = text;
         return new Promise((resolve) => setTimeout(() => { close(); resolve(); }, 700));
       },
-      // a button that asks the job to stop early (null removes it)
       setStop(label, fn) {
         actions.replaceChildren(...(label ? [el('button', { type: 'button', class: 'btn', onclick: (ev) => { ev.currentTarget.disabled = true; fn(); } }, label)] : []));
       },
-      // the job is done: lines of what happened and the buttons to choose from ({ label, primary, onclick }); any button closes the window first
       result(lines, buttons) {
-        bar.set(100); pctText.textContent = '100%'; mark(items.length);
-        detail.replaceChildren(...lines.map((l) => el('div', { class: 'result-line' }, l)));
+        bar.set(100);
+        pctBadge.textContent = '100%';
+        mark(stepItems.length);
+        toneBadge.className = 'modal-tone-badge progress-done';
+        toneBadge.replaceChildren(icon('check'));
+        statusDot.className = 'status-pulse-dot done';
+        const resultBox = el('div', { class: 'progress-result-box' },
+          lines.map((l) => el('div', { class: 'progress-result-line' }, l))
+        );
+        modalBody.replaceChildren(resultBox);
         return new Promise((resolve) => {
           actions.replaceChildren(...buttons.map((b) => el('button', { type: 'button', class: `btn${b.primary ? ' primary' : ''}`, onclick: () => { close(); if (b.onclick) b.onclick(); resolve(b.label); } }, b.label)));
         });
       },
       fail(message) {
-        detail.replaceChildren(alert('danger', el('span', {}, message)));
+        toneBadge.className = 'modal-tone-badge danger';
+        toneBadge.replaceChildren(icon('alert'));
+        statusDot.className = 'status-pulse-dot error';
+        detailText.textContent = message;
+        statusBox.className = 'progress-status-box error';
         return new Promise((resolve) => { actions.replaceChildren(el('button', { type: 'button', class: 'btn primary', onclick: () => { close(); resolve(); } }, 'Đóng')); });
       },
       close,
@@ -386,14 +470,43 @@
         onclick: () => done(a.id),
       }, a.label));
 
+      const toneIcons = {
+        warn: 'alert',
+        danger: 'alert',
+        error: 'alert',
+        info: 'info',
+        ok: 'check',
+        sparkles: 'sparkles',
+      };
+      const toneIconName = toneIcons[tone] || 'info';
+      const toneBadge = el('div', { class: `modal-tone-badge ${tone}` }, icon(toneIconName));
+
+      const closeBtn = el('button', {
+        type: 'button',
+        class: 'modal-close',
+        'aria-label': 'Đóng cửa sổ',
+        title: 'Đóng (Esc)',
+        onclick: () => done(null),
+      }, icon('x'));
+
+      const modalHead = el('div', { class: 'modal-head' },
+        el('div', { class: 'modal-title-wrap' },
+          toneBadge,
+          el('div', { class: 'modal-title-text' },
+            step ? el('div', { class: 'modal-step' }, step) : null,
+            title ? el('h2', { id: 'modal-title' }, title) : null
+          )
+        ),
+        closeBtn
+      );
+
       const dialog = el('div', {
         class: `modal-card ${tone} ${className}`,
         role: 'dialog',
         'aria-modal': 'true',
         'aria-labelledby': 'modal-title',
       },
-      step ? el('div', { class: 'modal-step' }, step) : null,
-      title ? el('h2', { id: 'modal-title' }, title) : null,
+      modalHead,
       el('div', { class: 'modal-body' }, body),
       buttons.length ? el('div', { class: 'modal-actions' }, buttons) : null);
 
@@ -404,10 +517,44 @@
 
       document.body.append(overlay);
       document.addEventListener('keydown', onKey, true);
-      (buttons[0] || dialog).focus();
+      const focusTarget = dialog.querySelector('.modal-body input, .modal-body select, .modal-body textarea') || buttons[buttons.length - 1] || closeBtn;
+      if (focusTarget && focusTarget.focus) focusTarget.focus();
       // lets the caller change the window while it is open (for example enable a button when a result arrives)
       if (onOpen) onOpen({ dialog, close: done, setDisabled: (id, v) => { const i = (actions || []).findIndex((a) => a.id === id); if (i >= 0) buttons[i].disabled = Boolean(v); } });
     });
+  }
+
+  // Modern choice card (radio or checkbox wrapped in a styled card)
+  function choiceCard({ input, title, desc, badge: badgeNode, warn = false, checked, disabled }) {
+    if (checked != null && input) input.checked = checked;
+    if (disabled != null && input) input.disabled = disabled;
+    const isChecked = input && input.checked;
+    const isDisabled = input && input.disabled;
+    const card = el('label', {
+      class: `choice-card ${warn ? 'warn' : ''} ${isChecked ? 'active' : ''} ${isDisabled ? 'disabled' : ''}`,
+    },
+    input,
+    el('div', { class: 'choice-main' },
+      el('div', { class: 'choice-header' },
+        typeof title === 'string' ? el('span', { class: 'choice-title' }, title) : title,
+        badgeNode || null
+      ),
+      desc ? (typeof desc === 'string' ? el('div', { class: 'choice-desc' }, desc) : desc) : null
+    ));
+    if (input) {
+      input.addEventListener('change', () => {
+        const name = input.name;
+        if (name && input.type === 'radio') {
+          document.querySelectorAll(`input[type="radio"][name="${name}"]`).forEach((other) => {
+            const parent = other.closest('.choice-card');
+            if (parent) parent.classList.toggle('active', other.checked);
+          });
+        } else {
+          card.classList.toggle('active', input.checked);
+        }
+      });
+    }
+    return card;
   }
 
   const brief = (v) => { if (v === undefined) return '—'; const t = JSON.stringify(v); return t.length > 70 ? `${t.slice(0, 70)}…` : t; };
@@ -429,8 +576,49 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function confirmModal({
+    title = 'Xác nhận',
+    tone = 'warn',
+    body = '',
+    confirmLabel = 'Đồng ý',
+    cancelLabel = 'Hủy',
+    danger = tone === 'danger',
+  } = {}) {
+    return showModal({
+      title,
+      tone,
+      body: typeof body === 'string' ? el('p', {}, body) : body,
+      actions: [
+        { id: 'cancel', label: cancelLabel },
+        { id: 'confirm', label: confirmLabel, danger: danger || tone === 'danger', primary: !danger && tone !== 'danger' },
+      ],
+    }).then((res) => res === 'confirm');
+  }
+
+  function alertModal({
+    title = 'Thông báo',
+    tone = 'info',
+    body = '',
+    buttonLabel = 'Đóng',
+  } = {}) {
+    return showModal({
+      title,
+      tone,
+      body: typeof body === 'string' ? el('p', {}, body) : body,
+      actions: [
+        { id: 'ok', label: buttonLabel, primary: true },
+      ],
+    }).then(() => true);
+  }
+
+  // Safe fallback to prevent native blocking dialogs
+  if (typeof window !== 'undefined') {
+    window.alert = (msg) => { alertModal({ body: String(msg) }); };
+  }
+
   window.Ui = {
     $, el, svgEl, icon, withIcon, fmtBytes, short, textBytes, clockTime, clockDateTime, plain, toast, api, guard, copyText,
-    labelStacked, pageHead, progressBar, progressDialog, badge, status, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, theme, showModal, brief, changesList, downloadText,
+    labelStacked, pageHead, progressBar, progressDialog, badge, status, alert, emptyState, segmented, menuButton, skeleton, setCrumbs, theme, showModal, confirmModal, alertModal, choiceCard, brief, changesList, downloadText,
   };
 })();
+
