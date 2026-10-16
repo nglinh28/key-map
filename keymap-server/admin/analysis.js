@@ -522,11 +522,17 @@
   const savePrefs = () => { try { localStorage.setItem('ftAdminLayout', JSON.stringify({ screen: lay.screenId, origin: lay.origin, w: lay.custom.w, h: lay.custom.h })); } catch { /* private mode */ } };
   const screenSize = () => (lay.screenId === 'custom' ? lay.custom : (LL.SCREEN_PRESETS.find((p) => p.id === lay.screenId) || LL.SCREEN_PRESETS[0]));
 
+  const ZOOMS = [1, 1.5, 2, 3, 4];
   function layoutView(kind, doc) {
     if (!lay.screenId) { const p = loadPrefs(); lay.screenId = p.screen || LL.SCREEN_PRESETS[0].id; lay.origin = p.origin === 'center' ? 'center' : 'topleft'; lay.custom = { w: p.w || 2960, h: p.h || 1848 }; }
+    if (!lay.zoom) lay.zoom = 1;
+    if (lay.filter === undefined) lay.filter = null;
+    if (lay.q === undefined) lay.q = '';
     const comps = doc.components;
+    const noun = kind === 'recognition' ? 'ô' : 'phím';
     const scr = screenSize();
     const canvas = LL.canvasSize(comps.filter((c) => c && typeof c === 'object'), scr, lay.origin);
+    const rows = LL.listRows(kind, comps, lay.origin);
     const svg = svgEl('svg', { viewBox: `0 0 ${canvas.w} ${canvas.h}`, class: 'screen', role: 'img', 'aria-label': 'Màn hình mô phỏng vị trí các phím' });
     svg.append(svgEl('rect', { class: 'frame', x: 0, y: 0, width: scr.w, height: scr.h }));
     if (lay.bg.url) svg.append(svgEl('image', { href: lay.bg.url, x: 0, y: 0, width: scr.w, height: scr.h, preserveAspectRatio: 'none', opacity: lay.bg.opacity }));
@@ -537,58 +543,145 @@
         svgEl('text', { class: 'overlay-label', x: o.rect.x + 12, y: o.rect.y + 34 }, o.name));
     }
     const rects = comps.map((c) => LL.rectOf(c || {}, lay.origin));
-    const order = comps.map((c, i) => i).sort((a, b) => rects[b].w * rects[b].h - rects[a].w * rects[a].h); // big ones first, so small ones stay clickable
+    const order = comps.map((c, i) => i).sort((a, b2) => rects[b2].w * rects[b2].h - rects[a].w * rects[a].h); // big ones first, so small ones stay clickable
     const nodes = {};
     for (const i of order) {
       const c = comps[i] || {};
       const d = LL.describe(kind, c);
       const r = rects[i];
       const round = c['base:componentIdentifier'] === 'com.zjx.app:joystick';
+      const outline = d.cls === 'mainview'; // the whole-screen view box: an outline with its name in the corner, not a fill that hides the rest
       const shape = round ? svgEl('ellipse', { class: 'shape', cx: r.x + r.w / 2, cy: r.y + r.h / 2, rx: r.w / 2, ry: r.h / 2 }) : svgEl('rect', { class: 'shape', rx: 8, x: r.x, y: r.y, width: r.w, height: r.h });
-      const label = kind === 'recognition' ? String(c.type) : (d.keys[0] || LL.componentInfo(c['base:componentIdentifier']).short);
-      const text = svgEl('text', { class: 'label', x: r.x + r.w / 2, y: r.y + r.h / 2 }, label.length > 9 ? `${label.slice(0, 8)}…` : label);
-      const g = svgEl('g', { class: `comp c-${d.cls}${lay.selected === i ? ' sel' : ''}`, 'data-i': i },
+      const text = outline ? svgEl('text', { class: 'label corner', x: r.x + 16, y: r.y + 40 }, LL.labelOf(kind, c))
+        : svgEl('text', { class: 'label', x: r.x + r.w / 2, y: r.y + r.h / 2 }, LL.labelOf(kind, c));
+      const g = svgEl('g', { class: `comp c-${d.cls}${outline ? ' outline' : ''}`, 'data-i': i },
         svgEl('title', {}, `${d.title}${d.keys.length ? ` [${d.keys.join(' ')}]` : ''} — (${Math.round(r.x)}, ${Math.round(r.y)}) ${Math.round(r.w)}×${Math.round(r.h)}`), shape, text);
       svg.append(g);
       nodes[i] = g;
     }
+    const guide = svgEl('g', { class: 'guide' }); // the position and size of the selected box, drawn above everything
+    svg.append(guide);
+
+    // ---- the list beside the screen
+    const rowEls = {};
+    const count = el('span', { class: 'muted text-sm', role: 'status' });
+    const listBody = el('tbody', {}, rows.map((r) => {
+      const tr = el('tr', { class: 'lv-row', tabindex: '0', 'data-i': r.i, 'aria-selected': 'false' },
+        el('td', {}, el('div', { class: 'lv-keys' }, el('span', { class: `lv-dot c-${r.cls}`, title: r.className, 'aria-hidden': 'true' }), r.keys.length ? r.keys.map((k) => el('span', { class: 'keychip' }, k)) : el('span', {}, r.title)),
+          r.keys.length ? null : el('div', { class: 'muted text-sm' }, r.className)),
+        el('td', { class: 'mono num text-sm', title: `${r.w}×${r.h}` }, `${r.x}, ${r.y}`));
+      tr.addEventListener('click', () => select(r.i, { scroll: false, fromList: true }));
+      tr.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(r.i, { fromList: true }); } });
+      tr.addEventListener('mouseenter', () => nodes[r.i].classList.add('hot'));
+      tr.addEventListener('mouseleave', () => nodes[r.i].classList.remove('hot'));
+      rowEls[r.i] = tr;
+      return tr;
+    }));
+
+    // ---- the box that is selected
     const panel = el('div', {});
-    const showPanel = () => {
+    function showPanel() {
       const i = lay.selected;
-      if (i === null) { panel.replaceChildren(); return; }
-      const d = LL.describe(kind, comps[i] || {});
-      panel.replaceChildren(el('div', { class: 'card' }, el('h2', {}, d.title),
+      if (i === null || !comps[i]) { panel.replaceChildren(emptyState('layers', `Chưa chọn ${noun} nào`, `Bấm một ${noun} trên màn hình hoặc trong danh sách để xem thông số.`)); return; }
+      const d = LL.describe(kind, comps[i]);
+      panel.replaceChildren(el('div', { class: 'lv-detail' },
+        el('div', { class: 'lv-detail-head' }, el('h2', {}, d.title), d.keys.length ? el('div', { class: 'keychips' }, d.keys.map((k) => el('span', { class: 'keychip' }, k))) : null),
         el('p', { class: 'muted' }, `${d.subtitle}${d.sure ? '' : ' · tên suy ra từ code'}`),
-        d.keys.length ? el('div', { class: 'keychips' }, d.keys.map((k) => el('span', { class: 'keychip' }, k))) : null,
-        el('table', {}, el('tbody', {}, d.rows.map((r) => el('tr', {}, el('td', { title: r.raw }, r.label), el('td', { class: 'mono wrap' }, r.display)))))));
-    };
+        el('table', { class: 'lv-props' }, el('tbody', {}, d.rows.map((r) => el('tr', {}, el('td', { title: r.raw }, r.label), el('td', { class: 'mono wrap' }, r.display)))))));
+    }
+    function drawGuide() {
+      guide.replaceChildren();
+      const i = lay.selected;
+      if (i === null || !comps[i]) return;
+      const r = rects[i];
+      const below = r.y < 90;
+      const right = r.x + r.w / 2 > canvas.w * 0.7; // near the right edge the text runs leftwards, so it is never cut
+      guide.append(svgEl('text', { class: `guide-label${right ? ' end' : ''}`, x: right ? Math.min(canvas.w - 8, r.x + r.w) : Math.max(8, r.x), y: below ? r.y + r.h + 46 : r.y - 16 }, `${Math.round(r.x)}, ${Math.round(r.y)} · ${Math.round(r.w)}×${Math.round(r.h)}`));
+    }
+    function select(i, { scroll = true, fromList = false } = {}) {
+      if (lay.selected !== null && nodes[lay.selected]) { nodes[lay.selected].classList.remove('sel'); rowEls[lay.selected].setAttribute('aria-selected', 'false'); rowEls[lay.selected].classList.remove('sel'); }
+      lay.selected = i;
+      if (i !== null && nodes[i]) {
+        nodes[i].classList.add('sel');
+        svg.insertBefore(nodes[i], guide); // on top of its neighbours
+        rowEls[i].classList.add('sel');
+        rowEls[i].setAttribute('aria-selected', 'true');
+        if (scroll && rowEls[i].scrollIntoView) rowEls[i].scrollIntoView({ block: 'nearest' });
+        if (fromList && nodes[i].scrollIntoView && lay.zoom > 1) nodes[i].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      showPanel();
+      drawGuide();
+    }
+
+    // ---- legend, search, filter
+    const chipEls = [];
+    function applyFilter() {
+      let shown = 0;
+      for (const r of rows) {
+        const inClass = !lay.filter || r.cls === lay.filter;
+        const ok = inClass && LL.matchRow(r, lay.q);
+        rowEls[r.i].hidden = !ok;
+        nodes[r.i].classList.toggle('dim', !inClass || !LL.matchRow(r, lay.q));
+        if (ok) shown++;
+      }
+      count.textContent = shown === rows.length ? `${rows.length} ${noun}` : `${shown}/${rows.length} ${noun}`;
+      empty.hidden = shown !== 0;
+      chipEls.forEach(([cls, b]) => b.setAttribute('aria-pressed', String(lay.filter === cls)));
+    }
+    const legendRow = el('div', { class: 'lv-legend', role: 'group', 'aria-label': 'Lọc theo loại' }, LL.legend(kind, comps).map((l) => {
+      const b = el('button', { type: 'button', class: `lv-chip c-${l.cls}`, 'aria-pressed': 'false', title: `Chỉ hiện: ${l.name}`, onclick: () => { lay.filter = lay.filter === l.cls ? null : l.cls; applyFilter(); } },
+        el('span', { class: 'lv-dot', 'aria-hidden': 'true' }), l.name, el('span', { class: 'lv-chip-n' }, String(l.count)));
+      chipEls.push([l.cls, b]);
+      return b;
+    }));
+    const search = el('input', { type: 'search', class: 'lv-search', placeholder: `Tìm ${noun}, ví dụ: Space, chạm, chuột…`, 'aria-label': `Tìm ${noun}`, value: lay.q, oninput: (e) => { lay.q = e.target.value; applyFilter(); } });
+    const empty = el('div', { class: 'lv-empty muted' }, `Không có ${noun} nào khớp.`);
+
+    // ---- the screen: size of the letters follows the size of the picture on the page
+    const coords = el('span', { class: 'lv-coords mono' }, 'Rê chuột vào màn hình để xem toạ độ');
     svg.addEventListener('click', (e) => {
       const g = e.target.closest && e.target.closest('g.comp');
-      const next = g ? Number(g.dataset.i) : null;
-      if (lay.selected !== null && nodes[lay.selected]) nodes[lay.selected].classList.remove('sel');
-      lay.selected = next;
-      if (next !== null) nodes[next].classList.add('sel');
-      showPanel();
+      select(g ? Number(g.dataset.i) : null, { scroll: true });
     });
-    const coords = el('span', { class: 'muted mono' }, 'Rê chuột vào màn hình để xem toạ độ');
     svg.addEventListener('pointermove', (e) => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const p = pt.matrixTransform(svg.getScreenCTM().inverse()); coords.textContent = `x=${Math.round(p.x)}  y=${Math.round(p.y)}`; });
-    showPanel();
+    svg.style.width = `${lay.zoom * 100}%`;
+    const fitLetters = () => { const w = svg.getBoundingClientRect().width; if (w > 0) svg.style.setProperty('--fs', `${LL.fontUnits(w / canvas.w, Math.max(9, Math.min(13, w / 90)))}px`); };
+    if (typeof ResizeObserver === 'function') new ResizeObserver(fitLetters).observe(svg);
+    requestAnimationFrame(fitLetters);
 
+    // ---- toolbar
     const screenSel = el('select', { 'aria-label': 'Kích thước màn hình', onchange: (e) => { lay.screenId = e.target.value; savePrefs(); redraw(); } },
       LL.SCREEN_PRESETS.map((p) => el('option', { value: p.id, selected: p.id === lay.screenId }, p.label)), el('option', { value: 'custom', selected: lay.screenId === 'custom' }, 'Tùy chỉnh…'));
     const custom = lay.screenId === 'custom' ? ['w', 'h'].map((f) => el('label', { class: 'numfield' }, f === 'w' ? 'Rộng' : 'Cao', el('input', { type: 'number', value: String(lay.custom[f]), min: '100', onchange: (e) => { const n = Math.round(Number(e.target.value)); if (n >= 100) { lay.custom[f] = n; savePrefs(); redraw(); } } }))) : null;
-    const originSel = el('select', { 'aria-label': 'Gốc toạ độ', title: 'Chưa xác nhận base:x/base:y là góc trên-trái hay tâm ô; dùng ảnh nền để kiểm tra', onchange: (e) => { lay.origin = e.target.value; savePrefs(); redraw(); } },
+    const originSel = el('select', { 'aria-label': 'Gốc toạ độ', title: 'Chưa xác nhận base:x/base:y là góc trên-trái hay tâm ô: dùng ảnh nền chụp từ game để đối chiếu rồi chọn đúng.', onchange: (e) => { lay.origin = e.target.value; savePrefs(); redraw(); } },
       el('option', { value: 'topleft', selected: lay.origin === 'topleft' }, 'Toạ độ = góc trên-trái ô'), el('option', { value: 'center', selected: lay.origin === 'center' }, 'Toạ độ = tâm ô'));
     const file = el('input', { type: 'file', accept: 'image/*', hidden: true, onchange: (e) => { const f = e.target.files[0]; if (!f) return; if (lay.bg.url) URL.revokeObjectURL(lay.bg.url); lay.bg.url = URL.createObjectURL(f); redraw(); } });
     const opacity = el('input', { type: 'range', min: '0.1', max: '1', step: '0.05', value: String(lay.bg.opacity), 'aria-label': 'Độ mờ ảnh nền', onchange: (e) => { lay.bg.opacity = Number(e.target.value); redraw(); } });
-    return el('div', { class: 'layout' },
-      el('div', { class: 'card' }, el('h2', {}, `Màn hình hiển thị vị trí (${comps.length} ${kind === 'recognition' ? 'ô' : 'phím'})`),
-        el('div', { class: 'row' }, screenSel, custom, originSel),
-        el('div', { class: 'row' }, el('label', { class: 'btn small' }, 'Chọn ảnh chụp game làm nền…', file),
-          lay.bg.url ? [opacity, el('button', { class: 'btn small', onclick: () => { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; redraw(); } }, 'Bỏ ảnh nền')] : el('span', { class: 'muted' }, 'Ảnh chỉ xử lý trong trình duyệt, không tải lên server.')),
-        svg, el('div', { class: 'row' }, coords, el('span', { class: 'muted' }, 'Bấm một ô để xem thông số · chỉ xem, không sửa')),
-        el('p', { class: 'muted' }, 'Khung xám là màn hình; nội dung vượt ngoài khung vẫn được vẽ. Chưa xác nhận gốc toạ độ (góc trên-trái hay tâm ô): hãy đối chiếu bằng ảnh chụp game rồi chọn đúng.')),
-      panel);
+    const zi = ZOOMS.indexOf(lay.zoom);
+    const zoomTo = (z) => { lay.zoom = z; redraw(); };
+    const zoomBox = el('div', { class: 'lv-zoom', role: 'group', 'aria-label': 'Phóng to' },
+      el('button', { type: 'button', class: 'btn small', 'aria-label': 'Thu nhỏ', disabled: zi <= 0, onclick: () => zoomTo(ZOOMS[zi - 1]) }, '−'),
+      el('span', { class: 'lv-zoom-n mono', role: 'status' }, `${Math.round(lay.zoom * 100)}%`),
+      el('button', { type: 'button', class: 'btn small', 'aria-label': 'Phóng to', disabled: zi >= ZOOMS.length - 1, onclick: () => zoomTo(ZOOMS[zi + 1]) }, '+'),
+      el('button', { type: 'button', class: 'btn small', disabled: lay.zoom === 1, onclick: () => zoomTo(1) }, 'Vừa khung'));
+    const toolbar = el('div', { class: 'lv-toolbar' }, screenSel, custom, originSel,
+      el('label', { class: 'btn small', title: 'Ảnh chỉ xử lý trong trình duyệt, không tải lên server.' }, icon('plus'), 'Ảnh game làm nền', file),
+      lay.bg.url ? [opacity, el('button', { class: 'btn small', onclick: () => { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; redraw(); } }, 'Bỏ ảnh nền')] : null,
+      zoomBox);
+
+    applyFilter();
+    if (lay.selected !== null && !nodes[lay.selected]) lay.selected = null;
+    select(lay.selected, { scroll: false });
+    return el('div', { class: 'layout2' },
+      el('div', { class: 'card lv-stage-card' },
+        el('div', { class: 'lv-title' }, el('h2', {}, `Màn hình hiển thị vị trí (${comps.length} ${noun})`), el('span', { class: 'muted text-sm' }, 'Chỉ xem, không sửa')),
+        toolbar, legendRow,
+        el('div', { class: 'lv-grid' },
+          el('div', { class: 'lv-stage' }, el('div', { class: 'lv-scroll' }, svg), coords),
+          el('div', { class: 'lv-side' },
+            el('div', { class: 'lv-side-head' }, search, count),
+            el('div', { class: 'lv-list' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, noun === 'phím' ? 'Phím' : 'Ô'), el('th', { class: 'num' }, 'Vị trí'))), listBody), empty)))),
+      el('div', { class: 'card' }, panel));
   }
 
   // ---------------------------------------------------------------- recoil analysis (read-only)
