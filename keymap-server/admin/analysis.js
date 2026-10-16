@@ -1663,7 +1663,7 @@
     stage(3, 92, 'Đang cập nhật trang…');
     await frame();
     toast(done);
-    onSaved();
+    try { onSaved(); } catch (e) { toast(`Đã lưu vào server nhưng không dọn được bản nháp (${e.message || e}). Bấm "Tải lại" nếu thấy dữ liệu cũ.`, true); } // the file is saved whatever happens here
     rc.dirty = false;
     rc.fresh = false;
     rc.freshBase = null;
@@ -1672,9 +1672,13 @@
     rc.bad.clear();
     try {
       const at = new Date().toISOString();
+      // read the new file first and replace file, parsed and analysis together: if reading fails, nothing is half replaced (the old etag then makes the
+      // next save a conflict that reloads, instead of a save built on the old analysis that would undo this one)
+      const parsed = CX.parse(newXml);
+      const analysis = CX.analyze(parsed);
       S.data.file = { ...S.data.file, text: newXml, etag: saved.etag, bytes: textBytes(newXml), updated_at: at, web_edit: { at } };
-      S.data.parsed = CX.parse(newXml);
-      S.data.analysis = CX.analyze(S.data.parsed);
+      S.data.parsed = parsed;
+      S.data.analysis = analysis;
       redraw({ smooth: true });
     } catch {
       // the file is saved; if it cannot be read here, read it again from the server; if even that fails the save is still a save
