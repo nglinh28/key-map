@@ -296,3 +296,19 @@ test('history: every file lists its older versions and some can be deleted', asy
     assert.equal((await raw(port, 'POST', '/admin/api/sync/history/delete', { body: { name: 'PubgSettings.xml', versions: [newest.version] } })).status, 403, 'needs the write guard');
   });
 });
+
+test('history of a file that is gone can still be listed and deleted', async () => {
+  await withServer({}, async ({ port, dir }) => {
+    await pushDb(port, [file('Gone.xml', 1)]);
+    const cur = (await getDb(port, 'Gone.xml')).json;
+    assert.equal((await putDb(port, 'Gone.xml', { text: xml(2), etag: cur.etag })).status, 200);
+    fs.rmSync(path.join(dir, 'databases', 'Gone.xml'), { force: true });
+    assert.equal((await getDb(port, 'Gone.xml')).status, 404);
+    const list = await raw(port, 'GET', '/admin/api/sync/databases/Gone.xml/history');
+    assert.equal(list.status, 200);
+    assert.equal(list.json.versions.length, 1);
+    const del = await raw(port, 'POST', '/admin/api/sync/history/delete', { headers: W, body: { name: 'Gone.xml', versions: [list.json.versions[0].version] } });
+    assert.equal(del.json.deleted.length, 1);
+    assert.deepEqual((await raw(port, 'GET', '/admin/api/sync/history')).json.files, []);
+  });
+});

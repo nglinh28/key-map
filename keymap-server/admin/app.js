@@ -689,6 +689,7 @@
   }
 
   const pickedVersions = new Set(); // 'file\u0000version' ticked for deleting
+  const histOpen = new Set(); // which sections of the card are open ('' = the card, else a file name): kept over render()
 
   // Older versions the server keeps of each file (made by every change, 10 per file at most), with a way to look at and delete them
   function historyCard(files) {
@@ -706,10 +707,10 @@
           el('p', { class: 'muted' }, 'Không thể hoàn tác. File mới nhất và các ngày sao lưu không bị ảnh hưởng.')] });
       if (!ok) return;
       const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} bản sửa cũ…`, steps: ['Gửi yêu cầu', 'Cập nhật trang'] });
+      let done = 0; let freed = 0; let n = 0;
       try {
         const byFile = new Map();
         for (const v of list) { if (!byFile.has(v.name)) byFile.set(v.name, []); byFile.get(v.name).push(v.version); }
-        let done = 0; let freed = 0; let n = 0;
         for (const [name, versions] of byFile) {
           bar.update({ step: 0, pct: 10 + Math.round((done / byFile.size) * 70), detail: `Đang xóa ${versions.length} bản của ${name}…` });
           for (let i = 0; i < versions.length; i += 200) {
@@ -721,8 +722,8 @@
         pickedVersions.clear();
         bar.update({ step: 1, pct: 92, detail: 'Tải lại danh sách…' });
         await bar.finish(`Đã xóa ${n} bản sửa cũ, giải phóng ${fmtBytes(freed)}.`);
-        render();
-      } catch (e) { await bar.fail(`Không xóa được: ${e.message || e}.`); }
+      } catch (e) { await bar.fail(`Không xóa hết được: ${e.message || e}. Đã xóa ${n} bản.`); }
+      render(); // whatever happened, the list shows what the server holds now
     }
     const keepBtn = el('button', { type: 'button', class: 'btn small', disabled: !files.some((f) => f.versions.length > 1), onclick: guard(async () => {
       const max = Math.max(...files.map((f) => f.versions.length));
@@ -735,20 +736,21 @@
       if (!old.length) { toast('Không có bản nào cũ hơn để xóa.'); return; }
       await remove(old);
     }) }, icon('clock'), 'Dọn cũ…');
-    const groups = files.map((f) => el('details', { class: 'disclosure flat hist-file' },
+    const track = (d, id) => { d.addEventListener('toggle', () => { if (d.open) histOpen.add(id); else histOpen.delete(id); }); return d; };
+    const groups = files.map((f) => track(el('details', { class: 'disclosure flat hist-file', open: histOpen.has(f.name) },
       el('summary', {}, el('span', { class: 'mono' }, f.name), el('span', { class: 'muted' }, ` ${f.versions.length} bản · ${fmtBytes(f.versions.reduce((n, v) => n + v.bytes, 0))}`)),
       el('ul', { class: 'hist-list' }, f.versions.map((v) => el('li', { class: 'row' },
         el('input', { type: 'checkbox', class: 'ver-pick', 'aria-label': `Chọn bản ${clockDateTime(v.saved_at)} của ${f.name} để xóa`, checked: pickedVersions.has(keyOf(f.name, v.version)),
           onchange: (e) => { if (e.target.checked) pickedVersions.add(keyOf(f.name, v.version)); else pickedVersions.delete(keyOf(f.name, v.version)); refresh(); } }),
         el('span', {}, `Bản trước lúc ${clockDateTime(v.saved_at)}`), el('span', { class: 'muted' }, ` · ${fmtBytes(v.bytes)}`),
         f.name === CACHE_FILE ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => window.Analysis.openSource(`v:${v.version}`)) }, icon('layers'), 'Phân tích') : null,
-        el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => remove([{ name: f.name, ...v }])) }, icon('trash'), 'Xóa')))))); 
+        el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => remove([{ name: f.name, ...v }])) }, icon('trash'), 'Xóa'))))), f.name));
     const node = el('section', { class: 'card' },
-      el('details', { class: 'disclosure flat' },
+      track(el('details', { class: 'disclosure flat', open: histOpen.has('') },
         el('summary', {}, el('strong', {}, 'Bản sửa trên server'), el('span', { class: 'muted' }, all.length ? ` ${all.length} bản · ${fmtBytes(total)}` : ' chưa có')),
         el('p', { class: 'muted' }, 'Mỗi lần file đổi (app đẩy lên hoặc sửa trên web), server giữ bản trước đó, tối đa 10 bản mỗi file. Xóa bớt để giải phóng dung lượng.'),
         all.length ? el('div', { class: 'row day-tools' }, delBtn, keepBtn) : null,
-        ...groups));
+        ...groups), ''));
     refresh();
     return node;
   }

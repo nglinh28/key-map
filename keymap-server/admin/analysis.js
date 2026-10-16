@@ -210,7 +210,7 @@
     const [daysR, verR] = await Promise.all([api('GET', '/sync/backups'), api('GET', `/sync/databases/${name}/history`).catch(() => ({ versions: [] }))]);
     S.days = daysR.days.filter((d) => d.databases > 0);
     S.versions = verR.versions || [];
-    if (S.src && !(versionOf() ? S.versions.some((v) => v.version === versionOf()) : S.days.some((d) => d.date === S.src))) S.src = '';
+    if (S.src && !(versionOf() ? S.versions.some((v) => v.version === versionOf()) : S.days.some((d) => d.date === S.src))) { toast(`Mốc ${S.src.replace(/^v:/, '')} không còn trên server: đang xem bản mới nhất.`, true); S.src = ''; }
     try {
       let file;
       if (versionOf()) {
@@ -3367,6 +3367,10 @@
     leave() { active = false; if (lay.ro) { lay.ro.disconnect(); lay.ro = null; } stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (typeof lay !== 'undefined' && lay?.bg?.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
     discardOk,
     // opens the tab on an older source: '' (newest), 'YYYY-MM-DD' (a backup day) or 'v:<version>' (an older version of the file)
-    openSource(src) { S.src = src; S.sel = null; S.pick = ''; rc.drafts.clear(); rc.customCombos = new Set(); rc.itemId = ''; return window.goTo('analysis'); },
+    async openSource(src) {
+      if (active && !(await discardOk())) return;
+      S.src = src; S.sel = null; S.pick = ''; rc.drafts.clear(); rc.customCombos = new Set(); rc.itemId = '';
+      if (active) await refresh(); else await window.goTo('analysis');
+    },
   };
 })();
