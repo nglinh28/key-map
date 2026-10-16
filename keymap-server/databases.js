@@ -145,6 +145,28 @@ class DatabasesStore {
     });
   }
 
+  // every file that has older versions: [{ name, versions: [{ version, saved_at, bytes }] }] (names sorted)
+  allVersions() {
+    let stored = [];
+    try { stored = fs.readdirSync(path.join(this.dir, '.history')); } catch { return []; }
+    return stored.map((n) => decode(n)).filter((n) => n && nameProblem(n) === null).sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, versions: this.versions(name) })).filter((f) => f.versions.length);
+  }
+
+  // Removes older versions of one file (the file itself stays). -> { deleted: [versions], freed: bytes, missing: [versions] }
+  deleteVersions(name, versions) {
+    const out = { deleted: [], freed: 0, missing: [] };
+    if (nameProblem(name)) return out;
+    for (const v of [...new Set(versions)]) {
+      const f = path.join(this.historyDir(name), `${v}.xml`);
+      if (!VERSION_RE.test(v) || !fs.existsSync(f)) { out.missing.push(v); continue; }
+      out.freed += fs.statSync(f).size;
+      fs.rmSync(f, { force: true });
+      out.deleted.push(v);
+    }
+    return out;
+  }
+
   readVersion(name, version) {
     if (nameProblem(name) || !VERSION_RE.test(version)) return null;
     try { return { version, text: fs.readFileSync(path.join(this.historyDir(name), `${version}.xml`), 'utf8') }; } catch { return null; }

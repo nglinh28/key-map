@@ -447,6 +447,15 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       if (!days || !days.length || days.length > 4000 || days.some((d) => typeof d !== 'string' || !DAY_RE.test(d))) return err(res, 400, 'days must be a list of YYYY-MM-DD dates');
       return json(res, 200, { ok: true, ...backups.remove(days), remaining: backups.list().length });
     }
+    // GET /admin/api/sync/history: the older versions kept for every file; POST …/history/delete { name, versions: [...] } removes some of them
+    if (p === '/admin/api/sync/history' && method === 'GET') return json(res, 200, { files: databases.allVersions() });
+    if (p === '/admin/api/sync/history/delete' && method === 'POST') {
+      const body = await jsonBody(req);
+      const versions = body && Array.isArray(body.versions) ? body.versions : null;
+      if (!body || typeof body.name !== 'string' || !versions || !versions.length || versions.length > 200 || versions.some((v) => typeof v !== 'string')) return err(res, 400, 'name and versions are required');
+      if (!databases.read(body.name) && !databases.versions(body.name).length) return err(res, 404, 'File not found'); // the history of a file that is gone can still be cleaned
+      return json(res, 200, { ok: true, ...databases.deleteVersions(body.name, versions) });
+    }
     // ---- the app's own preference files (Documents/jya2/databases/*.xml)
     if (p === '/admin/api/sync/databases' && method === 'GET') return json(res, 200, { files: databases.list() });
     if (p === '/admin/api/sync/databases/push' && method === 'POST') {
@@ -463,7 +472,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
     }
     if ((m = /^\/admin\/api\/sync\/databases\/([^/]+)\/history(?:\/([^/]+))?$/.exec(p)) && method === 'GET') {
       const name = safeDecode(m[1]);
-      if (!databases.read(name)) return err(res, 404, 'File not found');
+      if (!databases.read(name) && !databases.versions(name).length) return err(res, 404, 'File not found');
       if (!m[2]) return json(res, 200, { versions: databases.versions(name) });
       const v = databases.readVersion(name, safeDecode(m[2]));
       return v ? json(res, 200, v) : err(res, 404, 'Version not found');

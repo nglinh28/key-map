@@ -267,3 +267,48 @@ test('daily backup: the manifest remembers the folder of every file and the day 
     assert.equal((await raw(port, 'GET', '/admin/api/sync/backups/2026-10-11/databases/a.xml')).json.folder, '');
   }, { clock: () => c.now });
 });
+
+test('history: every file lists its older versions and some can be deleted', async () => {
+  await withServer({}, async ({ port }) => {
+    await pushDb(port, [file('PubgSettings.xml', 1)]);
+    for (let i = 2; i <= 4; i++) {
+      const cur = (await getDb(port, 'PubgSettings.xml')).json;
+      assert.equal((await putDb(port, 'PubgSettings.xml', { text: xml(i), etag: cur.etag })).status, 200);
+    }
+    const all = (await raw(port, 'GET', '/admin/api/sync/history')).json.files;
+    assert.equal(all.length, 1);
+    assert.equal(all[0].name, 'PubgSettings.xml');
+    assert.equal(all[0].versions.length, 3);
+    const [newest, mid] = all[0].versions;
+    const del = await raw(port, 'POST', '/admin/api/sync/history/delete', { headers: W, body: { name: 'PubgSettings.xml', versions: [mid.version, '20200101T000000000Z-abcd', '../x'] } });
+    assert.equal(del.status, 200);
+    assert.deepEqual(del.json.deleted, [mid.version]);
+    assert.equal(del.json.missing.length, 2);
+    assert.ok(del.json.freed > 0);
+    const left = (await raw(port, 'GET', '/admin/api/sync/history')).json.files[0].versions.map((v) => v.version);
+    assert.equal(left.length, 2);
+    assert.ok(left.includes(newest.version) && !left.includes(mid.version));
+    assert.equal((await getDb(port, 'PubgSettings.xml')).json.text, xml(4), 'the file itself is untouched');
+    for (const bad of [{}, { name: 'PubgSettings.xml', versions: [] }, { name: 5, versions: ['x'] }, { name: 'PubgSettings.xml', versions: [5] }]) {
+      assert.equal((await raw(port, 'POST', '/admin/api/sync/history/delete', { headers: W, body: bad })).status, 400);
+    }
+    assert.equal((await raw(port, 'POST', '/admin/api/sync/history/delete', { headers: W, body: { name: 'nope.xml', versions: ['x'] } })).status, 404);
+    assert.equal((await raw(port, 'POST', '/admin/api/sync/history/delete', { body: { name: 'PubgSettings.xml', versions: [newest.version] } })).status, 403, 'needs the write guard');
+  });
+});
+
+test('history of a file that is gone can still be listed and deleted', async () => {
+  await withServer({}, async ({ port, dir }) => {
+    await pushDb(port, [file('Gone.xml', 1)]);
+    const cur = (await getDb(port, 'Gone.xml')).json;
+    assert.equal((await putDb(port, 'Gone.xml', { text: xml(2), etag: cur.etag })).status, 200);
+    fs.rmSync(path.join(dir, 'databases', 'Gone.xml'), { force: true });
+    assert.equal((await getDb(port, 'Gone.xml')).status, 404);
+    const list = await raw(port, 'GET', '/admin/api/sync/databases/Gone.xml/history');
+    assert.equal(list.status, 200);
+    assert.equal(list.json.versions.length, 1);
+    const del = await raw(port, 'POST', '/admin/api/sync/history/delete', { headers: W, body: { name: 'Gone.xml', versions: [list.json.versions[0].version] } });
+    assert.equal(del.json.deleted.length, 1);
+    assert.deepEqual((await raw(port, 'GET', '/admin/api/sync/history')).json.files, []);
+  });
+});
