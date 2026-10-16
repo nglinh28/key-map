@@ -1471,7 +1471,9 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 
 /* 17. TIÊU CHUẨN SÚNG ------------------------------------------------------- */
 .std-table th, .std-table td { padding: 9px 10px; font-size: 13px; vertical-align: top; }
-.std-table td { overflow-wrap: anywhere; }
+.std-table td { overflow-wrap: normal; word-break: normal; } /* a word is never cut in the middle: the table is compact below, when the card is narrow */
+.std-table td:nth-child(1), .std-table td:nth-child(3), .std-table td.num { white-space: nowrap; }
+.std-table td:nth-child(11) { white-space: nowrap; }
 .std-table tr.dim td { color: var(--muted); }
 .std-table tr.gun-disabled { opacity: 0.65; }
 .std-table tr.gun-disabled .name { text-decoration: line-through; }
@@ -1481,24 +1483,31 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .std-card { container-type: inline-size; }
 .std-table th { white-space: normal; }
 .std-table .th-filter { flex-wrap: wrap; }
-/* narrow: three lines per gun, nothing cut off and nothing scrolls sideways */
-@container (max-width: 700px) {
+/* narrow card: a few lines per gun, nothing cut off and nothing scrolls sideways. Columns: 1 gun, 2 class, 3 use, 4 muzzle, 5 grip, 6 stock, 7 scope,
+   8 magazine, 9 seconds per shot, 10 time to empty, 11 status, then (after "Đối chiếu") 12 own entries, 13 against the table */
+@container (max-width: 980px) {
   .std-table, .std-table tbody { display: block; width: 100%; }
   .std-table thead { display: block; }
   .std-table thead tr { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 6px 8px 8px; border-bottom: 1px solid var(--line); }
   .std-table thead th { display: block; padding: 0; border: 0; position: static; }
-  .std-table tbody tr { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px 10px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
-  .std-table tbody td { display: block; padding: 0; border: 0; background: none; box-shadow: none; }
+  .std-table tbody tr { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px 10px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  .std-table tbody td { display: block; padding: 0; border: 0; background: none; box-shadow: none; overflow-wrap: anywhere; white-space: normal; }
   .std-table tbody td:nth-child(1) { grid-area: 1 / 1 / 2 / 3; }
   .std-table tbody td:nth-child(2) { grid-area: 1 / 3 / 2 / 5; }
-  .std-table tbody td:nth-child(7) { grid-area: 1 / 5 / 2 / 7; text-align: right; }
-  .std-table tbody td:nth-child(3) { grid-area: 2 / 1 / 3 / 3; }
-  .std-table tbody td:nth-child(4) { grid-area: 2 / 3 / 3 / 5; }
-  .std-table tbody td:nth-child(5) { grid-area: 2 / 5 / 3 / 7; }
+  .std-table tbody td:nth-child(11) { grid-area: 1 / 5 / 2 / 7; text-align: right; }
+  .std-table tbody td:nth-child(4) { grid-area: 2 / 1 / 3 / 4; }
+  .std-table tbody td:nth-child(5) { grid-area: 2 / 4 / 3 / 7; }
   .std-table tbody td:nth-child(6) { grid-area: 3 / 1 / 4 / 3; }
-  .std-table tbody td:nth-child(8) { grid-area: 3 / 3 / 4 / 5; }
-  .std-table tbody td:nth-child(9) { grid-area: 3 / 5 / 4 / 7; }
-  .std-table tbody td:nth-child(n+3):not(:nth-child(7))::before { content: attr(data-label); display: block; font-size: 11px; line-height: 1.3; color: var(--faint); font-weight: 400; }
+  .std-table tbody td:nth-child(7) { grid-area: 3 / 3 / 4 / 5; }
+  .std-table tbody td:nth-child(3) { grid-area: 3 / 5 / 4 / 7; }
+  .std-table tbody td:nth-child(8) { grid-area: 4 / 1 / 5 / 3; }
+  .std-table tbody td:nth-child(9) { grid-area: 4 / 3 / 5 / 5; }
+  .std-table tbody td:nth-child(10) { grid-area: 4 / 5 / 5 / 7; }
+  .std-table tbody td:nth-child(12) { grid-area: 5 / 1 / 6 / 4; }
+  .std-table tbody td:nth-child(13) { grid-area: 5 / 4 / 6 / 7; }
+  .std-table tbody td:nth-child(3) .btn { min-height: 26px; padding: 0 10px; font-size: 12px; }
+  .std-table tbody td[colspan] { grid-column: 1 / -1; grid-row: auto; } /* the "no gun matches" line spans the whole card */
+  .std-table tbody td:nth-child(n+3):not(:nth-child(11))::before { content: attr(data-label); display: block; font-size: 11px; line-height: 1.3; color: var(--faint); font-weight: 400; }
   .std-table tbody td.num { text-align: left; }
   .std-table tbody tr.active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
   .std-table tbody tr.pick:hover { background: var(--surface-2); }
@@ -1765,13 +1774,13 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 }
 
 /* "Thêm mốc cho súng": pick the scopes and postures */
-.pick-group { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
-.pick { white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 13px; cursor: pointer; }
-.pick:has(input:checked) { border-color: var(--accent); background: var(--accent-soft, var(--surface-2)); font-weight: 600; }
-.pick:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
-.pick input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; flex: none; }
-.pick-n { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 400; }
-.pick-quick { display: flex; flex-wrap: wrap; gap: 4px; }
+.opt-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.opt-chip { white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 13px; cursor: pointer; }
+.opt-chip:has(input:checked) { border-color: var(--accent); background: var(--accent-soft, var(--surface-2)); font-weight: 600; }
+.opt-chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.opt-chip input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; flex: none; }
+.opt-chip-n { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 400; }
+.opt-quick { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* "Sửa tiêu chuẩn": fire parameters */
 .fire-box { display: grid; gap: 8px; }
