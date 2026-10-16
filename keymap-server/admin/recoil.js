@@ -542,6 +542,44 @@
     return { keys, entries, byGesture, byScope };
   }
 
+  // The combinations of one gun that "Thêm mốc cho súng" can extend. customKeys: Set of comboKey strings (added on the page, not saved yet);
+  // scopes: the scope indexes the gun can take (from its attachment rules).
+  // own = every own entry of the gun (any scope, even one the rules no longer allow) and every custom combination, once each;
+  // all = the own ones in the allowed scopes plus the bare combination of each allowed scope and posture; scopeList = allowed scopes + the scopes
+  // the own entries use that the rules do not allow (extra), in index order.
+  function batchCombos(idx, customKeys, weapon, scopes) {
+    const own = [];
+    const seen = new Set();
+    const add = (list, o) => {
+      const k = `${o.scope}|${o.gesture}|${o.grip}|${o.muzzle}|${o.stock}`;
+      if (list === own) { if (seen.has(k)) return; seen.add(k); }
+      list.push({ weapon, ...o });
+    };
+    for (const key of idx.map.keys()) {
+      const [w, scope, grip, muzzle, stock, gesture] = key.split('|').map(Number);
+      if (w === weapon) add(own, { scope, gesture, grip, muzzle, stock });
+    }
+    for (const key of customKeys || []) {
+      const [w, scope, gesture, grip, muzzle, stock] = key.split('|').map(Number);
+      if (w === weapon) add(own, { scope, gesture, grip, muzzle, stock });
+    }
+    const all = [];
+    const seenAll = new Set();
+    for (const scope of scopes) {
+      for (const gesture of [0, 1, 2]) {
+        const here = exactCombos(idx, weapon, scope, gesture);
+        if (!here.some((c) => !c.grip && !c.muzzle && !c.stock)) here.unshift({ grip: 0, muzzle: 0, stock: 0 });
+        for (const c of here) {
+          const k = `${scope}|${gesture}|${c.grip}|${c.muzzle}|${c.stock}`;
+          if (!seenAll.has(k)) { seenAll.add(k); all.push({ weapon, scope, gesture, grip: c.grip, muzzle: c.muzzle, stock: c.stock }); }
+        }
+      }
+    }
+    const extra = new Set(own.map((o) => o.scope).filter((sc) => !scopes.includes(sc)));
+    const scopeList = [...new Set([...scopes, ...extra])].sort((a, b) => a - b);
+    return { own, all, scopeList, extra };
+  }
+
   // Keeps the combinations whose scope is in `scopes` and whose posture is in `gestures` (a Set of enum indexes; null = any).
   const filterCombos = (list, { scopes = null, gestures = null } = {}) => list.filter((c) => (!scopes || scopes.has(c.scope)) && (!gestures || gestures.has(c.gesture)));
 
@@ -555,5 +593,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });

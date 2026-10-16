@@ -432,3 +432,22 @@ test('filterCombos: by scope and posture together; null means any, an empty set 
   assert.deepEqual(R.filterCombos(list, { scopes: new Set([1, 3]), gestures: new Set([0, 2]) }), [{ scope: 1, gesture: 0 }, { scope: 3, gesture: 2 }]);
   assert.deepEqual(R.filterCombos(list, { scopes: new Set() }), []);
 });
+
+test('batchCombos: own entries of any scope plus custom ones once each; all = allowed scopes x postures; extra scopes are listed', () => {
+  const W = R.WEAPONS.indexOf('M416');
+  const groups = Array.from({ length: 70 }, () => ({ v: [], coefficients: [] }));
+  const e = (scope, grip, muzzle, stock, gesture) => ({ scope, grip, muzzle, stock, gesture, recoilValue: [[0, 1]] });
+  groups[W].v.push(e(1, 0, 0, 0, 0), e(1, 0, 1, 0, 0), e(5, 0, 0, 0, 1)); // scope 5 is not allowed below
+  groups[R.WEAPONS.indexOf('AKM')].v.push(e(1, 0, 0, 0, 0)); // another gun: never mixed in
+  const idx = R.indexData(groups);
+  const custom = new Set([`${W}|2|0|1|0|0`, `${W}|1|0|0|0|0`, `${W + 1}|1|0|0|0|0`]); // key layout: w|scope|gesture|grip|muzzle|stock; the 2nd is already saved
+  const r = R.batchCombos(idx, custom, W, [1, 2]);
+  assert.equal(r.own.length, 4, '3 saved + 1 custom (the saved one is not counted twice, the other gun is left out)');
+  assert.ok(r.own.every((o) => o.weapon === W));
+  assert.deepEqual([...r.extra], [5]);
+  assert.deepEqual(r.scopeList, [1, 2, 5]);
+  assert.ok(r.all.every((o) => o.scope === 1 || o.scope === 2), 'all = allowed scopes only');
+  for (const sc of [1, 2]) for (const ge of [0, 1, 2]) assert.equal(r.all.filter((o) => o.scope === sc && o.gesture === ge && !o.grip && !o.muzzle && !o.stock).length, 1, `bare combo once for scope ${sc} posture ${ge}`);
+  assert.equal(r.all.filter((o) => o.scope === 1 && o.gesture === 0).length, 2, 'bare + the saved muzzle one');
+  assert.deepEqual(R.batchCombos(idx, null, W, [1, 2]).own.length, 3);
+});

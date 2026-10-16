@@ -2219,53 +2219,8 @@
 
     const gunName = RL.weaponLabel(weapon);
 
-    // 1. Identify existing own combinations for this weapon in ix.idx.map and customCombos
-    const ownCombos = [];
-    const seenKeys = new Set();
-    if (ix.idx && ix.idx.map) {
-      for (const k of ix.idx.map.keys()) {
-        const [w, s, g, m, st, ge] = k.split('|').map(Number);
-        if (w === weapon) {
-          const cKey = `${s}|${ge}|${g}|${m}|${st}`;
-          if (!seenKeys.has(cKey)) {
-            seenKeys.add(cKey);
-            ownCombos.push({ weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st });
-          }
-        }
-      }
-    }
-    if (rc.customCombos) {
-      for (const k of rc.customCombos) {
-        const [w, s, ge, g, m, st] = k.split('|').map(Number);
-        if (w === weapon) {
-          const cKey = `${s}|${ge}|${g}|${m}|${st}`;
-          if (!seenKeys.has(cKey)) {
-            seenKeys.add(cKey);
-            ownCombos.push({ weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st });
-          }
-        }
-      }
-    }
-
-    // 2. All valid combinations according to attachment rules
-    const allValidCombos = [];
-    const allSeen = new Set();
-    const scopes = scopesOf(weapon);
-    for (const s of scopes) {
-      for (const ge of [0, 1, 2]) {
-        const combosHere = RL.exactCombos(ix.idx, weapon, s, ge);
-        if (!combosHere.some((c) => !c.grip && !c.muzzle && !c.stock)) {
-          combosHere.unshift({ grip: 0, muzzle: 0, stock: 0 });
-        }
-        for (const c of combosHere) {
-          const cKey = `${s}|${ge}|${c.grip}|${c.muzzle}|${c.stock}`;
-          if (!allSeen.has(cKey)) {
-            allSeen.add(cKey);
-            allValidCombos.push({ weapon, scope: s, gesture: ge, grip: c.grip, muzzle: c.muzzle, stock: c.stock });
-          }
-        }
-      }
-    }
+    // own entries (any scope, saved or still custom) and every valid combination, once each; the scope picker also lists scopes the rules no longer allow
+    const { own: ownCombos, all: allValidCombos, scopeList: scopes, extra: extraScopes } = RL.batchCombos(ix.idx, rc.customCombos, weapon, scopesOf(weapon));
 
     // Modal UI elements
     const countInput = el('input', {
@@ -2279,7 +2234,7 @@
     });
 
     const setStepCount = (v) => {
-      const cur = Math.max(1, Math.min(20, v));
+      const cur = Math.max(1, Math.min(20, Math.floor(Number(v) || 1)));
       countInput.value = String(cur);
       updateSummary();
     };
@@ -2328,7 +2283,7 @@
       return { input, n, node: el('label', { class: 'pick' }, input, el('span', {}, label), n) };
     };
     const toggle = (set, v, on) => { if (on) set.add(v); else set.delete(v); updateSummary(); };
-    const scopePicks = scopes.map((sc) => ({ sc, ...pickBox(RL.LABELS.SCOPES[sc], (on) => toggle(selScopes, sc, on)) }));
+    const scopePicks = scopes.map((sc) => ({ sc, ...pickBox(`${RL.LABELS.SCOPES[sc]}${extraScopes.has(sc) ? ' (ngoài quy tắc)' : ''}`, (on) => toggle(selScopes, sc, on)) }));
     const posturePicks = [0, 1, 2].map((ge) => ({ ge, ...pickBox(POSTURE_VN[ge], (on) => toggle(selGestures, ge, on)) }));
     const setPicks = (picks, set, key, values) => { set.clear(); for (const v of values) set.add(v); picks.forEach((x) => { x.input.checked = set.has(x[key]); }); updateSummary(); };
     const quick = (label, fn, title) => el('button', { type: 'button', class: 'btn small ghost', title, onclick: fn }, label);
@@ -2338,7 +2293,8 @@
       scopes.includes(rc.scope) ? quick('Chỉ ống đang xem', () => setPicks(scopePicks, selScopes, 'sc', [rc.scope]), RL.LABELS.SCOPES[rc.scope]) : null);
     const postureQuick = el('div', { class: 'pick-quick' },
       quick('Tất cả', () => setPicks(posturePicks, selGestures, 'ge', [0, 1, 2])),
-      quick('Chỉ tư thế đang xem', () => setPicks(posturePicks, selGestures, 'ge', [rc.gesture]), POSTURE_VN[rc.gesture]));
+      quick('Bỏ chọn', () => setPicks(posturePicks, selGestures, 'ge', [])),
+      [0, 1, 2].includes(rc.gesture) ? quick('Chỉ tư thế đang xem', () => setPicks(posturePicks, selGestures, 'ge', [rc.gesture]), POSTURE_VN[rc.gesture]) : null);
     const scopePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Ống ngắm' }, scopePicks.map((x) => x.node));
     const posturePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Tư thế' }, posturePicks.map((x) => x.node));
 
@@ -2359,13 +2315,14 @@
       if (!selScopes.size) msg = 'Chưa chọn ống ngắm nào.';
       else if (!selGestures.size) msg = 'Chưa chọn tư thế nào.';
       else if (!targets.length) msg = 'Không có tổ hợp nào khớp ống ngắm, tư thế và phạm vi đã chọn.';
-      else msg = `Sẽ thêm ${n} mốc (${method}) vào ${targets.length} tổ hợp của ${gunName}: ${names(scopes.length, [...selScopes], (x) => RL.LABELS.SCOPES[x], 'mọi ống ngắm')} · ${names(3, [...selGestures].sort(), (x) => POSTURE_VN[x], 'cả 3 tư thế')} (bộ dữ liệu: ${MODE_VN[rc.mode]}).`;
+      else msg = `Sẽ thêm ${n} mốc (${method}) vào ${targets.length} tổ hợp của ${gunName}: ${names(scopes.length, [...selScopes].sort((x, y) => x - y), (x) => RL.LABELS.SCOPES[x], 'mọi ống ngắm')} · ${names(3, [...selGestures].sort(), (x) => POSTURE_VN[x], 'cả 3 tư thế')} (bộ dữ liệu: ${MODE_VN[rc.mode]}).`;
       summaryText.textContent = msg;
       summaryCard.className = `modal-callout ${targets.length ? 'info' : 'warn'}`;
       if (setApplyDisabled) setApplyDisabled(!targets.length);
     }
 
     countInput.oninput = updateSummary;
+    countInput.onchange = () => setStepCount(countInput.value); // what is shown is what is used
     methodTrend.onchange = updateSummary;
     methodStep.onchange = updateSummary;
     scopeOwn.onchange = updateSummary;
@@ -2439,6 +2396,8 @@
     });
 
     if (choice !== 'apply') return;
+    // the page may have changed while the window was open (reload, save, another gun): do not apply to stale combinations
+    if (!latest() || rc.bulk || rc.filling || rc.weapon !== weapon || RL.isGunDisabled(weapon)) { toast('Dữ liệu đã thay đổi khi hộp thoại đang mở: hãy mở lại "Thêm mốc cho súng".', true); return; }
 
     const count = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
     const method = methodTrend.checked ? 'trend' : 'step';
