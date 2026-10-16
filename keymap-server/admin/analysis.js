@@ -1524,7 +1524,7 @@
     const visible = TF.sortRows(TF.applyFilters(model, rc.filters, cellValue), rc.sort, cellValue);
     const filtered = TF.countActive(rc.filters) > 0;
     // ticks: only rows with an own entry (something to delete); they belong to the gun, scope and posture shown
-    const tickScope = `${rc.itemId}|${rc.weapon}|${rc.scope}|${rc.gesture}`;
+    const tickScope = `${rc.itemId}|${rc.mode}|${rc.weapon}|${rc.scope}|${rc.gesture}`;
     if (rc.tickScope !== tickScope) { rc.tickScope = tickScope; rc.ticked = new Set(); }
     const tickable = (m) => !zero && !RL.isGunDisabled(rc.weapon) && m.r.source === 'exact';
     const tickableIds = new Set(model.filter(tickable).map((m) => comboId(m.c)));
@@ -1574,8 +1574,8 @@
         rc.dirty = false;
         redraw();
       } },
-        el('td', { class: 'tick-cell', onclick: (e) => e.stopPropagation() }, canTick ? el('input', { type: 'checkbox', class: 'row-tick', checked: rc.ticked.has(comboId(c)), 'aria-label': `Chọn tổ hợp ${optText('GRIPS', c.grip)} · ${optText('MUZZLES', c.muzzle)} · ${optText('STOCKS', c.stock)} để xóa`,
-          onchange: (e) => { if (e.target.checked) rc.ticked.add(comboId(c)); else rc.ticked.delete(comboId(c)); redraw(); } }) : null),
+        el('td', { class: 'tick-cell', onclick: (e) => e.stopPropagation() }, canTick ? el('input', { type: 'checkbox', class: 'row-tick', 'data-id': comboId(c), checked: rc.ticked.has(comboId(c)), 'aria-label': `Chọn tổ hợp ${optText('GRIPS', c.grip)} · ${optText('MUZZLES', c.muzzle)} · ${optText('STOCKS', c.stock)} để xóa`,
+          onchange: (e) => { if (e.target.checked) rc.ticked.add(comboId(c)); else rc.ticked.delete(comboId(c)); redraw(); refocus(`.row-tick[data-id="${comboId(c)}"]`); } }) : null),
         el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && (draft.source === 'add_points' || draft.source === 'retime') ? el('span', { class: 'tag warn', title: `${draft.source === 'retime' ? 'Đã chia đều thời gian' : 'Đã thêm mốc'}, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
         el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
         el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
@@ -1587,12 +1587,16 @@
         el('td', { class: 'act' }, el('div', { class: 'row-btns hover-actions' }, editBtn, delBtn)));
     });
 
+    const allTicked = visibleTickable.length > 0 && visibleTickable.every((m) => rc.ticked.has(comboId(m.c)));
+    const someTicked = visibleTickable.some((m) => rc.ticked.has(comboId(m.c)));
+    const headBox = visibleTickable.length ? el('input', { type: 'checkbox', class: 'head-tick', 'aria-label': 'Chọn tất cả tổ hợp có mục riêng đang hiển thị', checked: allTicked,
+      onchange: (e) => { for (const m of visibleTickable) { if (e.target.checked) rc.ticked.add(comboId(m.c)); else rc.ticked.delete(comboId(m.c)); } redraw(); refocus('.head-tick'); } }) : null;
+    if (headBox) headBox.indeterminate = someTicked && !allTicked; // a DOM property: el() cannot set it as an attribute
+    const refocus = (sel) => { const h = document.querySelector(sel); if (h) h.focus({ preventScroll: true }); };
     const fh = (label, col, o = {}) => el('th', { 'aria-sort': FU.ariaSort(rc.sort, col), }, FU.header({ label, col, rows: model, valueOf: cellValue, filters: rc.filters, sort: rc.sort, onChange: setView, ...o }));
     const table = el('table', { class: 'combo-table' },
       el('thead', {}, el('tr', {}, [
-        el('th', { class: 'tick-cell' }, visibleTickable.length ? el('input', { type: 'checkbox', 'aria-label': 'Chọn tất cả tổ hợp có mục riêng đang hiển thị',
-          checked: visibleTickable.every((m) => rc.ticked.has(comboId(m.c))), indeterminate: visibleTickable.some((m) => rc.ticked.has(comboId(m.c))) && !visibleTickable.every((m) => rc.ticked.has(comboId(m.c))),
-          onchange: (e) => { for (const m of visibleTickable) { if (e.target.checked) rc.ticked.add(comboId(m.c)); else rc.ticked.delete(comboId(m.c)); } redraw(); } }) : null),
+        el('th', { class: 'tick-cell' }, headBox),
         fh('Tay cầm', 'grip'),
         fh('Nòng', 'muzzle'),
         fh('Báng', 'stock'),
@@ -1604,8 +1608,9 @@
         el('th', {})
       ])),
       el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', { colspan: 10, class: 'muted' }, filtered ? el('span', {}, 'Không có tổ hợp nào khớp bộ lọc. ', el('button', { type: 'button', class: 'btn small', onclick: clearFilters }, 'Xóa bộ lọc')) : 'Không có tổ hợp nào.'))));
+    const hiddenTicked = rc.ticked.size - visibleTickable.filter((m) => rc.ticked.has(comboId(m.c))).length;
     const tickBar = rc.ticked.size ? el('div', { class: 'row tick-bar', role: 'status' },
-      el('span', { class: 'font-semibold' }, `Đã chọn ${rc.ticked.size} tổ hợp`),
+      el('span', { class: 'font-semibold' }, `Đã chọn ${rc.ticked.size} tổ hợp`, hiddenTicked ? el('span', { class: 'muted' }, ` (${hiddenTicked} đang ẩn bởi bộ lọc)`) : null),
       el('button', { type: 'button', class: 'btn small danger-fill', onclick: guard(() => deleteAudited(model.filter((m) => rc.ticked.has(comboId(m.c))).map((m) => comboOf(m.c)), 'đã chọn')) }, icon('trash'), `Xóa ${rc.ticked.size} đã chọn`),
       el('button', { type: 'button', class: 'btn small ghost', onclick: () => { rc.ticked.clear(); redraw(); } }, 'Bỏ chọn')) : null;
     const ghosts = ghostList(ix, new Set(combos.map((c) => comboId(c))), model);
