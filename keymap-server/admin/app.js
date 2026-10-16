@@ -661,18 +661,63 @@
       serverOut, appOut);
   }
 
+  const pickedDays = new Set(); // days ticked for deleting
+
+  // Asks, then removes whole days of backups (the latest files and their history stay). `list` is [{date, bytes}].
+  async function deleteDays(list) {
+    if (!list.length) return;
+    const total = list.reduce((n, d) => n + (d.bytes || 0), 0);
+    const shown = list.slice(0, 8).map((d) => d.date).join(', ') + (list.length > 8 ? `, … (+${list.length - 8})` : '');
+    const ok = await confirmModal({
+      title: `Xóa ${list.length} ngày sao lưu?`, tone: 'danger', confirmLabel: `Xóa ${list.length} ngày`,
+      body: [el('p', {}, `Ngày: ${shown}. Giải phóng khoảng ${fmtBytes(total)} trên server.`),
+        el('p', { class: 'muted' }, 'Không thể hoàn tác. Các file mới nhất và lịch sử phiên bản của từng file không bị ảnh hưởng.')],
+    });
+    if (!ok) return;
+    const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} ngày sao lưu…`, steps: ['Gửi yêu cầu', 'Xóa thư mục', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 20, detail: 'Gửi yêu cầu xóa lên server…' });
+      const r = await api('POST', '/sync/backups/delete', { days: list.map((d) => d.date) });
+      bar.update({ step: 1, pct: 70, detail: `Đã xóa ${r.deleted.length} ngày, giải phóng ${fmtBytes(r.freed)}…` });
+      for (const d of r.deleted) pickedDays.delete(d);
+      bar.update({ step: 2, pct: 90, detail: 'Tải lại danh sách…' });
+      await bar.finish(`Đã xóa ${r.deleted.length} ngày sao lưu, giải phóng ${fmtBytes(r.freed)}${r.missing.length ? ` (${r.missing.length} ngày không còn)` : ''}.`);
+      render();
+    } catch (e) {
+      await bar.fail(`Không xóa được: ${e.message || e}.`);
+    }
+  }
+
   async function viewBackups() {
     const { days } = await api('GET', '/sync/backups');
     const autorun = state.autorun || '';
     state.autorun = '';
+    for (const d of [...pickedDays]) if (!days.some((x) => x.date === d)) pickedDays.delete(d);
+    const refreshBar = () => { const n = pickedDays.size; delBtn.disabled = !n; delBtn.replaceChildren(icon('trash'), n ? `Xóa ${n} ngày đã chọn` : 'Xóa ngày đã chọn'); allBox.checked = n > 0 && n === days.length - 1; };
     const item = (d, i) => el('li', { class: 't-item' }, el('span', { class: `t-dot ${i === 0 ? 'ok' : ''}`, 'aria-hidden': 'true' }),
-      el('div', { class: 't-head' }, el('span', { class: 't-title' }, d.date), i === 0 ? badge('Mới nhất', 'ok') : null,
-        d.databases ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => showDay(d.date)) }, icon('eye'), 'Xem file') : null),
+      el('div', { class: 't-head' },
+        i === 0 ? el('input', { type: 'checkbox', class: 'day-pick', disabled: true, title: 'Ngày mới nhất được tạo lại ngay nên không xóa', 'aria-label': 'Ngày mới nhất không xóa được' }) : el('input', { type: 'checkbox', class: 'day-pick', 'aria-label': `Chọn ngày ${d.date} để xóa`, checked: pickedDays.has(d.date), onchange: (e) => { if (e.target.checked) pickedDays.add(d.date); else pickedDays.delete(d.date); refreshBar(); } }),
+        el('span', { class: 't-title' }, d.date), i === 0 ? badge('Mới nhất', 'ok') : null,
+        d.databases ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => showDay(d.date)) }, icon('eye'), 'Xem file') : null,
+        i === 0 ? null : el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => deleteDays([d])) }, icon('trash'), 'Xóa')),
       el('div', { class: 't-meta' }, `${d.databases} file · ${fmtBytes(d.bytes)} · cập nhật ${clockDateTime(d.updated_at)}${d.last_actor ? ` bởi ${d.last_actor}` : ''}`));
-    return el('div', {},
-      pageHead('Sao lưu theo ngày', 'Mỗi ngày một bản chứa cả bộ file. Khôi phục về máy: app Android → "Khôi phục theo ngày…".', el('span', { class: 'muted' }, `${days.length} ngày`)),
+    const allBox = el('input', { type: 'checkbox', 'aria-label': 'Chọn tất cả các ngày', onchange: (e) => { pickedDays.clear(); if (e.target.checked) for (const d of days.slice(1)) pickedDays.add(d.date); for (const b of document.querySelectorAll('.day-pick:not(:disabled)')) b.checked = e.target.checked; refreshBar(); } });
+    const delBtn = el('button', { type: 'button', class: 'btn small danger', onclick: guard(() => deleteDays(days.filter((d) => pickedDays.has(d.date)))) });
+    const keepBtn = el('button', { type: 'button', class: 'btn small', disabled: days.length < 2, onclick: guard(async () => {
+      const input = el('input', { type: 'number', min: '1', max: String(days.length - 1), value: String(Math.min(7, days.length - 1)), 'aria-label': 'Số ngày giữ lại' });
+      const ok = await showModal({ title: 'Dọn các ngày cũ', tone: 'info', body: [el('p', {}, 'Giữ lại bao nhiêu ngày mới nhất? Các ngày cũ hơn sẽ được chọn để xóa.'), el('label', { class: 'numfield' }, 'Số ngày giữ lại', input)], actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Tiếp tục', primary: true }] });
+      if (ok !== 'go') return;
+      const keep = Math.floor(Number(input.value));
+      if (!(keep >= 1) || keep >= days.length) { toast(`Nhập số từ 1 đến ${days.length - 1}.`, true); return; }
+      await deleteDays(days.slice(keep));
+    }) }, icon('clock'), 'Dọn cũ…');
+    const tools = days.length ? el('div', { class: 'row day-tools' }, el('label', { class: 'check' }, allBox, ' Chọn tất cả'), delBtn, keepBtn) : null;
+    const node = el('div', {},
+      pageHead('Sao lưu theo ngày', 'Mỗi ngày một bản chứa cả bộ file. Khôi phục về máy: app Android → "Khôi phục theo ngày…". Xóa bớt ngày cũ để giải phóng dung lượng server.', el('span', { class: 'muted' }, `${days.length} ngày · ${fmtBytes(days.reduce((n, d) => n + (d.bytes || 0), 0))}`)),
       syncCard(autorun),
-      el('section', { class: 'card' }, days.length ? el('ol', { class: 'timeline' }, days.map(item)) : emptyState('clock', 'Chưa có bản sao lưu nào', 'Bản đầu tiên được tạo khi app gửi file lên.')));
+      el('section', { class: 'card' }, tools, days.length ? el('ol', { class: 'timeline' }, days.map(item)) : emptyState('clock', 'Chưa có bản sao lưu nào', 'Bản đầu tiên được tạo khi app gửi file lên.')));
+    if (tools) refreshBar();
+    return node;
   }
 
   async function showDay(day) {

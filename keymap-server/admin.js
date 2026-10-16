@@ -440,6 +440,13 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       if (who) devices.recordPull(who.id, files.length);
       return json(res, 200, { date: day, files });
     }
+    // POST /admin/api/sync/backups/delete { days: ["2026-10-01", …] }: frees space by removing whole days of backups (the latest files and their history stay)
+    if (p === '/admin/api/sync/backups/delete' && method === 'POST') {
+      const body = await jsonBody(req);
+      const days = body && Array.isArray(body.days) ? body.days : null;
+      if (!days || !days.length || days.length > 4000 || days.some((d) => typeof d !== 'string' || !DAY_RE.test(d))) return err(res, 400, 'days must be a list of YYYY-MM-DD dates');
+      return json(res, 200, { ok: true, ...backups.remove(days), remaining: backups.list().length });
+    }
     // ---- the app's own preference files (Documents/jya2/databases/*.xml)
     if (p === '/admin/api/sync/databases' && method === 'GET') return json(res, 200, { files: databases.list() });
     if (p === '/admin/api/sync/databases/push' && method === 'POST') {

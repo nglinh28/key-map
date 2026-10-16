@@ -133,6 +133,25 @@ class DailyBackups {
     return { date: day, manifest: this.readManifest(day) };
   }
 
+  // size of a day's folder on disk
+  sizeOf(day) {
+    const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).reduce((n, e) => n + (e.isDirectory() ? walk(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size), 0);
+    try { return walk(this.folder(day)); } catch { return 0; }
+  }
+
+  // Removes whole days (existing ones only). Returns { deleted: [days], freed: bytes, missing: [days], kept: [today] }.
+  remove(days) {
+    const out = { deleted: [], freed: 0, missing: [], kept: [] };
+    for (const day of [...new Set(days)]) {
+      if (day === this.today()) { out.kept.push(day); continue; } // today is rebuilt by the next request anyway
+      if (!DAY_RE.test(day) || !fs.existsSync(this.folder(day))) { out.missing.push(day); continue; }
+      out.freed += this.sizeOf(day);
+      fs.rmSync(this.folder(day), { recursive: true, force: true });
+      out.deleted.push(day);
+    }
+    return out;
+  }
+
   prune() {
     if (!(this.keepDays > 0)) return;
     const days = this.list().map((d) => d.date); // newest first
