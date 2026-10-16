@@ -342,6 +342,59 @@
     return `Đầu nòng: ${list(a.muzzles, LABELS.MUZZLES)} · Tay cầm: ${list(a.grips, LABELS.GRIPS)} · Báng: ${list(a.stocks, LABELS.STOCKS)} · Ống ngắm: ${a.maxZoom == null ? 'không giới hạn trong tài liệu' : `tối đa ${a.maxZoom}x`}`;
   }
 
+  // ---------------------------------------------------------------- how fast a gun empties one (normal) magazine
+  // T = (magazine - 1) x interval: the first shot leaves at once. It is the length of a recoil curve: the points are spread evenly over it.
+  // Seconds between shots: Liquipedia PUBG Mobile (a snapshot of about mid 2025); magazine: BitTopup, except MG3, DP28 and M249 (wiki of the PC game).
+  // Single-shot guns (DMR, sniper, shotgun) are given by their shortest cycle. Not verified in the game: the user can correct every gun on the
+  // page "Tiêu chuẩn súng"; guns that are not here have no value (the old random step of the points is used for them).
+  SOURCES.fire = 'Liquipedia PUBG Mobile (giây/phát) và BitTopup (băng); chưa kiểm chứng';
+  const F = (magazine, interval, note = '') => Object.freeze({ magazine, interval, note });
+  const FIRE_DEFAULTS = Object.freeze({
+    M416: F(30, 0.085), AUG: F(30, 0.085), M762: F(30, 0.086), G36C: F(30, 0.086), Groza: F(30, 0.08), AKM: F(30, 0.1), QBZ: F(30, 0.092), ACE32: F(30, 0.092),
+    Scar: F(30, 0.096), M16: F(30, 0.075, 'bắn theo loạt, thực tế chậm hơn'), MK47: F(20, 0.1, 'bắn theo loạt; trang nguồn lẫn số liệu'),
+    FAMAS: F(30, 0.15, 'nghi vấn: nhiều khả năng bắn nhanh hơn nhiều'),
+    UZI: F(25, 0.048), Vector: F(19, 0.054), MP5K: F(30, 0.067), Thomson: F(30, 0.086), UMP45: F(25, 0.092),
+    VSS: F(10, 0.086), MK14: F(10, 0.09), SKS: F(10, 0.09), SLR: F(10, 0.1), QBU: F(10, 0.1), Mini14: F(20, 0.13, 'wiki PC ghi 0,1'), MK12: F(20, 0.13, 'wiki PC ghi 0,1'),
+    MG3: F(75, 0.066, 'băng theo wiki PC; chế độ bắn nhanh'), DP28: F(47, 0.109, 'băng theo wiki PC'), M249: F(100, 0.075, 'băng theo wiki PC'),
+    S686: F(2, 0.2, 'có thể bắn cả hai nòng cùng lúc'), S12K: F(5, 0.25), M1014: F(7, 0.25, 'wiki PC ghi 8 viên'), S1897: F(5, 0.75),
+    M24: F(5, 1.8, 'chu kỳ nạp đạn bolt'), AWM: F(5, 1.85), Kar98K: F(5, 1.9), Mosin: F(5, 1.9), AMR: F(5, 1.9),
+  });
+  const MAGAZINE = Object.freeze([2, 200]);
+  const INTERVAL = Object.freeze([0.02, 3]);
+  const emptyMsOf = (f) => Math.round((f.magazine - 1) * f.interval * 1000);
+  // { magazine, interval } typed on the page -> { ok, fire } with the interval to 4 decimals, or { ok:false, error }
+  function checkFire(f) {
+    if (!f || typeof f !== 'object') return { ok: false, error: 'Thông số bắn không hợp lệ.' };
+    if (!Number.isInteger(f.magazine) || f.magazine < MAGAZINE[0] || f.magazine > MAGAZINE[1]) return { ok: false, error: `Số viên một băng phải là số nguyên từ ${MAGAZINE[0]} đến ${MAGAZINE[1]}.` };
+    if (typeof f.interval !== 'number' || !Number.isFinite(f.interval) || f.interval < INTERVAL[0] || f.interval > INTERVAL[1]) return { ok: false, error: `Số giây giữa hai phát phải từ ${INTERVAL[0]} đến ${INTERVAL[1]}.` };
+    return { ok: true, fire: { magazine: f.magazine, interval: Math.round(f.interval * 10000) / 10000 } };
+  }
+  // the user's corrections: gun code -> { magazine, interval }, or null = "this gun has no fire data". They win over FIRE_DEFAULTS.
+  let fireOverrides = {};
+  function setFireOverrides(map) {
+    const next = {};
+    for (const [name, f] of Object.entries(map && typeof map === 'object' ? map : {})) {
+      if (!WEAPONS.includes(name) || name === WEAPONS[0]) continue;
+      if (f === null) { next[name] = null; continue; }
+      const c = checkFire(f);
+      if (c.ok) next[name] = c.fire;
+    }
+    fireOverrides = next;
+    return getFireOverrides();
+  }
+  const getFireOverrides = () => ({ ...fireOverrides });
+  // -> { magazine, interval, emptyMs, source: 'default' | 'edited', sourceLabel, note, edited } or null (a zero gun, a disabled gun unless ignoreDisabled,
+  // a gun the user cleared, a gun without default or edit)
+  function fireOf(weapon, { ignoreDisabled = false } = {}) {
+    const code = typeof weapon === 'number' ? WEAPONS[weapon] : typeof weapon === 'string' ? weapon : null;
+    if (!code || !WEAPONS.includes(code) || ZERO_WEAPONS.has(WEAPONS.indexOf(code))) return null;
+    if (!ignoreDisabled && isGunDisabled(code)) return null;
+    const edited = Object.prototype.hasOwnProperty.call(fireOverrides, code);
+    const f = edited ? fireOverrides[code] : FIRE_DEFAULTS[code];
+    if (!f) return null;
+    return { magazine: f.magazine, interval: f.interval, emptyMs: emptyMsOf(f), source: edited ? 'edited' : 'default', sourceLabel: edited ? SOURCES.edited : SOURCES.fire, note: edited ? '' : f.note || '', edited };
+  }
+
   const MAX_POINTS = 10000;
 
   // A curve typed on the page -> { ok, curve } with numbers sorted by time, or { ok:false, error }.
@@ -593,5 +646,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });

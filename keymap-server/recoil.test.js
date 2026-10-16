@@ -451,3 +451,58 @@ test('batchCombos: own entries of any scope plus custom ones once each; all = al
   assert.equal(r.all.filter((o) => o.scope === 1 && o.gesture === 0).length, 2, 'bare + the saved muzzle one');
   assert.deepEqual(R.batchCombos(idx, null, W, [1, 2]).own.length, 3);
 });
+
+// ---- fire parameters (magazine, seconds between shots) and the time T to empty one magazine
+test.afterEach(() => { R.setFireOverrides({}); R.setDisabledGuns([]); });
+
+test('fireOf: defaults give T = (magazine - 1) x interval, in whole ms', () => {
+  const m = R.fireOf('M416');
+  assert.deepEqual([m.magazine, m.interval, m.emptyMs, m.source, m.edited], [30, 0.085, 2465, 'default', false]);
+  assert.equal(R.fireOf('AWM').emptyMs, 7400);
+  assert.equal(R.fireOf('S686').emptyMs, 200);
+  assert.equal(R.fireOf(R.WEAPONS.indexOf('AKM')).emptyMs, 2900, 'a gun index works as well as a code');
+  assert.equal(R.fireOf('P90'), null, 'no default for this gun');
+  assert.equal(R.fireOf('MORTAR'), null, 'a zero gun has no fire data');
+  assert.equal(R.fireOf('Nope'), null);
+});
+
+test('FIRE_DEFAULTS: 36 guns, every code is a gun of the app, every entry passes checkFire', () => {
+  const codes = Object.keys(R.FIRE_DEFAULTS);
+  assert.equal(codes.length, 36);
+  for (const c of codes) {
+    assert.ok(R.WEAPONS.includes(c), c);
+    assert.equal(R.checkFire(R.FIRE_DEFAULTS[c]).ok, true, c);
+  }
+});
+
+test('checkFire: magazine is a whole number 2..200, interval is finite 0.02..3, and the message is in Vietnamese', () => {
+  assert.deepEqual(R.checkFire({ magazine: 30, interval: 0.0856789 }), { ok: true, fire: { magazine: 30, interval: 0.0857 } });
+  for (const bad of [{ magazine: 1, interval: 0.1 }, { magazine: 201, interval: 0.1 }, { magazine: 1.5, interval: 0.1 }, { magazine: '30', interval: 0.1 },
+    { magazine: 30, interval: 0.01 }, { magazine: 30, interval: 4 }, { magazine: 30, interval: NaN }, { magazine: 30, interval: Infinity }, null, 5, {}]) {
+    const r = R.checkFire(bad);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.match(r.error, /[a-zà-ỹ]/i);
+  }
+  assert.equal(R.emptyMsOf({ magazine: 2, interval: 0.2 }), 200);
+});
+
+test('setFireOverrides: an edit wins over the default, null removes the data, bad entries are dropped', () => {
+  R.setFireOverrides({ M416: { magazine: 40, interval: 0.09 } });
+  const e = R.fireOf('M416');
+  assert.deepEqual([e.emptyMs, e.source, e.edited], [3510, 'edited', true]);
+  assert.deepEqual(R.getFireOverrides(), { M416: { magazine: 40, interval: 0.09 } });
+  R.setFireOverrides({ M416: null });
+  assert.equal(R.fireOf('M416'), null);
+  R.setFireOverrides({ P90: { magazine: 50, interval: 0.06 } });
+  assert.equal(R.fireOf('P90').emptyMs, 2940, 'an edit can give a gun that has no default');
+  R.setFireOverrides({ M416: { magazine: 0, interval: 0.09 }, Foo: { magazine: 5, interval: 1 }, Empty: { magazine: 5, interval: 1 }, AKM: { magazine: 'x', interval: 0.1 } });
+  assert.deepEqual(R.getFireOverrides(), {});
+  assert.equal(R.fireOf('M416').source, 'default');
+});
+
+test('fireOf: a disabled gun has none, unless the caller asks to ignore that', () => {
+  R.setDisabledGuns(['M416']);
+  assert.equal(R.fireOf('M416'), null);
+  assert.equal(R.fireOf('M416', { ignoreDisabled: true }).emptyMs, 2465);
+  assert.equal(R.fireOf('MORTAR', { ignoreDisabled: true }), null, 'a zero gun never has it');
+});
