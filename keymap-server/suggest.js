@@ -16,6 +16,13 @@ const keyOf = (w, s, g, m, st, ge) => `${w}|${s}|${g}|${m}|${st}|${ge}`; // same
 const round4 = (x) => Math.round(x * 10000) / 10000;
 const duration = (curve) => (curve.length ? curve[curve.length - 1][0] : 0);
 const lastCurve = (list) => (list && list.length ? list[list.length - 1].recoilValue : null);
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+
+// Typical size of a curve (mean |value|). Ratios and relative errors are taken against a floor of FLOOR x this size, never against a value near 0:
+// a point at ~0 must not turn a tiny absolute gap into a huge relative one.
+const FLOOR = 0.05;
+const scaleOf = (curve) => (curve.length ? curve.reduce((n, p) => n + Math.abs(p[1]), 0) / curve.length : 0);
+const CORRECTION = Object.freeze([0.5, 2]); // one point of a correction (own entry / coefficient curve) is kept within this range
 
 // value of a curve at time t: linear between points, flat before the first and after the last
 function interp(curve, t) {
@@ -34,13 +41,15 @@ function interp(curve, t) {
 }
 
 // How different two base curves are: mean |ln value ratio| at equally spaced fractions of their durations, plus half the |ln duration ratio|.
+// Each value gets a small floor (FLOOR x the mean size of both curves) so a point at ~0 on one curve and not on the other stays a modest gap.
 function distance(a, b) {
   const da = Math.max(duration(a), 1);
   const db = Math.max(duration(b), 1);
+  const f = Math.max(FLOOR * (scaleOf(a) + scaleOf(b)) / 2, EPS);
   let sum = 0;
   for (let i = 0; i < SAMPLES; i++) {
     const u = i / (SAMPLES - 1);
-    sum += Math.abs(Math.log((Math.abs(interp(a, u * da)) + EPS) / (Math.abs(interp(b, u * db)) + EPS)));
+    sum += Math.abs(Math.log((Math.abs(interp(a, u * da)) + f) / (Math.abs(interp(b, u * db)) + f)));
   }
   return sum / SAMPLES + 0.5 * Math.abs(Math.log(da / db));
 }
@@ -70,9 +79,14 @@ function rankedByBase(idx, target) {
 function similarGuns(idx, target, { limit = 5 } = {}) {
   const ranked = rankedByBase(idx, target) || [];
   const withCombo = [];
+  const seen = new Set(); // guns that share the very same base curve AND own entry (template copies) are one piece of evidence, not several
   for (const s of ranked) {
     const combo = lastCurve(idx.map.get(keyOf(s.weapon, target.scope, target.grip, target.muzzle, target.stock, target.gesture)));
-    if (combo) withCombo.push({ ...s, combo });
+    if (!combo) continue;
+    const sig = JSON.stringify([s.base, combo]);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    withCombo.push({ ...s, combo });
   }
   return weigh(withCombo.slice(0, Math.max(1, limit)));
 }
@@ -127,36 +141,47 @@ const rulesAllowed = (target) => (c) => R.comboProblems(target.weapon, target.sc
 // Kind of a combination: posture + which of grip / muzzle / stock are fitted ("0|110" = standing, grip and muzzle).
 const kindOf = (g, m, st, ge) => `${ge}|${g ? 1 : 0}${m ? 1 : 0}${st ? 1 : 0}`;
 
-// mean |prediction / truth - 1| over equally spaced fractions of the duration
+// Error of a predicted curve: mean |prediction - truth| over equally spaced fractions of the duration, relative to the mean size of the truth
+// (not point by point: a truth value near 0 would blow it up), plus |ln duration ratio| so a curve of the wrong length is not scored as perfect.
 function curveError(pred, truth) {
   const dp = Math.max(duration(pred), 1);
   const dt = Math.max(duration(truth), 1);
+  const sc = Math.max(scaleOf(truth), EPS);
   let sum = 0;
   const N = 12;
   for (let i = 0; i < N; i++) {
     const u = i / (N - 1);
-    const t = interp(truth, u * dt);
-    sum += Math.abs(interp(pred, u * dp) - t) / (Math.abs(t) + 1e-6);
+    sum += Math.abs(interp(pred, u * dp) - interp(truth, u * dt)) / sc;
   }
-  return sum / N;
+  return sum / N + Math.abs(Math.log(dp / dt));
 }
 
+const median = (xs) => {
+  const a = [...xs].sort((x, y) => x - y);
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
 // How wrong is the coefficient curve for each kind of combination? Measured on every own entry of every gun (the base curves are not
-// combinations). -> Map kind -> { n, mean }. Where the mean is high, an own entry of that kind is worth having.
+// combinations); an entry whose curve is the same as another one's of the same kind (a template copy) counts once, and disabled guns not at all.
+// -> Map kind -> { n, mean, median }. Where the error is high, an own entry of that kind is worth having.
 function kindErrors(idx) {
   const acc = new Map();
   for (const [key, list] of idx.map) {
     const [w, s, g, m, st, ge] = key.split('|').map(Number);
-    if (R.isZeroWeapon(w) || (!g && !m && !st && !ge)) continue;
+    if (R.isZeroWeapon(w) || R.isGunDisabled(w) || (!g && !m && !st && !ge)) continue;
     const comp = R.computedFor(idx, { weapon: w, scope: s, gesture: ge, grip: g, muzzle: m, stock: st });
     if (comp.baseMissing) continue;
-    const e = curveError(comp.curve, list[list.length - 1].recoilValue);
+    const truth = list[list.length - 1].recoilValue;
     const k = kindOf(g, m, st, ge);
-    const a = acc.get(k) || { n: 0, sum: 0 };
-    a.n++; a.sum += e;
+    const a = acc.get(k) || { seen: new Set(), errors: [] };
+    const sig = JSON.stringify([truth, comp.curve]); // same truth AND same estimate = a template copy; same truth with another estimate is a different sample
+    if (a.seen.has(sig)) continue;
+    a.seen.add(sig);
+    a.errors.push(curveError(comp.curve, truth));
     acc.set(k, a);
   }
-  return new Map([...acc].map(([k, a]) => [k, { n: a.n, mean: a.sum / a.n }]));
+  return new Map([...acc].map(([k, a]) => [k, { n: a.errors.length, mean: a.errors.reduce((n, x) => n + x, 0) / a.errors.length, median: median(a.errors) }]));
 }
 
 // Combinations worth adding for target { weapon, scope, gesture } (each one not yet an own entry of this gun):
@@ -197,7 +222,7 @@ function comboCandidates(idx, target, { limit = 8, minError = 0.06, minKindSampl
         total++;
         const gap = gapOf.get(k) || null;
         const ke = kinds.get(kindOf(g, m, st, target.gesture));
-        const expected = ke && ke.n >= minKindSamples ? ke.mean : null;
+        const expected = ke && ke.n >= minKindSamples ? Math.min(ke.median, 1) : null; // capped: a kind can never outrank a gap candidate by error alone
         const strong = Boolean(gap) || (expected != null && expected >= minError); // worth looking at first; the others are still missing combinations
         const popularity = (pop.grip.get(g) || 0) + (pop.muzzle.get(m) || 0) + (pop.stock.get(st) || 0);
         const seen = seenIn.get(k) || 0;
@@ -224,7 +249,10 @@ function comboCandidates(idx, target, { limit = 8, minError = 0.06, minKindSampl
   return { ok: true, candidates: picked, missing: out.map((x) => x.c), similar: gaps.similar, total };
 }
 
-const ratio = (a, b) => (Math.abs(b) < 1e-9 ? 1 : a / b);
+// How much an own entry (a) differs from the coefficient curve (b) at one point, as a multiplier. Against a b that is not near 0 it is a / b; near 0
+// (below `floor`) it continues smoothly as 1 + (a - b) / floor instead of exploding (mirrored for a negative b, so it is continuous on both sides).
+// Kept within CORRECTION.
+const ratio = (a, b, floor) => clamp(Math.abs(b) >= floor ? a / b : 1 + (b < 0 ? -1 : 1) * (a - b) / floor, CORRECTION[0], CORRECTION[1]);
 
 // -> { ok:true, curve, computed, factor:{min,max,mean}, stretch, similar:[{weapon,name,distance,weight}], method:'analog' }
 //    or { ok:false, reason, computed } when there is nothing to learn from (the coefficient curve is still returned)
@@ -241,12 +269,13 @@ function analogCurve(idx, target, opts = {}) {
     const own = R.computedFor(idx, { ...target, weapon: s.weapon }).curve;
     const durE = duration(s.combo);
     const durC = duration(own);
-    return { w: s.weight, own, e: s.combo, durE, durC, rho: durC > 0 ? durE / durC : 1 };
+    return { w: s.weight, own, e: s.combo, durE, durC, floor: Math.max(FLOOR * Math.max(scaleOf(s.combo), scaleOf(own)), EPS), rho: durC > 0 ? clamp(durE / durC, CORRECTION[0], CORRECTION[1]) : 1 };
   });
-  const stretch = pieces.reduce((n, p) => n + p.w * p.rho, 0);
+  // corrections are multipliers, so they are averaged in the log domain (the arithmetic mean of 0.5 and 2 is 1.25, not 1)
+  const stretch = Math.exp(pieces.reduce((n, p) => n + p.w * Math.log(p.rho), 0));
   const factors = computed.map(([t]) => {
     const u = durT > 0 ? t / durT : 0;
-    return pieces.reduce((n, p) => n + p.w * ratio(interp(p.e, u * p.durE), interp(p.own, u * p.durC)), 0);
+    return Math.exp(pieces.reduce((n, p) => n + p.w * Math.log(ratio(interp(p.e, u * p.durE), interp(p.own, u * p.durC), p.floor)), 0));
   });
 
   const curve = [];
@@ -264,4 +293,38 @@ function analogCurve(idx, target, opts = {}) {
   };
 }
 
-module.exports = { interp, distance, similarGuns, similarByBase, comboGaps, kindErrors, comboCandidates, analogCurve, keyOf, duration };
+// ---------------------------------------------------------------- leave-one-out check
+// Hide each own entry (and its template copies on other guns) in turn, rebuild it from the rest with analogCurve and score it against the hidden curve; also score the plain coefficient
+// curve, so the gain of the method is measured, not assumed. Pure over idx (it is not changed: the hidden entry is masked in a read-only view).
+// opts: { limit (similar guns), only(o) -> boolean to restrict which entries are tried, scope/gesture are taken from each entry }
+// -> { n (entries tried), covered (analogCurve gave a curve), computed:{mean,median}, analog:{mean,median} (over the covered ones only), better (share of covered where analog beat computed) }
+function backtest(idx, { limit = 5, only } = {}) {
+  const errC = [];
+  const errA = [];
+  let tried = 0;
+  for (const [key, list] of [...idx.map]) {
+    const [weapon, scope, grip, muzzle, stock, gesture] = key.split('|').map(Number);
+    if (R.isZeroWeapon(weapon) || R.isGunDisabled(weapon) || (!grip && !muzzle && !stock && !gesture)) continue;
+    const o = { weapon, scope, grip, muzzle, stock, gesture };
+    if (only && !only(o)) continue;
+    const truth = list[list.length - 1].recoilValue;
+    tried++;
+    // Hide the entry, and also the same entry of any gun that is a template copy of this one (same base curve and same own entry): it would hand the answer back.
+    const hidden = new Set([key]);
+    const sigTruth = JSON.stringify(truth);
+    const sigBase = JSON.stringify(lastCurve(idx.map.get(keyOf(weapon, scope, 0, 0, 0, 0))));
+    for (let w = 0; w < idx.groups.length; w++) {
+      if (w === weapon) continue;
+      const k2 = keyOf(w, scope, grip, muzzle, stock, gesture);
+      if (JSON.stringify(lastCurve(idx.map.get(k2))) === sigTruth && JSON.stringify(lastCurve(idx.map.get(keyOf(w, scope, 0, 0, 0, 0)))) === sigBase) hidden.add(k2);
+    }
+    const r = analogCurve({ groups: idx.groups, map: { get: (k) => (hidden.has(k) ? undefined : idx.map.get(k)) } }, o, { limit }); // analogCurve only reads idx.map.get
+    if (!r.ok) continue;
+    errC.push(curveError(r.computed, truth));
+    errA.push(curveError(r.curve, truth));
+  }
+  const stat = (xs) => (xs.length ? { mean: xs.reduce((n, x) => n + x, 0) / xs.length, median: median(xs) } : null);
+  return { n: tried, covered: errC.length, computed: stat(errC), analog: stat(errA), better: errC.length ? errA.filter((x, i) => x < errC[i]).length / errC.length : 0 };
+}
+
+module.exports = { interp, distance, similarGuns, similarByBase, comboGaps, kindErrors, comboCandidates, analogCurve, backtest, keyOf, duration };
