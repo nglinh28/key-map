@@ -109,3 +109,46 @@ test('real backup: every component of every document can be described and placed
   }
   assert.ok(count >= 100, `components checked: ${count}`);
 });
+
+test('legend: the classes that occur, counted, in legend order', () => {
+  const comps = [
+    { 'base:componentIdentifier': 'com.zjx.app:ntp' }, { 'base:componentIdentifier': 'com.zjx.app:joystick' }, { 'base:componentIdentifier': 'com.zjx.app:ntp' },
+    { 'base:componentIdentifier': 'com.zjx.app:mainView' },
+  ];
+  assert.deepEqual(L.legend('keymap', comps), [{ cls: 'joystick', name: 'Joystick', count: 1 }, { cls: 'ntp', name: 'Chạm', count: 2 }, { cls: 'mainview', name: 'Màn hình chính', count: 1 }]);
+  assert.deepEqual(L.legend('keymap', []), []);
+  assert.deepEqual(L.legend('recognition', [{ type: 4 }, { type: 5 }, { type: 1 }]), [{ cls: 'button', name: 'Nút', count: 1 }, { cls: 'weapon', name: 'Ô súng', count: 2 }]);
+});
+
+test('labelOf: the whole label, never cut', () => {
+  const ntp = (first, second) => ({ 'base:componentIdentifier': 'com.zjx.app:ntp', 'singlehotkeyproperty:first': first, 'singlehotkeyproperty:second': second });
+  assert.equal(L.labelOf('keymap', ntp(65535, -1)), 'Chuột trái');
+  assert.equal(L.labelOf('keymap', ntp(-32, 4)), 'Ctrl trái + A');
+  assert.equal(L.labelOf('keymap', ntp(-1, -1)), 'Chạm', 'no key: the short name of the type');
+  assert.equal(L.labelOf('keymap', { 'base:componentIdentifier': 'com.zjx.app:joystick', 'joystick:northKeyCode': 26 }), 'Joystick');
+  assert.equal(L.labelOf('recognition', { type: 8 }), '8');
+});
+
+test('listRows and matchRow: one row per component, found without case or accents, every word must match', () => {
+  const comps = [
+    { 'base:componentIdentifier': 'com.zjx.app:ntp', 'base:x': 10.4, 'base:y': 20.6, 'base:width': 100, 'base:height': 50, 'singlehotkeyproperty:first': 65535, 'singlehotkeyproperty:second': -1 },
+    { 'base:componentIdentifier': 'com.zjx.app:ntp', 'base:x': 0, 'base:y': 0, 'base:width': 5, 'base:height': 5, 'singlehotkeyproperty:first': 44, 'singlehotkeyproperty:second': -1 },
+    null,
+  ];
+  const rows = L.listRows('keymap', comps);
+  assert.equal(rows.length, 3);
+  assert.deepEqual([rows[0].i, rows[0].x, rows[0].y, rows[0].w, rows[0].h, rows[0].cls, rows[0].keys], [0, 10, 21, 100, 50, 'ntp', ['Chuột trái']]);
+  assert.equal(L.listRows('keymap', comps, 'center')[0].x, -40);
+  assert.equal(L.matchRow(rows[0], 'CHUOT trai'), true);
+  assert.equal(L.matchRow(rows[0], 'chuot phai'), false);
+  assert.equal(L.matchRow(rows[1], 'space'), true);
+  assert.equal(L.matchRow(rows[1], 'cham'), true, 'the class name counts');
+  assert.equal(L.matchRow(rows[1], '   '), true, 'nothing typed: everything matches');
+});
+
+test('fontUnits: about px pixels on the page, within bounds, and safe on a bad scale', () => {
+  assert.equal(Math.round(L.fontUnits(0.5, 13)), 26);
+  assert.equal(L.fontUnits(10, 13), 22);
+  assert.equal(L.fontUnits(0.01, 13), 140);
+  for (const bad of [0, -1, NaN, Infinity, undefined]) assert.equal(L.fontUnits(bad), 22);
+});
