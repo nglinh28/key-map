@@ -1707,7 +1707,16 @@
     });
     if (ok !== 'save') return;
     const savedKey = recoilKey(o);
-    await putRecoilItem(edit.doc, `Đã lưu thay đổi độ giật vào ${CACHE_FILE} trên server`, () => {}, () => { rc.drafts.delete(savedKey); if (rc.customCombos) rc.customCombos.delete(RL.comboKey(o)); });
+    // the same window with steps as "Lưu tất cả" and the other long writes: what is being done, and how far it is
+    const bar = window.Ui.progressDialog({ title: `Đang lưu ${checked.curve.length} mốc độ giật…`, steps: ['Áp dụng thay đổi', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 20, detail: `Đã áp dụng đường cong vào bản sao của mục (${edit.created ? 'tạo mục riêng mới' : 'sửa mục riêng'})…` });
+      await nextFrame();
+      const saved = await putRecoilItem(edit.doc, `Đã lưu thay đổi độ giật vào ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => { rc.drafts.delete(savedKey); if (rc.customCombos) rc.customCombos.delete(RL.comboKey(o)); });
+      if (saved) await bar.finish('Đã lưu độ giật vào server.'); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không lưu được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
   }
 
   async function deleteRecoil(ix, o) {
