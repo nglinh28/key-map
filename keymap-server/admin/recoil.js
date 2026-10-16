@@ -395,6 +395,57 @@
     return { magazine: f.magazine, interval: f.interval, emptyMs: emptyMsOf(f), source: edited ? 'edited' : 'default', sourceLabel: edited ? SOURCES.edited : SOURCES.fire, note: edited ? '' : f.note || '', edited };
   }
 
+  // ---------------------------------------------------------------- the even time axis of a curve
+  // n points over T: point i at round(i x T / (n - 1)), whole ms, strictly increasing (a T too small for n pushes points up by 1 ms, so the last one
+  // is then beyond T rather than two points sharing a time).
+  function evenTimes(T, n) {
+    if (!(n >= 1)) return [];
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0 : Math.round((i * T) / (n - 1));
+      out.push(i === 0 ? t : Math.max(t, out[i - 1] + 1));
+    }
+    return out;
+  }
+  // value of a curve at time t: linear between points, flat before the first and after the last
+  function valueAt(curve, t) {
+    if (t <= curve[0][0]) return curve[0][1];
+    for (let i = 1; i < curve.length; i++) {
+      if (t <= curve[i][0]) {
+        const [t0, v0] = curve[i - 1];
+        const [t1, v1] = curve[i];
+        return t1 === t0 ? v1 : v0 + ((v1 - v0) * (t - t0)) / (t1 - t0);
+      }
+    }
+    return curve[curve.length - 1][1];
+  }
+  // n points evenly over T that follow the same shape: the old curve is read at t / T x its own duration, so both end values stay as they are
+  function resample(curve, n, T) {
+    if (!Array.isArray(curve) || !curve.length || !(n >= 1)) return [];
+    const dur = curve[curve.length - 1][0];
+    const times = evenTimes(T, n);
+    const round4 = (v) => Math.round(v * 10000) / 10000;
+    if (curve.length === 1 || !(dur > 0)) return times.map((t) => [t, round4(curve[0][1])]);
+    return times.map((t, i) => [t, round4(i === 0 ? curve[0][1] : i === n - 1 ? curve[curve.length - 1][1] : valueAt(curve, (i / (n - 1)) * dur))]);
+  }
+  const retime = (curve, T) => resample(curve, curve.length, T);
+  // the values as they are, the times on the even grid (what the AI's answer gets)
+  const withEvenTimes = (curve, T) => { const t = evenTimes(T, curve.length); return curve.map(([, v], i) => [t[i], v]); };
+  // after the point at `index` was edited: the later points are spread evenly from it to T (in place). -> how many points changed
+  function spreadAfter(curve, index, T) {
+    if (!Array.isArray(curve) || !Number.isInteger(index) || index < 0 || index >= curve.length - 1 || !(T > curve[index][0])) return 0;
+    const t0 = curve[index][0];
+    const left = curve.length - 1 - index;
+    let prev = t0;
+    for (let j = index + 1; j < curve.length; j++) {
+      prev = Math.max(Math.round(t0 + ((j - index) * (T - t0)) / left), prev + 1);
+      curve[j][0] = prev;
+    }
+    return left;
+  }
+  // how far the length of a curve is from T (0.05 = 5%)
+  const durationGap = (curve, T) => (T > 0 ? Math.round(Math.abs((curve.length ? curve[curve.length - 1][0] : 0) / T - 1) * 1e6) / 1e6 : 0);
+
   const MAX_POINTS = 10000;
 
   // A curve typed on the page -> { ok, curve } with numbers sorted by time, or { ok:false, error }.
@@ -646,5 +697,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, evenTimes, resample, retime, withEvenTimes, spreadAfter, durationGap, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });

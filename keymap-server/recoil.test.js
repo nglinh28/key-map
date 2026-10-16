@@ -506,3 +506,80 @@ test('fireOf: a disabled gun has none, unless the caller asks to ignore that', (
   assert.equal(R.fireOf('M416', { ignoreDisabled: true }).emptyMs, 2465);
   assert.equal(R.fireOf('MORTAR', { ignoreDisabled: true }), null, 'a zero gun never has it');
 });
+
+// ---- the even time axis
+test('evenTimes: n points spread over T in whole ms, strictly increasing, the last one at T', () => {
+  assert.deepEqual(R.evenTimes(2465, 11), [0, 247, 493, 740, 986, 1233, 1479, 1726, 1972, 2219, 2465]);
+  assert.deepEqual(R.evenTimes(1000, 2), [0, 1000]);
+  assert.deepEqual(R.evenTimes(5, 1), [0]);
+  assert.deepEqual(R.evenTimes(5, 0), []);
+  const t = R.evenTimes(100, 60);
+  assert.equal(t[59], 100);
+  for (let i = 1; i < t.length; i++) assert.ok(t[i] > t[i - 1], `point ${i}`);
+});
+
+test('evenTimes: a T too small for n pushes the points up by 1 ms rather than repeating a time (the last one is then beyond T)', () => {
+  assert.deepEqual(R.evenTimes(0, 3), [0, 1, 2]);
+  const t = R.evenTimes(10, 20);
+  for (let i = 1; i < t.length; i++) assert.ok(t[i] > t[i - 1], `point ${i}`);
+  assert.equal(t[19], 19);
+});
+
+test('resample: evenly spaced, shape kept (linear on the normalised time), both end values exact', () => {
+  const r = R.resample([[0, 0], [1000, 10]], 5, 2000);
+  assert.deepEqual(r.map((p) => p[0]), [0, 500, 1000, 1500, 2000]);
+  assert.deepEqual(r.map((p) => p[1]), [0, 2.5, 5, 7.5, 10]);
+  const odd = [[0, 3.3], [100, 4], [900, 9], [1000, 7.7]]; // uneven times: the values are read at t / T x old duration
+  for (const n of [2, 3, 7, 25]) {
+    const q = R.resample(odd, n, 2465);
+    assert.equal(q.length, n);
+    assert.equal(q[0][1], 3.3);
+    assert.equal(q[n - 1][1], 7.7);
+    assert.equal(q[n - 1][0], 2465);
+  }
+});
+
+test('resample: adding then removing points keeps a smooth curve within 3% of its largest value', () => {
+  const para = Array.from({ length: 11 }, (_, i) => [i * 100, 100 * (i / 10) ** 2]);
+  const back = R.resample(R.resample(para, 16, 1000), 11, 1000);
+  assert.deepEqual(back.map((p) => p[0]), para.map((p) => p[0]));
+  const worst = Math.max(...back.map((p, i) => Math.abs(p[1] - para[i][1]))) / 100;
+  assert.ok(worst < 0.03, `worst ${worst}`);
+});
+
+test('resample: a curve of one point, of zero duration, or nothing never gives NaN', () => {
+  assert.deepEqual(R.resample([[0, 7]], 4, 1000).map((p) => p[1]), [7, 7, 7, 7]);
+  for (const bad of [[[0, 1], [0, 2]], [[5, 1], [5, 2], [5, 3]]]) {
+    const r = R.resample(bad, 3, 100);
+    assert.equal(r.length, 3);
+    assert.ok(r.every(([t, v]) => Number.isFinite(t) && Number.isFinite(v)), JSON.stringify(r));
+  }
+  assert.deepEqual(R.resample([], 3, 100), []);
+});
+
+test('retime keeps the number of points; withEvenTimes keeps the values as they are', () => {
+  const c = [[0, 1], [10, 5], [11, 9]];
+  assert.equal(R.retime(c, 1000).length, 3);
+  assert.deepEqual(R.retime([[0, 0], [1000, 10]], 1000), [[0, 0], [1000, 10]]);
+  assert.deepEqual(R.withEvenTimes(c, 1000), [[0, 1], [500, 5], [1000, 9]]);
+  assert.deepEqual(c, [[0, 1], [10, 5], [11, 9]], 'the input is not changed');
+});
+
+test('spreadAfter: the points after one are spread evenly from it to T, in place; nothing happens when it is already at or beyond T', () => {
+  const c = [[0, 1], [100, 2], [150, 3], [160, 4], [170, 5]];
+  assert.equal(R.spreadAfter(c, 1, 1000), 3);
+  assert.deepEqual(c.map((p) => p[0]), [0, 100, 400, 700, 1000]);
+  const d = [[0, 1], [1000, 2], [1100, 3]];
+  assert.equal(R.spreadAfter(d, 1, 1000), 0);
+  assert.deepEqual(d.map((p) => p[0]), [0, 1000, 1100]);
+  assert.equal(R.spreadAfter(d, 9, 1000), 0);
+  assert.equal(R.spreadAfter(d, -1, 1000), 0);
+});
+
+test('durationGap: how far the length of a curve is from T (0.05 = 5%)', () => {
+  assert.equal(R.durationGap([[0, 0], [2000, 1]], 2000), 0);
+  assert.equal(R.durationGap([[0, 0], [4000, 1]], 2000), 1);
+  assert.equal(R.durationGap([[0, 0], [1900, 1]], 2000), 0.05);
+  assert.equal(R.durationGap([[0, 0], [1900, 1]], 0), 0);
+  assert.equal(R.durationGap([], 2000), 1);
+});
