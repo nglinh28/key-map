@@ -1655,12 +1655,17 @@
       type: 'button', class: `btn small ${audit.length ? '' : 'ghost'}`, onclick: guard(() => showAuditModal(ix)),
       title: audit.length ? 'Liệt kê các mục riêng không đúng bảng phụ kiện chuẩn (cả các súng khác) và chọn xóa' : 'Mọi mục riêng đều đúng bảng phụ kiện chuẩn',
     }, icon(audit.length ? 'alert' : 'check'), `Kiểm tra theo chuẩn${audit.length ? ` (${audit.length})` : ''}`);
+    const offList = RL.disabledEntries(ix.idx);
+    const offBtn = el('button', {
+      type: 'button', class: `btn small ${offList.length ? '' : 'ghost'}`, disabled: !offList.length, onclick: guard(() => showDisabledGunsModal(offList)),
+      title: offList.length ? 'Xóa các tổ hợp của những súng đã tắt trong Tiêu chuẩn súng' : 'Không có tổ hợp nào của súng đã tắt',
+    }, icon('trash'), `Xóa súng đã tắt${offList.length ? ` (${offList.length})` : ''}`);
     const auditNote = mine.length ? alert('warn', el('span', {}, `${RL.weaponLabel(rc.weapon)} có ${mine.length} mục riêng không đúng chuẩn phụ kiện (${[...new Set(mine.flatMap((e) => e.problems.map((p) => SLOT_VN[p.slot])))].join(', ')}). `,
       el('button', { type: 'button', class: 'btn small', onclick: guard(() => showAuditModal(ix)) }, 'Xem và xóa'))) : null;
     const disabledNote = gunDisabled ? alert('warn', el('span', {}, `Súng ${RL.weaponLabel(rc.weapon)} (${RL.WEAPONS[rc.weapon]}) đã bị TẮT KHÔNG SỬ DỤNG trong Tiêu chuẩn súng. Các chức năng Thêm tổ hợp, Tạo đủ cho cả súng, Quét tất cả và AI gợi ý mốc bị vô hiệu hóa cho súng này.`)) : null;
     const rule = RL.describeAttachments(rc.weapon);
     const selectors = el('div', { class: 'card' },
-      el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), auditBtn, refFieldsBtn),
+      el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), offBtn, auditBtn, refFieldsBtn),
       el('div', { class: 'muted text-sm mb-2' }, 'Ống ngắm'),
       el('div', { class: 'chips' }, mainScopes.map(scopeChip)),
       el('details', { class: 'disclosure flat' }, el('summary', {}, `Ống ngắm khác (${otherScopes.length}) và phụ kiện ${RL.weaponLabel(rc.weapon)} lắp được`),
@@ -1937,7 +1942,30 @@
     await deleteAudited(all.filter((e) => sel.has(auditKey(e))));
   }
 
-  async function deleteAudited(list) {
+  // the own entries of guns switched off in "Tiêu chuẩn súng": tick the guns, then the same deletion as the check against the table
+  async function showDisabledGunsModal(all) {
+    const byGun = new Map();
+    for (const e of all) byGun.set(e.weapon, (byGun.get(e.weapon) || 0) + 1);
+    const on = new Set(byGun.keys());
+    const deleteBtn = el('button', { type: 'button', class: 'btn danger-fill', onclick: () => ctl && ctl.close('delete') });
+    let ctl = null;
+    const paint = () => { const n = all.filter((e) => on.has(e.weapon)).length; deleteBtn.replaceChildren(icon('trash'), `Xóa ${n} mục đã chọn`); deleteBtn.disabled = n === 0; };
+    const rows = [...byGun].map(([w, n]) => el('label', { class: 'audit-item' },
+      el('input', { type: 'checkbox', checked: true, onchange: (e) => { if (e.target.checked) on.add(w); else on.delete(w); paint(); } }),
+      el('span', {}, RL.weaponLabel(w), el('span', { class: 'muted' }, ` — ${n} mục riêng`))));
+    paint();
+    const choice = await showModal({
+      title: 'Xóa tổ hợp của súng đã tắt', tone: 'warn',
+      body: [el('p', {}, `${all.length} mục riêng của ${byGun.size} súng đang tắt trong Tiêu chuẩn súng. Súng tắt không dùng trong app nên các mục này là dư. Chọn súng cần dọn:`),
+        el('div', { class: 'audit-list' }, rows), el('div', { class: 'row' }, deleteBtn)],
+      actions: [{ id: 'close', label: 'Đóng' }],
+      onOpen: (c) => { ctl = c; },
+    });
+    if (choice !== 'delete') return;
+    await deleteAudited(all.filter((e) => on.has(e.weapon)), 'của súng đã tắt');
+  }
+
+  async function deleteAudited(list, what = 'sai chuẩn') {
     if (!(await discardOk())) return;
     const doc = S.data.analysis.docs.get(S.sel.id);
     if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
@@ -1945,7 +1973,7 @@
     for (const e of list) perGun.set(e.weapon, (perGun.get(e.weapon) || 0) + 1);
     const lines = [...perGun].slice(0, 12).map(([w, n]) => el('li', {}, `${RL.weaponLabel(w)}: ${n} mục`));
     const go = await showModal({
-      title: `Xóa ${list.length} mục riêng sai chuẩn?`, tone: 'error',
+      title: `Xóa ${list.length} mục riêng ${what}?`, tone: 'error',
       body: [
         el('p', {}, `Sẽ xóa ${list.length} mục riêng (kể cả các bản trùng khóa) của ${perGun.size} súng khỏi bộ dữ liệu của mục này trên server:`),
         el('ul', {}, lines),
@@ -1958,13 +1986,13 @@
     if (go !== 'go') return;
     if (!(await oldSourceOk())) return;
 
-    const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} mục sai chuẩn…`, steps: ['Gom các mục cần xóa', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} mục ${what}…`, steps: ['Gom các mục cần xóa', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
     try {
       bar.update({ step: 0, pct: 10, detail: `Đang gom ${list.length} mục của ${perGun.size} súng…` });
       await nextFrame();
       const res = RL.removeEntries(doc, rc.mode, list);
       bar.update({ step: 0, pct: 45, detail: `Đã gom ${res.removed} mục (${res.keys} tổ hợp)` });
-      const saved = await putRecoilItem(res.doc, `Đã xóa ${res.removed} mục sai chuẩn khỏi ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => {
+      const saved = await putRecoilItem(res.doc, `Đã xóa ${res.removed} mục ${what} khỏi ${CACHE_FILE} trên server`, (step, pct, detail) => bar.update({ step, pct, detail }), () => {
         rc.picked = null;
         for (const e of list) rc.drafts.delete(recoilKey(e));
       });

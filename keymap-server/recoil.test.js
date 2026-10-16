@@ -583,3 +583,26 @@ test('durationGap: how far the length of a curve is from T (0.05 = 5%)', () => {
   assert.equal(R.durationGap([[0, 0], [1900, 1]], 0), 0);
   assert.equal(R.durationGap([], 2000), 1);
 });
+
+test('disabledEntries: the own entries of the guns switched off, with their copies; removeEntries takes every copy', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const doc = dataset((g) => {
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 70]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 71]]));
+    g[M416].v.push(entry(0, 0, 0, S('X1'), 1, [[0, 60]]));
+  });
+  const idx = R.indexData(doc);
+  try {
+    assert.deepEqual(R.disabledEntries(idx), []);
+    R.setDisabledGuns(['M416']);
+    const list = R.disabledEntries(idx);
+    assert.deepEqual(list.map((e) => [e.weapon, e.scope, e.gesture, e.copies]), [[M416, 1, 0, 2], [M416, 1, 1, 1]]);
+    const res = R.removeEntries({ recoil_data: doc }, 'raw', list);
+    assert.equal(res.removed, 3);
+    assert.equal(res.keys, 2);
+    const ds = R.pickDataset(res.doc, 'raw');
+    assert.equal(ds.data[M416].v.length, 0);
+    assert.equal(ds.data[AUG].v.length, 1, 'other guns keep their entries');
+  } finally { R.setDisabledGuns([]); }
+});
