@@ -20,8 +20,8 @@ function build(guns) {
   return R.indexData(groups);
 }
 const BASE = [[0, 100], [100, 80], [200, 60]];
-// AUG and M416 have default fire data: the tests below are about guns WITHOUT it (the old stretch rule), unless one sets its own
-test.beforeEach(() => R.setFireOverrides({ AUG: null, M416: null }));
+// the guns used below (AUG, M416, Scar, AKM...) have default fire data: the tests are about guns WITHOUT it (the old stretch rule), unless one sets its own
+test.beforeEach(() => R.setFireOverrides(Object.fromEntries(Object.keys(R.FIRE_DEFAULTS).map((c) => [c, null])))); // no gun has fire data unless a test gives it
 test.afterEach(() => R.setFireOverrides({}));
 const target = (o = {}) => ({ weapon: W('AUG'), scope: SC, gesture: 0, grip: 0, muzzle: MUZ, stock: 0, ...o });
 const near = (a, b, eps = 1e-3) => Math.abs(a - b) < eps;
@@ -267,4 +267,132 @@ test('analogCurve: a gun without fire data keeps the old stretch rule (times fol
   const r = S.analogCurve(idx, target());
   assert.deepEqual(r.curve.map((p) => p[0]), [0, 50, 200]);
   assert.ok(near(r.stretch, 1, 1e-9));
+});
+
+// ---- robustness near zero values, template copies, and the leave-one-out check
+test('distance: a point at ~0 on one curve only is a modest gap, not an explosion', () => {
+  const a = [[0, 0], [500, 2], [1000, 4]];
+  const b = [[0, 0.3], [500, 2], [1000, 4]];
+  const c = [[0, 0], [500, 2.2], [1000, 4.4]];
+  assert.ok(S.distance(a, b) < 0.4, `${S.distance(a, b)}`);
+  assert.ok(S.distance(a, b) > S.distance(a, c), 'still a difference');
+  assert.equal(S.distance(a, a), 0);
+});
+
+test('analogCurve: a coefficient curve at ~0 does not blow the factor up, and the factor stays within 0.5..2', () => {
+  const BASE0 = [[0, 0.001], [100, 80], [200, 60]];
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE0)],
+    M416: [E(0, 0, 0, 0, BASE0), E(0, MUZ, 0, 0, [[0, 0.5], [100, 72], [200, 54]])],
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.factor.max <= 2 + 1e-9 && r.factor.min >= 0.5 - 1e-9, JSON.stringify(r.factor));
+  assert.ok(r.factor.max < 1.5, `the floor, not the clamp, keeps it modest: ${JSON.stringify(r.factor)}`);
+  assert.ok(r.curve[0][1] < 1, `first point stays near 0: ${r.curve[0][1]}`);
+  assert.ok(r.curve.every(([, v]) => Number.isFinite(v)));
+});
+
+test('analogCurve: corrections are averaged as multipliers (0.5 and 2 cancel out)', () => {
+  const real = (k) => E(0, MUZ, 0, 0, times(BASE, 0.9 * k));
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE)],
+    M416: [E(0, 0, 0, 0, BASE), real(0.5)],
+    Scar: [E(0, 0, 0, 0, BASE), real(2)],
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  r.curve.forEach(([, v], i) => assert.ok(near(v, BASE[i][1] * 0.9, 1e-6), `${v}`));
+});
+
+test('similarGuns: guns with the same base curve and the same own entry count once', () => {
+  const combo = E(0, MUZ, 0, 0, times(BASE, 0.9));
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BASE)],
+    M416: [E(0, 0, 0, 0, BASE), combo],
+    Scar: [E(0, 0, 0, 0, BASE), combo],
+    AKM: [E(0, 0, 0, 0, times(BASE, 1.3)), E(0, MUZ, 0, 0, times(BASE, 1.2))],
+  });
+  const sims = S.similarGuns(idx, target());
+  assert.equal(sims.length, 2);
+  assert.ok(near(sims.reduce((n, s) => n + s.weight, 0), 1, 1e-9));
+});
+
+test('kindErrors: template copies count once, a ~0 truth value does not blow the error up, disabled guns are skipped', () => {
+  const idx = build({
+    M416: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+    Scar: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+    AKM: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, [[0, 0], [100, 72], [200, 54]])],
+  });
+  const k = S.kindErrors(idx).get(`0|010`);
+  assert.equal(k.n, 1, 'identical truth curves are one sample');
+  assert.ok(k.median < 1, `${k.median}`);
+  R.setDisabledGuns(['M416', 'Scar', 'AKM']);
+  try { assert.equal(S.kindErrors(idx).size, 0); } finally { R.setDisabledGuns([]); }
+});
+
+test('backtest: hides each own entry, rebuilds it from the others, and beats the plain coefficient curve when similar guns agree', () => {
+  // every gun deviates from its coefficient curve by the same 0.8 (compensator) and 0.7 (vertical grip)
+  const guns = {};
+  ['M416', 'Scar', 'AKM', 'M762', 'QBZ', 'G36C'].forEach((n, i) => {
+    const k = 1 + i * 0.03;
+    guns[n] = [E(0, 0, 0, 0, times(BASE, k)), E(0, MUZ, 0, 0, times(BASE, k * 0.9 * 0.8)), E(VERT, 0, 0, 0, times(BASE, k * 0.85 * 0.7))];
+  });
+  const idx = build(guns);
+  const r = S.backtest(idx);
+  assert.ok(idx.map.get(`${W('M416')}|${SC}|0|${MUZ}|0|0`), 'the index is not changed');
+  assert.equal(r.n, 12);
+  assert.equal(r.covered, 12);
+  assert.ok(r.analog.mean < 0.01, JSON.stringify(r));
+  assert.ok(r.computed.mean > 0.2, JSON.stringify(r));
+  assert.equal(r.better, 1);
+  assert.equal(S.backtest(idx, { only: (o) => o.grip === VERT }).n, 6);
+});
+
+test('kindErrors: the same truth curve with another estimate is a separate sample', () => {
+  const truth = [[0, 0], [100, 72], [200, 54]];
+  const idx = build({
+    M416: [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, truth)],
+    Scar: [E(0, 0, 0, 0, times(BASE, 1.4)), E(0, MUZ, 0, 0, truth)],
+  });
+  assert.equal(S.kindErrors(idx).get('0|010').n, 2);
+});
+
+test('kindErrors: median resists an outlier, and comboCandidates caps the error at 1 so a gap candidate always ranks first', () => {
+  const guns = {};
+  ['M416', 'Scar', 'AKM', 'M762', 'QBZ'].forEach((n, i) => {
+    const bad = i === 0 ? 50 : 1; // one wild entry among exact ones
+    guns[n] = [E(0, 0, 0, 0, BASE), E(0, MUZ, 0, 0, times(BASE, 0.9 * bad * (1 + i * 0.001)))];
+  });
+  const idx = build(guns);
+  const k = S.kindErrors(idx).get('0|010');
+  assert.ok(k.mean > 10 * k.median && k.median < 0.01, JSON.stringify(k));
+  const c = S.comboCandidates(idx, target({ muzzle: 0 }), { allowed: () => true, minKindSamples: 1, minError: 0.0001 });
+  assert.ok(c.candidates.every((x) => x.expectedError == null || x.expectedError <= 1));
+});
+
+test('ratio floor works for a negative coefficient value too (continuous at -floor)', () => {
+  const BN = [[0, -0.001], [100, -80], [200, -60]];
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, BN)],
+    M416: [E(0, 0, 0, 0, BN), E(0, MUZ, 0, 0, [[0, -0.5], [100, -72], [200, -54]])],
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.curve.every(([, v]) => Number.isFinite(v)) && r.factor.max < 1.5, JSON.stringify(r.factor));
+});
+
+test('backtest: template copies do not leak the hidden entry, and entries nobody else has are counted as not covered', () => {
+  const combo = (k) => E(0, MUZ, 0, 0, times(BASE, k));
+  const idx = build({
+    M416: [E(0, 0, 0, 0, BASE), combo(0.7)],
+    Scar: [E(0, 0, 0, 0, BASE), combo(0.7)], // exact copy of M416: must not give M416's answer away
+    AKM: [E(0, 0, 0, 0, times(BASE, 1.3)), combo(1.3 * 0.9 * 0.6)], // deviates from its own coefficient curve by 0.6
+    AUG: [E(0, 0, 0, 0, BASE), E(VERT, 0, 0, 0, times(BASE, 0.8))], // nobody else has VERT
+  });
+  const r = S.backtest(idx, { only: (o) => o.muzzle === MUZ });
+  assert.equal(r.n, 3);
+  assert.ok(r.analog.mean > 0.05, `copies masked, so the answer is not exact: ${JSON.stringify(r)}`);
+  const all = S.backtest(idx);
+  assert.ok(all.covered < all.n, JSON.stringify(all));
 });
