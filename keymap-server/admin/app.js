@@ -693,15 +693,15 @@
     const autorun = state.autorun || '';
     state.autorun = '';
     for (const d of [...pickedDays]) if (!days.some((x) => x.date === d)) pickedDays.delete(d);
-    const refreshBar = () => { const n = pickedDays.size; delBtn.disabled = !n; delBtn.replaceChildren(icon('trash'), n ? `Xóa ${n} ngày đã chọn` : 'Xóa ngày đã chọn'); allBox.checked = n > 0 && n === days.length; };
+    const refreshBar = () => { const n = pickedDays.size; delBtn.disabled = !n; delBtn.replaceChildren(icon('trash'), n ? `Xóa ${n} ngày đã chọn` : 'Xóa ngày đã chọn'); allBox.checked = n > 0 && n === days.length - 1; };
     const item = (d, i) => el('li', { class: 't-item' }, el('span', { class: `t-dot ${i === 0 ? 'ok' : ''}`, 'aria-hidden': 'true' }),
       el('div', { class: 't-head' },
-        el('input', { type: 'checkbox', class: 'day-pick', 'aria-label': `Chọn ngày ${d.date} để xóa`, checked: pickedDays.has(d.date), onchange: (e) => { if (e.target.checked) pickedDays.add(d.date); else pickedDays.delete(d.date); refreshBar(); } }),
+        i === 0 ? el('input', { type: 'checkbox', class: 'day-pick', disabled: true, title: 'Ngày mới nhất được tạo lại ngay nên không xóa', 'aria-label': 'Ngày mới nhất không xóa được' }) : el('input', { type: 'checkbox', class: 'day-pick', 'aria-label': `Chọn ngày ${d.date} để xóa`, checked: pickedDays.has(d.date), onchange: (e) => { if (e.target.checked) pickedDays.add(d.date); else pickedDays.delete(d.date); refreshBar(); } }),
         el('span', { class: 't-title' }, d.date), i === 0 ? badge('Mới nhất', 'ok') : null,
         d.databases ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => showDay(d.date)) }, icon('eye'), 'Xem file') : null,
-        el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => deleteDays([d])) }, icon('trash'), 'Xóa')),
+        i === 0 ? null : el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => deleteDays([d])) }, icon('trash'), 'Xóa')),
       el('div', { class: 't-meta' }, `${d.databases} file · ${fmtBytes(d.bytes)} · cập nhật ${clockDateTime(d.updated_at)}${d.last_actor ? ` bởi ${d.last_actor}` : ''}`));
-    const allBox = el('input', { type: 'checkbox', 'aria-label': 'Chọn tất cả các ngày', onchange: (e) => { pickedDays.clear(); if (e.target.checked) for (const d of days) pickedDays.add(d.date); for (const b of document.querySelectorAll('.day-pick')) b.checked = e.target.checked; refreshBar(); } });
+    const allBox = el('input', { type: 'checkbox', 'aria-label': 'Chọn tất cả các ngày', onchange: (e) => { pickedDays.clear(); if (e.target.checked) for (const d of days.slice(1)) pickedDays.add(d.date); for (const b of document.querySelectorAll('.day-pick:not(:disabled)')) b.checked = e.target.checked; refreshBar(); } });
     const delBtn = el('button', { type: 'button', class: 'btn small danger', onclick: guard(() => deleteDays(days.filter((d) => pickedDays.has(d.date)))) });
     const keepBtn = el('button', { type: 'button', class: 'btn small', disabled: days.length < 2, onclick: guard(async () => {
       const input = el('input', { type: 'number', min: '1', max: String(days.length - 1), value: String(Math.min(7, days.length - 1)), 'aria-label': 'Số ngày giữ lại' });

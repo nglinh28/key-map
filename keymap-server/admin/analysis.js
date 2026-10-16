@@ -88,7 +88,8 @@
     const ok = await showModal({
       title: 'Lưu từ một mốc cũ?', tone: 'danger',
       body: [el('p', {}, `Bạn đang xem ${srcLabel()}. Lưu sẽ thay TOÀN BỘ ${CACHE_FILE} mới nhất trên server bằng bản này cộng chỉnh sửa của bạn: mọi thay đổi sau mốc này sẽ mất khỏi bản mới nhất.`),
-        el('p', { class: 'muted' }, 'Bản mới nhất hiện tại vẫn nằm trong lịch sử (tối đa 10 bản) để khôi phục.')],
+        S.cmds.some((c) => c.status === 'pending') ? el('p', {}, 'Có lệnh xóa mục đang chờ máy tính bảng nhận: các mục đó có thể xuất hiện lại trên server khi lưu, rồi bị máy tính bảng xóa sau.') : null,
+        el('p', { class: 'muted' }, 'Bản mới nhất hiện tại vẫn nằm trong lịch sử (tối đa 10 bản) để khôi phục. Bản nháp chưa lưu của mốc khác đã bị bỏ khi đổi nguồn.')],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Tôi hiểu, tiếp tục', danger: true }],
     });
     return ok === 'go';
@@ -185,6 +186,7 @@
 
   async function loadRefs(day) {
     S.refs = new Map();
+    if (day === null) return; // an older version of the file: the refs file has no matching version
     try {
       const name = encodeURIComponent(REFS_FILE);
       const f = await api('GET', day ? `/sync/backups/${day}/databases/${name}` : `/sync/databases/${name}`);
@@ -219,7 +221,7 @@
       const t0 = performance.now();
       const parsed = CX.parse(file.text);
       S.data = { file, parsed, analysis: CX.analyze(parsed), ms: Math.round(performance.now() - t0) };
-      await Promise.all([loadRefs(versionOf() ? '' : S.src), loadCommands()]);
+      await Promise.all([loadRefs(versionOf() ? null : S.src), loadCommands()]);
     } catch (e) {
       if (e.status === 404) S.error = S.src ? `Mốc ${S.src.replace(/^v:/, '')} không có file ${CACHE_FILE}.` : `Server chưa có file ${CACHE_FILE}. Mở app KeyMap Sync, kiểm tra thư mục Documents/jya2/databases rồi bấm "Đẩy lên server".`;
       else S.error = e.message;
@@ -361,7 +363,7 @@
     const ids = [{ value: '', label: 'Bản mới nhất trên server' },
       ...S.versions.map((v) => ({ value: `v:${v.version}`, label: `Bản trước lúc ${clockDateTime(v.saved_at)}` })),
       ...S.days.map((x) => ({ value: x.date, label: `Sao lưu ngày ${x.date}` }))];
-    const change = guard(async (v) => { if (!(await discardOk())) { redraw(); return; } S.src = v; S.sel = null; S.pick = ''; await refresh(); });
+    const change = guard(async (v) => { if (!(await discardOk())) { redraw(); return; } S.src = v; S.sel = null; S.pick = ''; rc.drafts.clear(); rc.customCombos = new Set(); rc.itemId = ''; await refresh(); });
     return el('select', { 'aria-label': 'Nguồn dữ liệu (thời gian)', class: 'src-select', onchange: (e) => change(e.target.value) }, ids.map((o) => el('option', { value: o.value, selected: o.value === S.src }, o.label)));
   }
 
@@ -1745,8 +1747,8 @@
       saved = await api('PUT', `/sync/databases/${encodeURIComponent(CACHE_FILE)}`, { text: newXml, etag });
     } catch (err) {
       if (err.status === 409) {
-        toast('File đã thay đổi trên server từ lúc bạn mở (có thể app vừa đồng bộ). Đã tải lại bản mới; kiểm tra rồi lưu lại.', true);
-        await refresh();
+        toast(fromOld ? 'File mới nhất trên server vừa thay đổi (có thể app vừa đồng bộ). Chưa lưu gì; bấm lưu lại để thử tiếp.' : 'File đã thay đổi trên server từ lúc bạn mở (có thể app vừa đồng bộ). Đã tải lại bản mới; kiểm tra rồi lưu lại.', true);
+        if (!fromOld) await refresh();
         return false;
       }
       throw err;

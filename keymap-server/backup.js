@@ -139,10 +139,11 @@ class DailyBackups {
     try { return walk(this.folder(day)); } catch { return 0; }
   }
 
-  // Removes whole days (existing ones only). Returns { deleted: [days], freed: bytes, missing: [days] }.
+  // Removes whole days (existing ones only). Returns { deleted: [days], freed: bytes, missing: [days], kept: [today] }.
   remove(days) {
-    const out = { deleted: [], freed: 0, missing: [] };
+    const out = { deleted: [], freed: 0, missing: [], kept: [] };
     for (const day of [...new Set(days)]) {
+      if (day === this.today()) { out.kept.push(day); continue; } // today is rebuilt by the next request anyway
       if (!DAY_RE.test(day) || !fs.existsSync(this.folder(day))) { out.missing.push(day); continue; }
       out.freed += this.sizeOf(day);
       fs.rmSync(this.folder(day), { recursive: true, force: true });

@@ -175,6 +175,9 @@ test('deleting days of backups frees them and leaves the rest alone', async () =
     assert.deepEqual(r.json.missing, ['2020-01-01']);
     assert.ok(r.json.freed > 0);
     assert.deepEqual(days(dir), [before[2]]);
+    const t = await raw(port, 'POST', '/admin/api/sync/backups/delete', { headers: W, body: { days: [before[2]] } });
+    assert.deepEqual(t.json.kept, [before[2]], 'today is never deleted');
+    assert.deepEqual(days(dir), [before[2]]);
     for (const bad of [{}, { days: [] }, { days: ['../x'] }, { days: ['2026-1-1'] }, { days: [5] }]) {
       assert.equal((await raw(port, 'POST', '/admin/api/sync/backups/delete', { headers: W, body: bad })).status, 400);
     }
