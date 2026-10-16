@@ -1677,7 +1677,8 @@
       S.data.analysis = CX.analyze(S.data.parsed);
       redraw({ smooth: true });
     } catch {
-      await refresh(); // the file is saved; if it cannot be read here, read it again from the server
+      // the file is saved; if it cannot be read here, read it again from the server; if even that fails the save is still a save
+      try { await refresh(); } catch (e) { toast(`Đã lưu vào server nhưng chưa tải lại được trang (${e.message || e}). Bấm "Tải lại" để xem bản mới.`, true); }
     }
     return true;
   }
@@ -1739,7 +1740,16 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'delete', label: 'Xóa mục riêng', danger: true }],
     });
     if (ok !== 'delete') return;
-    await putRecoilItem(edit.doc, 'Đã xóa mục riêng và lưu vào server');
+    // the same window with steps as the saves: what is being done, and how far it is
+    const bar = window.Ui.progressDialog({ title: 'Đang xóa mục riêng…', steps: ['Áp dụng thay đổi', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 20, detail: `Đã bỏ ${edit.removed > 1 ? `${edit.removed} mục riêng` : 'mục riêng'} khỏi bản sao của mục…` });
+      await nextFrame();
+      const saved = await putRecoilItem(edit.doc, 'Đã xóa mục riêng và lưu vào server', (step, pct, detail) => bar.update({ step, pct, detail }));
+      if (saved) await bar.finish('Đã xóa mục riêng.'); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không xóa được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
   }
 
   // ---------------------------------------------------------------- "Kiểm tra theo chuẩn": own entries that the table of accessories says cannot exist
