@@ -243,18 +243,24 @@ function analogCurve(idx, target, opts = {}) {
     const durC = duration(own);
     return { w: s.weight, own, e: s.combo, durE, durC, rho: durC > 0 ? durE / durC : 1 };
   });
-  const stretch = pieces.reduce((n, p) => n + p.w * p.rho, 0);
+  let stretch = pieces.reduce((n, p) => n + p.w * p.rho, 0);
   const factors = computed.map(([t]) => {
     const u = durT > 0 ? t / durT : 0;
     return pieces.reduce((n, p) => n + p.w * ratio(interp(p.e, u * p.durE), interp(p.own, u * p.durC)), 0);
   });
 
-  const curve = [];
+  let curve = [];
   computed.forEach(([t, v], i) => {
     let nt = Math.round(t * stretch);
     if (i > 0 && nt <= curve[i - 1][0]) nt = curve[i - 1][0] + 1; // time must keep increasing
     curve.push([nt, round4(v * factors[i])]);
   });
+  // a gun with fire data: the length of its curve is the time to empty one magazine, the points are spread evenly over it (shape kept)
+  const fire = R.fireOf(target.weapon);
+  if (fire) {
+    curve = R.retime(curve, fire.emptyMs);
+    stretch = durT > 0 ? fire.emptyMs / durT : 1;
+  }
   return {
     ok: true, curve, computed,
     factor: { min: Math.min(...factors), max: Math.max(...factors), mean: factors.reduce((n, x) => n + x, 0) / factors.length },

@@ -20,6 +20,9 @@ function build(guns) {
   return R.indexData(groups);
 }
 const BASE = [[0, 100], [100, 80], [200, 60]];
+// AUG and M416 have default fire data: the tests below are about guns WITHOUT it (the old stretch rule), unless one sets its own
+test.beforeEach(() => R.setFireOverrides({ AUG: null, M416: null }));
+test.afterEach(() => R.setFireOverrides({}));
 const target = (o = {}) => ({ weapon: W('AUG'), scope: SC, gesture: 0, grip: 0, muzzle: MUZ, stock: 0, ...o });
 const near = (a, b, eps = 1e-3) => Math.abs(a - b) < eps;
 
@@ -241,4 +244,27 @@ test('comboCandidates: impact candidates are spread over kinds (at most perKind 
   for (const c of impact) per[c.kind] = (per[c.kind] || 0) + 1;
   assert.ok(Object.values(per).every((n) => n <= 2), JSON.stringify(per));
   assert.ok(Object.keys(per).length >= 2, 'two kinds are both far off: both appear');
+});
+
+test('analogCurve: for a gun with fire data the curve is read again on the even grid of one magazine (shape kept), and stretch says by how much', () => {
+  R.setFireOverrides({ AUG: { magazine: 4, interval: 0.1 }, M416: null }); // T = 300 ms
+  const UNEVEN = [[0, 100], [50, 80], [200, 60]];
+  const idx = build({
+    AUG: [E(0, 0, 0, 0, UNEVEN)],
+    M416: [E(0, 0, 0, 0, UNEVEN), E(0, MUZ, 0, 0, times(UNEVEN, 0.9 * 0.8))], // real entry = coefficient curve x 0.8
+  });
+  const r = S.analogCurve(idx, target());
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(r.curve.map((p) => p[0]), [0, 150, 300]);
+  assert.ok(near(r.curve[0][1], 72) && near(r.curve[1][1], 52.8) && near(r.curve[2][1], 43.2), JSON.stringify(r.curve));
+  assert.ok(near(r.stretch, 1.5, 1e-9), `${r.stretch}`);
+  assert.equal(R.checkCurve(r.curve).ok, true);
+});
+
+test('analogCurve: a gun without fire data keeps the old stretch rule (times follow the similar guns)', () => {
+  const UNEVEN = [[0, 100], [50, 80], [200, 60]];
+  const idx = build({ AUG: [E(0, 0, 0, 0, UNEVEN)], M416: [E(0, 0, 0, 0, UNEVEN), E(0, MUZ, 0, 0, times(UNEVEN, 0.9 * 0.8))] });
+  const r = S.analogCurve(idx, target());
+  assert.deepEqual(r.curve.map((p) => p[0]), [0, 50, 200]);
+  assert.ok(near(r.stretch, 1, 1e-9));
 });
