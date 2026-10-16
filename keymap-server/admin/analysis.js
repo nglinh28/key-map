@@ -733,7 +733,9 @@
     return el('span', { class: r.baseMissing ? 'tag warn' : 'tag' }, r.baseMissing ? 'Nền thiếu → 0' : `Tính ×${r.multiplier.toFixed(3)}`);
   };
 
-  function chart(curve) {
+  // drag (optional) makes the points movable: { lockX, onMove(i), onEnd(i, byKey) } (see recoilDetail). The scale of the picture is fixed while a point
+  // is dragged (the picture is drawn again only when it is dropped), so the point follows the pointer.
+  function chart(curve, drag = null) {
     const W = 640; const H = 240; const L = 56; const R = 14; const T = 14; const B = 30;
     const tMax = Math.max(...curve.map((p) => p[0]), 1);
     const vs = curve.map((p) => p[1]);
@@ -743,17 +745,72 @@
     vMax += (vMax - vMin) * 0.08;
     const x = (t) => L + (t / tMax) * (W - L - R);
     const y = (v) => T + (1 - (v - vMin) / (vMax - vMin)) * (H - T - B);
-    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': 'Đường cong độ giật theo thời gian' });
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: drag ? 'chart draggable' : 'chart', role: drag ? 'group' : 'img', 'aria-label': drag ? 'Đường cong độ giật theo thời gian: kéo các chấm để đổi mốc' : 'Đường cong độ giật theo thời gian' });
     for (let i = 0; i <= 4; i++) {
       const v = vMin + ((vMax - vMin) * i) / 4;
       svg.append(svgEl('line', { class: 'grid', x1: L, x2: W - R, y1: y(v), y2: y(v) }), svgEl('text', { x: L - 6, y: y(v) + 4, 'text-anchor': 'end' }, v.toFixed(0)));
       const t = (tMax * i) / 4;
       svg.append(svgEl('text', { x: x(t), y: H - 10, 'text-anchor': i === 4 ? 'end' : 'middle' }, `${Math.round(t)} ms`));
     }
-    svg.append(curve.length === 1
+    const line = curve.length === 1
       ? svgEl('line', { class: 'curve flat', x1: L, x2: W - R, y1: y(curve[0][1]), y2: y(curve[0][1]) })
-      : svgEl('polyline', { class: 'curve', fill: 'none', points: curve.map(([t, v]) => `${x(t)},${y(v)}`).join(' ') }));
-    curve.forEach(([t, v], i) => svg.append(svgEl('circle', { class: 'dot', cx: x(t), cy: y(v), r: 3.5 }, svgEl('title', {}, `mốc ${i}: t=${t} ms, giá trị=${v}`))));
+      : svgEl('polyline', { class: 'curve', fill: 'none', points: curve.map(([t, v]) => `${x(t)},${y(v)}`).join(' ') });
+    svg.append(line);
+    const pts = [];
+    const title = (i) => `mốc ${i}: t=${curve[i][0]} ms, giá trị=${Number(curve[i][1].toFixed(2))}`;
+    curve.forEach(([t, v], i) => {
+      const dot = svgEl('circle', { class: 'dot', cx: x(t), cy: y(v), r: 3.5 });
+      if (!drag) { svg.append(svgEl('g', {}, svgEl('title', {}, title(i)), dot)); return; }
+      const ring = svgEl('circle', { class: 'ring', cx: x(t), cy: y(v), r: 8 });
+      const hit = svgEl('circle', { class: 'dot-hit', cx: x(t), cy: y(v), r: 14, tabindex: '0', role: 'slider', 'data-i': i, 'aria-orientation': 'vertical', 'aria-valuemin': String(Math.round(vMin * 100) / 100), 'aria-valuemax': String(Math.round(vMax * 100) / 100), 'aria-label': `Mốc ${i + 1}` });
+      const g = svgEl('g', { class: 'pt' }, svgEl('title', {}, title(i)), ring, dot, hit);
+      const paint = () => {
+        for (const c of [dot, ring, hit]) { c.setAttribute('cx', x(curve[i][0])); c.setAttribute('cy', y(curve[i][1])); }
+        g.firstChild.textContent = title(i);
+        hit.setAttribute('aria-valuenow', String(curve[i][1]));
+        hit.setAttribute('aria-valuetext', `${Number(curve[i][1].toFixed(2))} tại ${curve[i][0]} ms`);
+        if (line.tagName === 'polyline') line.setAttribute('points', curve.map(([tt, vv]) => `${x(tt)},${y(vv)}`).join(' '));
+        else { line.setAttribute('y1', y(curve[0][1])); line.setAttribute('y2', y(curve[0][1])); }
+      };
+      paint();
+      // value: within the picture; time: between the neighbours (the first point stays at 0), and not at all when drag.lockX
+      const setValue = (v) => { curve[i][1] = Math.round(Math.min(vMax, Math.max(vMin, v)) * 100) / 100; };
+      const setTime = (t, byKey = false) => {
+        if (drag.lockX || i === 0) return;
+        const lo = curve[i - 1][0] + 1;
+        const hi = i < curve.length - 1 ? curve[i + 1][0] - 1 : (byKey ? Infinity : tMax); // the last point may be pushed later by the keyboard
+        if (hi < lo) return; // times out of order: leave them to the boxes
+        curve[i][0] = Math.round(Math.min(hi, Math.max(lo, t)));
+      };
+      const moved = () => { paint(); drag.onMove(i); };
+      const at = (e) => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()); };
+      let dragging = false;
+      hit.addEventListener('pointerdown', (e) => { if (e.button) return; e.preventDefault(); hit.setPointerCapture(e.pointerId); dragging = true; g.classList.add('dragging'); hit.focus(); });
+      hit.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const p = at(e);
+        setValue(vMin + (1 - (p.y - T) / (H - T - B)) * (vMax - vMin));
+        setTime(((p.x - L) / (W - L - R)) * tMax);
+        moved();
+      });
+      const drop = () => { if (!dragging) return; dragging = false; g.classList.remove('dragging'); drag.onEnd(i, false); };
+      hit.addEventListener('pointerup', drop);
+      hit.addEventListener('pointercancel', drop);
+      hit.addEventListener('lostpointercapture', drop);
+      hit.addEventListener('keydown', (e) => {
+        const big = e.shiftKey;
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') setValue(curve[i][1] + (e.key === 'ArrowUp' ? 1 : -1) * (big ? 1 : 0.1));
+        else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !drag.lockX) setTime(curve[i][0] + (e.key === 'ArrowRight' ? 1 : -1) * (big ? 100 : 10), true);
+        else return;
+        e.preventDefault();
+        moved();
+        drag.onEnd(i, true);
+      });
+      hit.addEventListener('focus', () => { if (hit.matches(':focus-visible')) g.classList.add('focus'); });
+      hit.addEventListener('blur', () => g.classList.remove('focus'));
+      pts.push(g);
+    });
+    svg.append(...pts);
     return svg;
   }
 
@@ -2886,9 +2943,28 @@
       }
     });
 
-    function updateLive() {
+    // the chart can be dragged: a point moved there is put in the boxes of its row at once, and the picture is drawn again when it is dropped
+    const dragOpts = {
+      get lockX() { return Boolean(fire); }, // the times are spread evenly over one magazine: only the values are dragged
+      onMove(i) {
+        const ref = refs[i];
+        if (ref) {
+          ref.t.value = String(curve[i][0]);
+          ref.v.value = String(Number(curve[i][1].toFixed(2)));
+          for (const b of [ref.t, ref.v]) { b.setAttribute('aria-invalid', 'false'); b.title = ''; }
+        }
+        rc.bad.delete(`${i}:0`);
+        rc.bad.delete(`${i}:1`);
+        paintRow(i);
+        paintRow(i + 1);
+        rc.dirty = true;
+      },
+      onEnd(i) { rc.dirty = true; updateLive(i); },
+    };
+    function updateLive(focusIdx = null) {
       const st = RL.curveStats(curve);
-      chartWrap.replaceChildren(chart(curve));
+      chartWrap.replaceChildren(chart(curve, dragOpts));
+      if (focusIdx !== null) { const h = chartWrap.querySelector(`.dot-hit[data-i="${focusIdx}"]`); if (h) h.focus({ preventScroll: true }); }
       summarySlot.textContent = `${st.points} mốc, ${st.duration} ms, giá trị ${num(st.min)} … ${num(st.max)}`;
       if (!zero) {
         const gap = fire ? RL.durationGap(curve, fire.emptyMs) : 0;
@@ -3117,6 +3193,7 @@
       r.copies > 1 ? alert('info', el('span', {}, `Có ${r.copies} mục trùng khóa (${r.distinct} nội dung khác nhau). App dùng mục xuất hiện cuối cùng.`)) : null,
       r.notes.length ? el('ul', { class: 'muted text-xs' }, r.notes.map((n) => el('li', {}, n))) : null,
       chartWrap,
+      el('p', { class: 'muted text-xs chart-hint' }, fire ? 'Kéo một chấm lên xuống để đổi giá trị của mốc (thời gian chia đều trên băng đạn nên không kéo ngang). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ (giữ Shift: bước lớn).' : 'Kéo một chấm để đổi giá trị (lên xuống) và thời gian (ngang, giữa hai mốc bên cạnh). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ ← → (giữ Shift: bước lớn).'),
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
       el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, resetBtn),
