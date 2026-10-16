@@ -152,16 +152,16 @@
       paint();
       return el('div', { class: 'se-group', role: 'group', 'aria-label': title },
         el('div', { class: 'se-group-head' }, el('strong', {}, title), count,
-          el('span', { class: 'se-links' }, el('button', { type: 'button', class: 'se-link', onclick: () => setAll(true) }, 'Chọn hết'), el('button', { type: 'button', class: 'se-link', onclick: () => setAll(false) }, 'Bỏ hết'))),
+          el('span', { class: 'se-links' }, el('button', { type: 'button', class: 'se-link', 'aria-label': `Chọn hết ${title}`, onclick: () => setAll(true) }, 'Chọn hết'), el('button', { type: 'button', class: 'se-link', 'aria-label': `Bỏ hết ${title}`, onclick: () => setAll(false) }, 'Bỏ hết'))),
         el('div', { class: 'opt-chips' }, chips));
     };
     const current = a ? a.maxZoom : null;
     const zoom = el('select', { 'aria-label': 'Ống ngắm tối đa' }, ZOOM_CHOICES.map(([v, t]) => el('option', { value: v === null ? '' : String(v), selected: current === v }, t)));
     const note = el('textarea', { rows: '2', maxlength: '300', placeholder: 'Ví dụ: đã kiểm tra trong game tháng 10/2026' });
     note.value = a && a.source === 'edited' ? a.note || '' : '';
-    const useCheck = el('input', { type: 'checkbox', role: 'switch', checked: !r.disabled });
+    const useCheck = el('input', { type: 'checkbox', role: 'switch', 'aria-describedby': 'se-use-hint', checked: !r.disabled });
     const useRow = el('label', { class: 'se-switch' }, useCheck, el('span', { class: 'se-track', 'aria-hidden': 'true' }),
-      el('span', { class: 'se-switch-text' }, el('strong', {}, 'Sử dụng súng này'), el('span', { class: 'muted text-sm' }, 'Tắt thì hệ thống và AI không chọn súng này, không gợi ý và không thêm tổ hợp cho nó.')));
+      el('span', { class: 'se-switch-text' }, el('strong', {}, 'Sử dụng súng này'), el('span', { class: 'muted text-sm', id: 'se-use-hint' }, 'Tắt thì hệ thống và AI không chọn súng này, không gợi ý và không thêm tổ hợp cho nó.')));
     // fire parameters: what the gun fires (one normal magazine) -> T, the length of a recoil curve
     const f0 = r.fire;
     const magInput = el('input', { type: 'number', min: '2', max: '200', step: '1', inputmode: 'numeric', 'aria-label': 'Số viên một băng', value: f0 ? String(f0.magazine) : '' });
