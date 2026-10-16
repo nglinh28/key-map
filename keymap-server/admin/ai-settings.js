@@ -160,8 +160,9 @@
 
     try {
       // If newly typed or edited key exists, test directly; otherwise test saved ID
-      const payload = p.apiKey && p.dirty
-        ? { id: p.id, provider: { id: p.id, name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey, model: p.model } }
+      // an edited card (a model just picked, a new key or address) is tested as it is on the page; the server keeps the saved key when none is typed
+      const payload = p.dirty
+        ? { id: p.id, provider: { id: p.id, name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey || undefined, model: p.model } }
         : { id: p.id };
       const r = await api('POST', '/ai/providers/test', payload);
       if (r.ok) {
@@ -169,6 +170,7 @@
           ok: true,
           text: `Kết nối thành công! Model phản hồi: ${r.model} (${Math.round(r.ms)}ms)`,
         });
+        if (p.dirty && !st.saving) { st.testing.delete(i); await saveAll(); st.testOut.set(i, { ok: true, text: `Kết nối thành công với ${r.model} (${Math.round(r.ms)}ms) và đã lưu để dùng model này.` }); }
       } else {
         st.testOut.set(i, {
           ok: false,
@@ -493,11 +495,9 @@
 
         const mState = st.modelsOut.get(i);
         const isModelLoading = st.loadingModels.has(i);
-        const datalistId = `ai-model-list-${i}`;
 
         const modelInput = el('input', {
           type: 'text',
-          list: datalistId,
           value: p.model || '',
           placeholder: 'gpt-4o-mini, deepseek/deepseek-chat, auto...',
           oninput: (e) => { p.model = e.target.value.trim(); p.dirty = true; st.dirty = true; },
@@ -520,13 +520,19 @@
         if (mState && mState.models && mState.models.length > 0) {
           modelPicker = el('select', {
             class: 'ai-model-select',
+            'data-i': i,
             onchange: (e) => {
               if (e.target.value) {
                 p.model = e.target.value;
                 modelInput.value = e.target.value;
                 p.dirty = true;
                 st.dirty = true;
+                st.testOut.delete(i); // the old test was for another model
+                const y = window.scrollY;
                 render();
+                window.scrollTo(0, y);
+                const again = document.querySelector(`.ai-model-select[data-i="${i}"]`); // the same card, drawn again: keep the keyboard where it was
+                if (again) again.focus({ preventScroll: true });
               }
             },
           },
@@ -534,10 +540,6 @@
           ...mState.models.map((m) => el('option', { value: m, selected: p.model === m }, m))
           );
         }
-
-        const modelDatalist = el('datalist', { id: datalistId },
-          ...(mState && mState.models ? mState.models.map((m) => el('option', { value: m })) : [])
-        );
 
         let modelFeedback = null;
         if (mState) {
@@ -586,7 +588,6 @@
             el('label', {}, 'Mã Model AI'),
             modelRow,
             modelPicker,
-            modelDatalist,
             modelFeedback || el('span', { class: 'field-hint' }, 'Tên model xử lý (như gpt-4o-mini, deepseek-chat hoặc bấm "Tải model" để chọn).')
           ),
 
