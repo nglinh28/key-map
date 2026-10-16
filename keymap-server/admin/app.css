@@ -1127,6 +1127,11 @@ svg.screen { display: block; width: 100%; height: auto; outline: none; --fs: 34p
 /* 14. RECOIL ANALYSIS ------------------------------------------------------ */
 .recoil-layout.single { grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 1201px) { .recoil-layout:not(.single) { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); } }
+/* two columns: the detail of the picked combination follows the page while the long list scrolls, so it never has to be scrolled back to.
+   It stops under the sticky toolbar (56px + 12px) and keeps the 56px bottom padding of the page free (so it is not pushed up under the toolbar at the end of the list); it scrolls inside itself when it is taller than that. */
+@media (min-width: 1201px) {
+  .recoil-layout:not(.single) .recoil-detail-col { position: sticky; top: 68px; align-self: start; max-height: calc(100vh - 124px); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+}
 .combo-table th, .combo-table td { padding: 9px 10px; }
 .combo-table td:nth-child(4) { white-space: nowrap; }
 .combo-table td:nth-child(-n+3), .combo-table th:nth-child(-n+3) { min-width: 104px; }
