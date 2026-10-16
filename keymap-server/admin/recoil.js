@@ -29,7 +29,7 @@
   const LABELS = {
     SCOPES: ['Bắn hông (không ngắm)', '1x (Red Dot, Holo)', '2x', '3x', '4x', '6x', '8x',
       '3–6x (đang ở 6x)', '4–8x (đang ở 8x)', 'Chiến thuật 8x', 'Chiến thuật 4–8x', 'LPVO', 'LPVO 1–6x'], // X63, X84, tactic, tactic_84, LPVO, LPVO_61 (*)
-    GRIPS: ['Không', 'Tay cầm đứng', 'Tay cầm tam giác', 'Tay cầm Half', 'Tay cầm nhẹ', 'Tay cầm ngón cái', 'Tay cầm laser', 'Tay cầm công thái học'], // HORIZONTAL, LASER, ERGONOMIC (*)
+    GRIPS: ['Không', 'Tay cầm đứng', 'Tay cầm tam giác', 'Tay cầm Hồng (Tay cầm nửa)', 'Tay cầm nhẹ', 'Tay cầm ngón cái', 'Tay cầm laser', 'Tay cầm công thái học'], // HORIZONTAL, LASER, ERGONOMIC (*)
     MUZZLES: ['Không', 'Nòng hãm giật', 'Nòng ẩn tia lửa', 'Nòng giảm thanh', 'Nòng hãm giật kiểu Brake', 'Nòng nối dài', 'Nòng Brake (bản mới)'], // BRAKE, EXTENDER, BRAKE_NEW (*)
     STOCKS: ['Không', 'Báng súng (Tactical Stock)', 'Báng súng (bản mới)'], // GENERAL, GENERAL_NEW (*)
     POSTURES: ['Đứng', 'Ngồi', 'Nằm'],
@@ -38,7 +38,7 @@
   const WEAPON_VI = { Empty: '(Không súng)', CrossBow: 'Nỏ', Bow: 'Cung', TacticsBow: 'Cung chiến thuật', SHIELD: 'Khiên', MORTAR: 'Cối' };
   const COEF_LABELS = {
     compensatorMuzzle: 'Nòng hãm giật', flashHidderMuzzle: 'Nòng ẩn tia lửa', suppressorMuzzle: 'Nòng giảm thanh',
-    verticalGrip: 'Tay cầm đứng', horizontalGrip: 'Tay cầm tam giác', halfGrip: 'Tay cầm Half', lightGrip: 'Tay cầm nhẹ',
+    verticalGrip: 'Tay cầm đứng', horizontalGrip: 'Tay cầm tam giác', halfGrip: 'Tay cầm Hồng (Tay cầm nửa)', lightGrip: 'Tay cầm nhẹ',
     thumbGrip: 'Tay cầm ngón cái', laserGrip: 'Tay cầm laser', generalStock: 'Báng súng',
     stand: 'Tư thế đứng', crouch: 'Tư thế ngồi', prone: 'Tư thế nằm',
   };
@@ -203,23 +203,23 @@
     // assault rifles (Tencent)
     AKM: rule(MZ3, [], [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
     M16: rule(MZ3, [], TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: có; ống ngắm đến 6x'),
-    M416: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
-    Scar: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    M416: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: có; ống ngắm đến 6x'),
+    Scar: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
     Groza: rule(SUPP, [], [], 6, 'official', 'nòng: giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
-    AUG: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
-    QBZ: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
-    M762: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
-    MK47: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
-    G36C: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
+    AUG: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
+    QBZ: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
+    M762: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
+    MK47: rule(MZ3, GR6, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: có; ống ngắm đến 6x'),
+    G36C: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
     // submachine guns (Tencent)
     UZI: rule(MZ3, [], TACTICAL, 1, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: có; ống ngắm chỉ Red Dot/Holo'),
     Thomson: rule(SUPP, GRV, [], 1, 'official', 'nòng: giảm thanh; tay cầm: đứng; báng: không; ống ngắm chỉ Red Dot/Holo'),
-    UMP45: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 6x'),
-    Vector: rule(MZ3, GR4, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: đứng, nhẹ, half, laser; báng: có; ống ngắm đến 6x'),
+    UMP45: rule(MZ3, GR6, [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 6x'),
+    Vector: rule(MZ3, GR4, TACTICAL, 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: đứng, nhẹ, hồng, laser; báng: có; ống ngắm đến 6x'),
     Bison: rule(MZ3, [], [], 6, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 6x'),
     // designated marksman rifles (Tencent)
     VSS: rule([], [], [], 0, 'official', 'nòng: không; tay cầm: không; báng: không; ống ngắm không lắp được; ngoài danh sách của app: cheek pad'),
-    SKS: rule(MZ3, GR6, [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, half, laser; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
+    SKS: rule(MZ3, GR6, [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: tam giác, đứng, ngón cái, nhẹ, hồng, laser; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
     MK14: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
     Mini14: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x'),
     SLR: rule(MZ3, [], [], 8, 'official', 'nòng: hãm giật, ẩn tia lửa, giảm thanh; tay cầm: không; báng: không; ống ngắm đến 8x; ngoài danh sách của app: cheek pad'),
