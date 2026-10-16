@@ -1831,3 +1831,5 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .chart .pt:hover .ring, .chart .pt.focus .ring, .chart .pt.dragging .ring { opacity: 1; }
 .chart .pt.dragging .dot-hit { cursor: grabbing; }
 .chart-hint { margin: 0 0 8px; }
+
+.chart.draggable { touch-action: none; }
