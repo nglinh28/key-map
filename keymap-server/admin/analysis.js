@@ -2431,24 +2431,24 @@
     let setApplyDisabled = null;
     const pickBox = (label, on) => {
       const input = el('input', { type: 'checkbox', checked: true, onchange: (e) => on(e.target.checked) });
-      const n = el('span', { class: 'pick-n' });
-      return { input, n, node: el('label', { class: 'pick' }, input, el('span', {}, label), n) };
+      const n = el('span', { class: 'opt-chip-n' });
+      return { input, n, node: el('label', { class: 'opt-chip' }, input, el('span', {}, label), n) };
     };
     const toggle = (set, v, on) => { if (on) set.add(v); else set.delete(v); updateSummary(); };
     const scopePicks = scopes.map((sc) => ({ sc, ...pickBox(`${RL.LABELS.SCOPES[sc]}${extraScopes.has(sc) ? ' (ngoài quy tắc)' : ''}`, (on) => toggle(selScopes, sc, on)) }));
     const posturePicks = [0, 1, 2].map((ge) => ({ ge, ...pickBox(POSTURE_VN[ge], (on) => toggle(selGestures, ge, on)) }));
     const setPicks = (picks, set, key, values) => { set.clear(); for (const v of values) set.add(v); picks.forEach((x) => { x.input.checked = set.has(x[key]); }); updateSummary(); };
     const quick = (label, fn, title) => el('button', { type: 'button', class: 'btn small ghost', title, onclick: fn }, label);
-    const scopeQuick = el('div', { class: 'pick-quick' },
+    const scopeQuick = el('div', { class: 'opt-quick' },
       quick('Tất cả', () => setPicks(scopePicks, selScopes, 'sc', scopes)),
       quick('Bỏ chọn', () => setPicks(scopePicks, selScopes, 'sc', [])),
       scopes.includes(rc.scope) ? quick('Chỉ ống đang xem', () => setPicks(scopePicks, selScopes, 'sc', [rc.scope]), RL.LABELS.SCOPES[rc.scope]) : null);
-    const postureQuick = el('div', { class: 'pick-quick' },
+    const postureQuick = el('div', { class: 'opt-quick' },
       quick('Tất cả', () => setPicks(posturePicks, selGestures, 'ge', [0, 1, 2])),
       quick('Bỏ chọn', () => setPicks(posturePicks, selGestures, 'ge', [])),
       [0, 1, 2].includes(rc.gesture) ? quick('Chỉ tư thế đang xem', () => setPicks(posturePicks, selGestures, 'ge', [rc.gesture]), POSTURE_VN[rc.gesture]) : null);
-    const scopePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Ống ngắm' }, scopePicks.map((x) => x.node));
-    const posturePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Tư thế' }, posturePicks.map((x) => x.node));
+    const scopePickBox = el('div', { class: 'opt-chips', role: 'group', 'aria-label': 'Ống ngắm' }, scopePicks.map((x) => x.node));
+    const posturePickBox = el('div', { class: 'opt-chips', role: 'group', 'aria-label': 'Tư thế' }, posturePicks.map((x) => x.node));
 
     const summaryText = el('div', { class: 'modal-callout-text' });
     const summaryCard = el('div', { class: 'modal-callout info' }, icon('sparkles'), summaryText);
