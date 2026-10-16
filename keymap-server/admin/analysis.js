@@ -1640,6 +1640,12 @@
       title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
       onclick: guard(() => aiCreateAll()),
     }, icon(rc.bulk ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, bulkLabel()));
+    const tableTargets = wholeTableTargets(visible);
+    const tableBtn = el('button', {
+      type: 'button', class: 'btn small', 'data-bulk': 'table', disabled: zero || gunDisabled || !latest() || (!rc.bulk && !tableTargets.length) || Boolean(rc.bulk && !rc.bulk.table),
+      title: rc.bulk && rc.bulk.table ? 'Dừng (các tổ hợp đã tính xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Hỏi AI từng tổ hợp một cho MỌI dòng đang hiện trong bảng mà chưa có mục riêng, tự động, có thanh tiến trình. AI lỗi hoặc không hợp lý thì dùng kết quả của server. Chưa lưu gì: bấm "Lưu tất cả".',
+      onclick: guard(() => aiWholeTable()),
+    }, icon(rc.bulk && rc.bulk.table ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, rc.bulk && rc.bulk.table ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `AI tính cả bảng${tableTargets.length ? ` (${tableTargets.length})` : ''}`));
     const fillBtn = el('button', {
       type: 'button', class: 'btn small', disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
       title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
@@ -1657,6 +1663,7 @@
     }, icon('sparkles'), 'Cài đặt AI');
     const saveAllBtn = saveAllButton(model);
     rc.model = model;
+    rc.visible = visible;
     const otherStats = weaponDraftStats(rc.weapon);
     const dropOthersBtn = otherStats.others > 0 ? el('button', {
       type: 'button', class: 'btn small ghost danger',
@@ -1674,7 +1681,7 @@
         }
       },
     }, icon('trash'), `Bỏ nháp súng khác (${otherStats.others})`) : null;
-    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, scanAllBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
+    const bulkRow = el('div', { class: 'row' }, aiBtn, tableBtn, fillBtn, scanAllBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
     const audit = auditOf(ix);
     const mine = audit.filter((e) => e.weapon === rc.weapon);
     const auditBtn = el('button', {
@@ -2140,6 +2147,20 @@
     return pendingCombos(rc.weapon).filter((p) => p.o.weapon === rc.weapon && !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
   }
 
+  // the rows of the table that have no own entry yet (their points come from the coefficients) and no draft: what "AI tính cả bảng" works on
+  function wholeTableTargets(visible) {
+    if (RL.isGunDisabled(rc.weapon) || RL.isZeroWeapon(rc.weapon) || !rc.idx) return [];
+    const out = [];
+    for (const m of visible || []) {
+      if (m.r.source === 'exact' || m.r.source === 'zero') continue;
+      const o = rcCombo(m.c);
+      const key = recoilKey(o);
+      if (rc.drafts.has(key) || (rc.editKey === key && rc.dirty)) continue;
+      out.push({ o, r: m.r, key });
+    }
+    return out;
+  }
+
   const bulkLabel = () => {
     if (rc.bulk) return `Dừng (${rc.bulk.done}/${rc.bulk.total})`;
     const n = aiTargets().length;
@@ -2158,8 +2179,7 @@
   function paintBulk() {
     const box = document.querySelector('.bulk-box');
     if (box) box.replaceChildren(...bulkBoxNodes());
-    const label = document.querySelector('[data-bulk="ai"] .bulk-label');
-    if (label && rc.bulk) label.textContent = `Dừng (${rc.bulk.done}/${rc.bulk.total})`;
+    for (const label of document.querySelectorAll('[data-bulk] .bulk-label')) if (rc.bulk) label.textContent = `Dừng (${rc.bulk.done}/${rc.bulk.total})`;
   }
 
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -2183,15 +2203,35 @@
     return last || { ok: false, reason: 'Đã dừng.' };
   }
 
-  async function aiCreateAll() {
+  async function aiWholeTable() {
+    if (rc.bulk) { rc.bulk.ac.abort(); return; }
+    if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
+    const todo = wholeTableTargets(rc.visible);
+    if (!todo.length) { toast('Không có dòng nào cần tính: mọi dòng đang hiện đã có mục riêng hoặc bản nháp.'); return; }
+    const status = await aiStatus();
+    const threads = status.enabled ? aiThreads(status) : 6;
+    const go = await showModal({
+      title: `AI tính ${todo.length} tổ hợp trong bảng?`, tone: 'info',
+      body: [
+        el('p', {}, `Lần lượt hỏi ${status.enabled ? 'AI' : 'server (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (các dòng đang hiện trong bảng, chưa có mục riêng).`),
+        status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào; phần đã tính vẫn giữ.`) : null,
+        el('p', { class: 'muted' }, 'AI lỗi hoặc cho đường cong không hợp lý thì dùng kết quả của server. Kết quả là bản nháp, chưa lưu: bấm "Lưu tất cả" để ghi.'),
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Bắt đầu (${todo.length})`, primary: true }],
+    });
+    if (go !== 'go') return;
+    await aiCreateAll(todo.filter((t) => !rc.drafts.has(t.key)), { table: true });
+  }
+
+  async function aiCreateAll(targets = null, { table = false } = {}) {
     if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
-    const todo = aiTargets();
+    const todo = targets || aiTargets();
     if (!todo.length) { toast('Không có tổ hợp mới nào cần tạo mốc. Thêm tổ hợp bằng "Thêm tổ hợp", "Thêm tất cả" hoặc "Tạo đủ cho cả súng".'); return; }
     const status = await aiStatus();
     const itemId = S.sel.id;
     const ac = new AbortController();
-    rc.bulk = { ac, done: 0, total: todo.length, failed: 0, ai: 0, server: 0 };
+    rc.bulk = { ac, done: 0, total: todo.length, failed: 0, ai: 0, server: 0, table };
     redraw();
     await runPool(todo, status.enabled ? aiThreads(status) : 6, async (m) => {
       if (ac.signal.aborted || !active || !S.sel || S.sel.id !== itemId) return;
@@ -2206,9 +2246,15 @@
       for (const [source, res] of [['ai', ai], ['server', srv]]) {
         if (pick || !res || !res.ok) continue;
         const checked = RL.checkCurve(res.curve);
-        if (checked.ok) pick = { source, curve: checked.curve };
+        // an AI curve far from the coefficient curve is not trusted: the server's answer is used instead
+        if (checked.ok && (source !== 'ai' || plausible(checked.curve, RL.resolve(rc.idx.idx, o).curve, { ignoreDuration: Boolean(RL.fireOf(o.weapon)) }))) pick = { source, curve: checked.curve };
       }
-      if (pick) { rc.drafts.set(m.key, pick); rc.bulk[pick.source]++; } else rc.bulk.failed++;
+      if (pick) {
+        if (table) { if (!rc.customCombos) rc.customCombos = new Set(); rc.customCombos.add(RL.comboKey(o)); } // now a combination to be saved as an own entry
+        if (table) pick.suspect = !plausible(pick.curve, RL.resolve(rc.idx.idx, o).curve, { ignoreDuration: Boolean(RL.fireOf(o.weapon)) });
+        rc.drafts.set(m.key, pick);
+        rc.bulk[pick.source]++;
+      } else rc.bulk.failed++;
       rc.bulk.done++;
       paintBulk();
     });
@@ -2881,12 +2927,13 @@
   }
 
   // is a curve believable next to the one the coefficients give? (start, end and duration within reach)
-  function plausible(curve, ref) {
+  // ignoreDuration: a gun with fire data has the time of its magazine, not the length of the coefficient curve
+  function plausible(curve, ref, { ignoreDuration = false } = {}) {
     if (!ref || !ref.length) return true;
     const a = RL.curveStats(curve);
     const b = RL.curveStats(ref);
     const near = (x, y, tol) => (Math.abs(y) < 1e-9 ? Math.abs(x) < 1e-6 : Math.abs(x / y - 1) <= tol);
-    return near(a.v0, b.v0, 0.4) && near(a.vEnd, b.vEnd, 0.4) && near(a.duration, b.duration, 0.5);
+    return near(a.v0, b.v0, 0.4) && near(a.vEnd, b.vEnd, 0.4) && (ignoreDuration || near(a.duration, b.duration, 0.5));
   }
 
   async function fillGun(ix) {
