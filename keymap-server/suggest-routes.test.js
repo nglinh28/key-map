@@ -15,9 +15,12 @@ const KEY = 'freellmapi-routes-secret-0123456789';
 const wi = (n) => R.WEAPONS.indexOf(n);
 const SC = R.SCOPES.indexOf('X1');
 
+// AUG and M416 have default fire data; these tests are about a gun without it (the times of the points follow the data, not a magazine)
+test.beforeEach(() => R.setFireOverrides({ AUG: null, M416: null }));
 test.afterEach(() => {
   R.setDisabledGuns([]);
   R.setRuleOverrides({});
+  R.setFireOverrides({});
 });
 const MUZ = R.MUZZLES.indexOf('COMPENSATOR');
 const COEF = { compensatorMuzzle: 0.9, flashHidderMuzzle: 0.8, suppressorMuzzle: 0.95, verticalGrip: 0.85, horizontalGrip: 0.97, halfGrip: 0.93, lightGrip: 0.98, thumbGrip: 0.8, laserGrip: 0.99, generalStock: 0.9, crouch: 0.8, prone: 0.6, stand: 1 };
@@ -103,6 +106,7 @@ test('both suggestions can be asked at the same time; the AI one carries the key
   const ai = await fakeAi(answering(GOOD));
   try {
     await withServer({ AI_BASE_URL: ai.url, AI_API_KEY: KEY, AI_MODEL: 'auto' }, async ({ port }) => {
+      R.setFireOverrides({ AUG: null, M416: null }); // the server has just started with the defaults: this test is about a gun without fire data
       await push(port, cacheXml(DOC()));
       const body = { id: ID, mode: 'touch', combo: combo() };
       const [s, a] = await Promise.all([post(port, '/admin/api/recoil/suggest', body), post(port, '/admin/api/ai/suggest-curve', body)]);
@@ -116,6 +120,20 @@ test('both suggestions can be asked at the same time; the AI one carries the key
       assert.equal(ai.seen[0].auth, `Bearer ${KEY}`);
       assert.ok(ai.seen[0].body.messages[1].content.includes('M416'));
       for (const x of [s, a]) assert.ok(!x.text.includes(KEY) && !x.text.includes('127.0.0.1:'), 'no key or address in any answer');
+    });
+  } finally { await ai.close(); }
+});
+
+test('a gun with fire data (AUG, by default): the AI answer comes back with its times on the even grid of one magazine', async () => {
+  const ai = await fakeAi(answering(GOOD));
+  try {
+    await withServer({ AI_BASE_URL: ai.url, AI_API_KEY: KEY, AI_MODEL: 'auto' }, async ({ port }) => {
+      await push(port, cacheXml(DOC()));
+      const a = await post(port, '/admin/api/ai/suggest-curve', { id: ID, mode: 'touch', combo: combo() });
+      assert.equal(a.json.ok, true, a.json.reason);
+      assert.deepEqual(a.json.curve, [[0, GOOD[0][1]], [1233, GOOD[1][1]], [2465, GOOD[2][1]]]);
+      const sent = JSON.parse(ai.seen[0].body.messages[1].content.slice(ai.seen[0].body.messages[1].content.indexOf('{')));
+      assert.equal(sent.target.time_axis.duration_ms, 2465);
     });
   } finally { await ai.close(); }
 });

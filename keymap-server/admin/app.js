@@ -126,6 +126,7 @@
     .then((r) => {
       window.RecoilLib.setRuleOverrides(r.overrides);
       if (r.disabled) window.RecoilLib.setDisabledGuns(r.disabled);
+      window.RecoilLib.setFireOverrides(r.fire || {});
     })
     .catch(() => { standardsP = null; }))); // tried again next time
 

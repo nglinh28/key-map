@@ -272,18 +272,24 @@ function analogCurve(idx, target, opts = {}) {
     return { w: s.weight, own, e: s.combo, durE, durC, floor: Math.max(FLOOR * Math.max(scaleOf(s.combo), scaleOf(own)), EPS), rho: durC > 0 ? clamp(durE / durC, CORRECTION[0], CORRECTION[1]) : 1 };
   });
   // corrections are multipliers, so they are averaged in the log domain (the arithmetic mean of 0.5 and 2 is 1.25, not 1)
-  const stretch = Math.exp(pieces.reduce((n, p) => n + p.w * Math.log(p.rho), 0));
+  let stretch = Math.exp(pieces.reduce((n, p) => n + p.w * Math.log(p.rho), 0));
   const factors = computed.map(([t]) => {
     const u = durT > 0 ? t / durT : 0;
     return Math.exp(pieces.reduce((n, p) => n + p.w * Math.log(ratio(interp(p.e, u * p.durE), interp(p.own, u * p.durC), p.floor)), 0));
   });
 
-  const curve = [];
+  let curve = [];
   computed.forEach(([t, v], i) => {
     let nt = Math.round(t * stretch);
     if (i > 0 && nt <= curve[i - 1][0]) nt = curve[i - 1][0] + 1; // time must keep increasing
     curve.push([nt, round4(v * factors[i])]);
   });
+  // a gun with fire data: the length of its curve is the time to empty one magazine, the points are spread evenly over it (shape kept)
+  const fire = R.fireOf(target.weapon);
+  if (fire) {
+    curve = R.retime(curve, fire.emptyMs);
+    stretch = durT > 0 ? fire.emptyMs / durT : 1;
+  }
   return {
     ok: true, curve, computed,
     factor: { min: Math.min(...factors), max: Math.max(...factors), mean: factors.reduce((n, x) => n + x, 0) / factors.length },

@@ -19,13 +19,14 @@ class GunStandards {
     }
     this.overrides = R.setRuleOverrides(saved.overrides || {}); // what is not valid any more is dropped
     this.disabled = R.setDisabledGuns(saved.disabled || []);
+    this.fire = R.setFireOverrides(saved.fire); // fire parameters (magazine, seconds between shots); rubbish is dropped
   }
 
   save() {
     if (!this.file) return;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ overrides: this.overrides, disabled: this.listDisabled() }, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify({ overrides: this.overrides, disabled: this.listDisabled(), fire: R.getFireOverrides() }, null, 2));
     fs.renameSync(tmp, this.file);
   }
 
@@ -64,7 +65,33 @@ class GunStandards {
     return { ok: true };
   }
 
+  // code + fire as setFire would take them: { ok } or { ok:false, error } (nothing is changed)
+  validateFire(code, fire) {
+    if (typeof code !== 'string' || !R.WEAPONS.includes(code) || code === R.WEAPONS[0]) return { ok: false, error: 'Mã súng không hợp lệ.' };
+    return fire === null ? { ok: true, fire: null } : R.checkFire(fire);
+  }
+
+  // code: gun code; fire: { magazine, interval } or null ("this gun has no fire data"). -> { ok } or { ok:false, error }
+  setFire(code, fire) {
+    const v = this.validateFire(code, fire);
+    if (!v.ok) return v;
+    this.fire = R.setFireOverrides({ ...R.getFireOverrides(), [code]: v.fire });
+    this.save();
+    return { ok: true };
+  }
+
+  // back to the default fire parameters of this gun
+  resetFire(code) {
+    if (!Object.prototype.hasOwnProperty.call(R.getFireOverrides(), code)) return { ok: false, error: 'Súng này chưa được sửa thông số bắn.' };
+    const next = R.getFireOverrides();
+    delete next[code];
+    this.fire = R.setFireOverrides(next);
+    this.save();
+    return { ok: true };
+  }
+
   list() { return R.getRuleOverrides(); }
+  listFire() { return R.getFireOverrides(); }
   listDisabled() { return R.getDisabledGuns(); }
 }
 

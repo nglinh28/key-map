@@ -9,12 +9,24 @@ npm start        # lắng nghe trên PORT (mặc định 8787)
 npm test         # test của server và các thư viện của trang web
 ```
 
+## Trục thời gian theo thời gian bắn hết băng
+
+Mỗi súng trong tab **Tiêu chuẩn súng** có **số viên một băng thường** và **số giây giữa hai phát**; từ đó có **T = (băng − 1) × giây/phát** (ví dụ M416: 30 viên × 0,085 s → T = 2.465 ms). Có sẵn số liệu cho 36 súng (lấy từ Liquipedia PUBG Mobile và BitTopup, **chưa kiểm chứng**: chỉnh trong "Sửa tiêu chuẩn", có nút "Đặt lại thông số bắn"); các súng khác để trống.
+
+- Với súng có T, đường cong có n mốc thì mốc thứ i nằm ở `round(i × T ÷ (n − 1))` ms: **chia đều**, tổng thời lượng luôn là T.
+- **Thêm mốc**: thêm một mốc rồi chia đều lại; hình dạng đường cong giữ nguyên (nội suy tuyến tính theo thời gian chuẩn hóa, hai đầu giữ đúng giá trị). Xóa một mốc thì các mốc còn lại chia đều lại. Sửa thời gian một mốc (khi bật "Tự tính các mốc sau") thì các mốc sau chia đều từ mốc đó đến T.
+- **Chia đều thời gian theo băng đạn** (từng đường cong) và **Chia đều thời gian cả súng** (mọi mục riêng của súng, là bản nháp): các đường cong đã lưu **không tự đổi**, nên đường cong cũ báo "lệch x% so với băng đạn" cho đến khi bạn bấm.
+- **Thêm mốc cho súng**: nội suy lại trên T (không còn chọn "theo xu hướng" hay "theo bước chuẩn").
+- **AI và server**: câu hỏi gửi cho AI có `time_axis` (T và số mốc); AI chỉ quyết định giá trị, server đặt lại thời gian cho đều trên T và không từ chối vì thời lượng. `analogCurve` cũng kết thúc ở T. Khi rà soát ("Quét tất cả") chiều dài của mục đã lưu không bị coi là khác thường.
+- Súng chưa có thông số bắn giữ nguyên cách cũ (bước ngẫu nhiên 450–678 ms, kiểm tra thời lượng 0,25–4 lần).
+- Với súng bắn từng phát (DMR, sniper, shotgun) số giây là chu kỳ tối thiểu; M16 và Mk47 bắn theo loạt nên thực tế chậm hơn; chưa tính thay đạn.
+
 ## AI gợi ý mốc độ giật
 
 Khi thêm một tổ hợp phụ kiện chưa có mục riêng, trang so sánh hai cách tính các mốc:
 
 - **Server** (`suggest.js`): lấy tối đa 5 súng có đường cong nền (cùng ống ngắm, đứng, không phụ kiện) gần nhất với súng này và có mục riêng cho đúng tổ hợp. Với mỗi súng, "độ lệch thật" = mục riêng / đường cong theo hệ số của chính nó (so trên trục thời gian chia theo thời lượng). Kết quả = đường cong theo hệ số của súng này × độ lệch trung bình có trọng số (trung bình nhân; mỗi điểm giới hạn trong 0,5–2 lần và mẫu số có ngưỡng tối thiểu để điểm gần 0 không làm nổ hệ số), thời gian co giãn theo tỉ lệ thời lượng trung bình (cũng trung bình nhân, giới hạn 0,5–2). Các súng có cùng đường cong nền và cùng mục riêng (bản sao mẫu) chỉ tính một lần. Không đoán: không có súng tương tự nào thì báo lý do.
-- **AI** (`ai.js`): gửi cho một điểm cuối tương thích OpenAI (`POST {AI_BASE_URL}/chat/completions`) dữ liệu của súng này (đường cong nền, đường cong theo hệ số, các mục riêng khác của súng) và của các súng tương tự (nền, theo hệ số, mục riêng của tổ hợp). AI trả JSON `{points, reasoning}`. Server kiểm tra rất chặt (số hữu hạn, thời gian tăng dần, tối đa 60 mốc, thời lượng 0,25–4 lần và mỗi giá trị 0,4–2,5 lần đường cong theo hệ số); trả lời sai thì chỉ báo lý do, không bao giờ điền vào ô sửa.
+- **AI** (`ai.js`): gửi cho một điểm cuối tương thích OpenAI (`POST {AI_BASE_URL}/chat/completions`) dữ liệu của súng này (đường cong nền, đường cong theo hệ số, các mục riêng khác của súng) và của các súng tương tự (nền, theo hệ số, mục riêng của tổ hợp). AI trả JSON `{points, reasoning}`. Server kiểm tra rất chặt (số hữu hạn, thời gian tăng dần, tối đa 60 mốc, thời lượng 0,25–4 lần và mỗi giá trị 0,4–2,5 lần đường cong theo hệ số; với súng có thời gian bắn hết băng thì thời gian được đặt lại cho đều và không xét thời lượng, xem mục trên); trả lời sai thì chỉ báo lý do, không bao giờ điền vào ô sửa.
 
 Hai bên độc lập (AI **không** thấy kết quả của server). Số đo dưới đây lấy **trước khi** sửa độ bền với giá trị gần 0 và cách đo sai số (chưa đo lại; `suggest.backtest(idx)` tái hiện phép đo này, đã che cả bản sao mẫu của mục bị giấu, hiện chỉ dùng trong test). Trên dữ liệu thật, giấu từng mục riêng rồi đoán lại (5800 trường hợp, tập "touch"): sai số giá trị trung bình **8,9% nếu tính theo hệ số → 4,0% theo cách của server**, gần đúng hơn hệ số trong 66% trường hợp (nhóm tay cầm + nòng + báng: ~9–14% → ~2–6%; nhóm chỉ nòng hoặc chỉ báng vốn đã chính xác, hai cách ngang nhau). Với AI mới thử hai ca thật: một ca AI chỉ chép lại đường cong theo hệ số (kém server), một ca AI tốt hơn hẳn server (1,8% so với 5,4%): vì vậy hai kết quả được đặt cạnh nhau cho bạn chọn.
 
