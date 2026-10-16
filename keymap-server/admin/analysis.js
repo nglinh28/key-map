@@ -2121,6 +2121,7 @@
       el('span', { class: 'stat-pill' }, el('strong', {}, String(places)), ' dạng ống ngắm × tư thế')
     );
 
+    const shown = plan.slice(0, 8); // the window lists the first few; the rest is counted
     const planList = el('div', { class: 'save-plan-list' },
       shown.map((p) => el('div', { class: 'save-plan-item' },
         el('span', { class: 'save-plan-combo' }, fullLine(p.o)),
