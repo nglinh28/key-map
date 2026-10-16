@@ -405,3 +405,12 @@ test('reviewScan: for a gun with fire data the length of saved curves is not a r
   assert.equal(r.total, 1);
   assert.deepEqual(r.flagged, []);
 });
+
+test('with fire data an answer whose points come in the wrong time order is sorted by time first, not read as an upside-down curve', () => {
+  withFire('AUG', 4, 0.1);
+  const fire = R.fireOf('AUG');
+  const computed = [[0, 90], [100, 72], [200, 54]];
+  assert.deepEqual(validatePoints([[200, 54], [100, 72], [0, 90]], computed, fire).curve, [[0, 90], [150, 72], [300, 54]]);
+  const current = [[0, 90], [500, 72], [1000, 54]];
+  assert.deepEqual(validateReview([[800, 52], [400, 70], [0, 90]], current, fire).curve, [[0, 90], [150, 70], [300, 52]]);
+});

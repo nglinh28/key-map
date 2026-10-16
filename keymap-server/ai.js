@@ -144,7 +144,7 @@ function validateReview(points, current, fire = null) {
   if (!checked.ok) return { ok: false, reason: checked.error };
   if (sameCurve(points, current)) return { ok: true, curve: points.map(([t, v]) => [t, v]) };
   if (points.length > MAX_POINTS) return { ok: false, reason: `AI trả quá nhiều mốc (${points.length}; tối đa ${MAX_POINTS}).` };
-  if (fire) points = R.withEvenTimes(points, fire.emptyMs);
+  if (fire) points = R.withEvenTimes(checked.curve, fire.emptyMs); // checked.curve is sorted by time: a list in the wrong order is not read upside down
   else for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
   const durC = S.duration(current);
   if (durC > 0 && current.some(([, v]) => Math.abs(v) > 1e-6)) {
@@ -236,7 +236,7 @@ function validatePoints(points, computed, fire = null) {
   const checked = R.checkCurve(points);
   if (!checked.ok) return { ok: false, reason: checked.error };
   if (points.length > MAX_POINTS) return { ok: false, reason: `AI trả quá nhiều mốc (${points.length}; tối đa ${MAX_POINTS}).` };
-  if (fire) points = R.withEvenTimes(points, fire.emptyMs);
+  if (fire) points = R.withEvenTimes(checked.curve, fire.emptyMs); // checked.curve is sorted by time: a list in the wrong order is not read upside down
   else for (let i = 1; i < points.length; i++) if (points[i][0] <= points[i - 1][0]) return { ok: false, reason: `Thời gian phải tăng dần (mốc #${i + 1}).` };
   const durC = S.duration(computed);
   const hasRef = durC > 0 && computed.some(([, v]) => Math.abs(v) > 1e-6);
