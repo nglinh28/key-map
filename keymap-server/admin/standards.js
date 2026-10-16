@@ -137,16 +137,31 @@
       grips: new Set(a ? [...a.grips].map((i) => RL.GRIPS[i]) : []),
       stocks: new Set(a ? [...a.stocks].map((i) => RL.STOCKS[i]) : []),
     };
-    const group = (title, list, labels, key) => el('fieldset', { class: 'card my-2' }, el('legend', {}, title),
-      el('div', { class: 'row wrap' }, list.slice(1).map((name, k) => el('label', { class: 'row' },
-        el('input', { type: 'checkbox', checked: pick[key].has(name), onchange: (e) => { if (e.target.checked) pick[key].add(name); else pick[key].delete(name); } }),
-        (labels && labels[k + 1]) || name))));
+    // one group of accessories: a pill to tick for each option, how many are ticked, and "Chọn hết" / "Bỏ hết"
+    const group = (title, list, labels, key) => {
+      const names = list.slice(1);
+      const count = el('span', { class: 'se-count' });
+      const boxes = [];
+      const paint = () => { count.textContent = `${pick[key].size}/${names.length}`; };
+      const setAll = (on) => { names.forEach((name, k) => { boxes[k].checked = on; if (on) pick[key].add(name); else pick[key].delete(name); }); paint(); };
+      const chips = names.map((name, k) => {
+        const input = el('input', { type: 'checkbox', checked: pick[key].has(name), onchange: (e) => { if (e.target.checked) pick[key].add(name); else pick[key].delete(name); paint(); } });
+        boxes.push(input);
+        return el('label', { class: 'opt-chip' }, input, el('span', {}, (labels && labels[k + 1]) || name));
+      });
+      paint();
+      return el('div', { class: 'se-group', role: 'group', 'aria-label': title },
+        el('div', { class: 'se-group-head' }, el('strong', {}, title), count,
+          el('span', { class: 'se-links' }, el('button', { type: 'button', class: 'se-link', onclick: () => setAll(true) }, 'Chọn hết'), el('button', { type: 'button', class: 'se-link', onclick: () => setAll(false) }, 'Bỏ hết'))),
+        el('div', { class: 'opt-chips' }, chips));
+    };
     const current = a ? a.maxZoom : null;
     const zoom = el('select', { 'aria-label': 'Ống ngắm tối đa' }, ZOOM_CHOICES.map(([v, t]) => el('option', { value: v === null ? '' : String(v), selected: current === v }, t)));
     const note = el('textarea', { rows: '2', maxlength: '300', placeholder: 'Ví dụ: đã kiểm tra trong game tháng 10/2026' });
     note.value = a && a.source === 'edited' ? a.note || '' : '';
-    const useCheck = el('input', { type: 'checkbox', checked: !r.disabled });
-    const useRow = el('label', { class: 'field row card my-2' }, useCheck, el('span', {}, 'Sử dụng súng này trong hệ thống và AI (bỏ tích = tắt súng, không gợi ý và không thêm tổ hợp)'));
+    const useCheck = el('input', { type: 'checkbox', role: 'switch', checked: !r.disabled });
+    const useRow = el('label', { class: 'se-switch' }, useCheck, el('span', { class: 'se-track', 'aria-hidden': 'true' }),
+      el('span', { class: 'se-switch-text' }, el('strong', {}, 'Sử dụng súng này'), el('span', { class: 'muted text-sm' }, 'Tắt thì hệ thống và AI không chọn súng này, không gợi ý và không thêm tổ hợp cho nó.')));
     // fire parameters: what the gun fires (one normal magazine) -> T, the length of a recoil curve
     const f0 = r.fire;
     const magInput = el('input', { type: 'number', min: '2', max: '200', step: '1', inputmode: 'numeric', 'aria-label': 'Số viên một băng', value: f0 ? String(f0.magazine) : '' });
@@ -161,7 +176,7 @@
     };
     magInput.oninput = paintEmpty; intInput.oninput = paintEmpty;
     paintEmpty();
-    const fireBox = el('div', { class: 'card my-2 fire-box', role: 'group', 'aria-label': 'Thông số bắn (băng thường)' }, el('strong', {}, 'Thông số bắn (băng thường)'),
+    const fireBox = el('div', { class: 'se-card fire-box', role: 'group', 'aria-label': 'Thông số bắn (băng thường)' }, el('h3', {}, 'Thông số bắn (băng thường)'),
       el('div', { class: 'fire-grid' }, el('label', { class: 'field' }, 'Số viên một băng', magInput), el('label', { class: 'field' }, 'Giây giữa hai phát', intInput)),
       emptyLine,
       f0 ? el('p', { class: 'muted text-sm' }, `Đang dùng: ${f0.sourceLabel}${f0.note ? ` · ${f0.note}` : ''}.`) : null);
@@ -170,15 +185,21 @@
     const id = await showModal({
       title: `Sửa tiêu chuẩn: ${r.tag}`, tone: 'info', className: 'wide',
       body: [
-        el('p', { class: 'muted' }, 'Tích đúng những gì súng này lắp được trong game. Bảng này là cơ sở để kiểm tra dữ liệu ("Sai chuẩn"), gợi ý và tạo tổ hợp, "Quét tất cả", và là điều AI được báo khi tính mốc: không tích = súng không lắp được.'),
-        useRow,
-        group('Đầu nòng', RL.MUZZLES, RL.LABELS.MUZZLES, 'muzzles'),
-        group('Tay cầm', RL.GRIPS, RL.LABELS.GRIPS, 'grips'),
-        group('Báng', RL.STOCKS, RL.LABELS.STOCKS, 'stocks'),
-        el('label', { class: 'field' }, 'Ống ngắm tối đa', zoom),
-        el('label', { class: 'field' }, 'Ghi chú (nguồn, lý do sửa)', note),
-        fireBox,
-        a ? el('p', { class: 'muted text-sm' }, `Đang dùng: ${a.sourceLabel}.`) : el('p', { class: 'muted text-sm' }, 'Súng này chưa có chuẩn: lưu ở đây sẽ tạo chuẩn mới cho nó.'),
+        el('div', { class: 'se-head' }, statusBadge(r.status), r.disabled ? badge('Đã tắt sử dụng', 'danger') : badge('Đang sử dụng', 'ok'),
+          el('span', { class: 'muted text-sm' }, [r.label !== r.code ? r.label : null, r.cls !== '—' ? r.cls : null].filter(Boolean).join(' · '))),
+        el('p', { class: 'muted text-sm' }, 'Chọn đúng những gì súng này lắp được trong game. Bảng này là cơ sở để kiểm tra dữ liệu ("Sai chuẩn"), gợi ý và tạo tổ hợp, "Quét tất cả", và là điều AI được báo khi tính mốc: không chọn = súng không lắp được.'),
+        el('div', { class: 'se-grid' },
+          el('div', { class: 'se-col' },
+            el('section', { class: 'se-card' }, el('h3', {}, 'Phụ kiện lắp được'),
+              group('Đầu nòng', RL.MUZZLES, RL.LABELS.MUZZLES, 'muzzles'),
+              group('Tay cầm', RL.GRIPS, RL.LABELS.GRIPS, 'grips'),
+              group('Báng', RL.STOCKS, RL.LABELS.STOCKS, 'stocks'))),
+          el('div', { class: 'se-col' },
+            el('section', { class: 'se-card' }, el('h3', {}, 'Ống ngắm'), el('label', { class: 'field' }, 'Ống ngắm tối đa', zoom)),
+            fireBox,
+            el('section', { class: 'se-card' }, el('h3', {}, 'Ghi chú và sử dụng'),
+              el('label', { class: 'field' }, 'Ghi chú (nguồn, lý do sửa)', note), useRow))),
+        a ? el('p', { class: 'muted text-sm' }, `Quy tắc đang dùng: ${a.sourceLabel}.`) : el('p', { class: 'muted text-sm' }, 'Súng này chưa có chuẩn: lưu ở đây sẽ tạo chuẩn mới cho nó.'),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, ...(a ? [{ id: 'off', label: 'Tắt chuẩn (cho phép mọi tổ hợp)' }] : []), { id: 'save', label: 'Lưu tiêu chuẩn', primary: true }],
     });
