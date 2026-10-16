@@ -1823,3 +1823,11 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .se-switch-text { display: grid; gap: 2px; }
 .se-card textarea { width: 100%; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 10px; font: inherit; resize: vertical; }
 .se-card textarea::placeholder { color: var(--muted); }
+
+/* the chart of a curve: points that can be dragged (ring on hover / focus / drag, a wide invisible hit area) */
+.chart .dot { pointer-events: none; }
+.chart .dot-hit { fill: transparent; stroke: none; cursor: grab; touch-action: none; outline: none; }
+.chart .ring { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
+.chart .pt:hover .ring, .chart .pt.focus .ring, .chart .pt.dragging .ring { opacity: 1; }
+.chart .pt.dragging .dot-hit { cursor: grabbing; }
+.chart-hint { margin: 0 0 8px; }
