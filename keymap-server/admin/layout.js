@@ -80,7 +80,7 @@
     T('Biểu tượng ô tô', 'vehicle'), // 22
     T('Biểu tượng nạp đạn', 'reload'), // 23
   ];
-  const recognitionType = (n) => RECOGNITION_TYPES[n] || { name: `Ô loại ${n}`, group: 'unknown', sure: false };
+  const recognitionType = (n) => (Number.isInteger(n) && RECOGNITION_TYPES[n]) || { name: `Ô loại ${n}`, group: 'unknown', sure: false };
 
   // ---------------------------------------------------------------- geometry
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -177,10 +177,11 @@
     sight: 'Ống ngắm', button: 'Nút', posture: 'Tư thế', weapon: 'Ô súng', accessory: 'Phụ kiện', vehicle: 'Xe', reload: 'Nạp đạn', other: 'Khác', unknown: 'Chưa rõ' };
 
   // [{ cls, name, count }] for the classes that occur, in legend order
+  const obj = (c) => (c && typeof c === 'object' ? c : {});
   function legend(kind, comps) {
     const counts = new Map();
     for (const c of comps) {
-      const cls = describe(kind, c || {}).cls;
+      const cls = describe(kind, obj(c)).cls;
       counts.set(cls, (counts.get(cls) || 0) + 1);
     }
     return Object.keys(CLASS_NAMES).filter((cls) => counts.has(cls)).map((cls) => ({ cls, name: CLASS_NAMES[cls], count: counts.get(cls) }));
@@ -197,9 +198,9 @@
   // One row per component for the list beside the screen: [{ i, title, keys, cls, className, x, y, w, h }]
   function listRows(kind, comps, origin = 'topleft') {
     return comps.map((c, i) => {
-      const d = describe(kind, c || {});
-      const r = rectOf(c || {}, origin);
-      return { i, title: d.title, keys: d.keys, cls: d.cls, className: CLASS_NAMES[d.cls] || d.cls, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
+      const d = describe(kind, obj(c));
+      const r = rectOf(obj(c), origin);
+      return { i, label: labelOf(kind, obj(c)), title: d.title, keys: d.keys, cls: d.cls, className: CLASS_NAMES[d.cls] || d.cls, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
     });
   }
 
@@ -208,15 +209,20 @@
   function matchRow(row, query) {
     const words = plain(query).split(/\s+/).filter(Boolean);
     if (!words.length) return true;
-    const hay = plain([row.title, row.className, ...row.keys].join(' '));
+    const hay = plain([row.title, row.className, row.label, ...row.keys].join(' '));
     return words.every((w) => hay.includes(w));
   }
 
-  // Size of the letters in screen units so that they come out about `px` pixels on the page: scale = pixels per screen unit.
-  function fontUnits(scale, px = 13, min = 22, max = 140) {
-    if (!(scale > 0) || !Number.isFinite(scale)) return min;
-    return Math.max(min, Math.min(max, px / scale));
+  // Rows that pass the legend filter (a class, or null) and the typed text.
+  const visibleRows = (rows, filter, query) => rows.filter((r) => (!filter || r.cls === filter) && matchRow(r, query));
+  // A filter left over from another document is dropped when that document has no such class.
+  const validFilter = (kind, comps, filter) => (filter && legend(kind, comps).some((l) => l.cls === filter) ? filter : null);
+
+  // Size of the letters in screen units so that they come out about `px` pixels on the page (scale = pixels per screen unit), at most `max` units.
+  function fontUnits(scale, px = 13, max = 140) {
+    if (!(scale > 0) || !Number.isFinite(scale)) return 22;
+    return Math.min(max, px / scale);
   }
 
-  return { keyLabel, componentInfo, COMPONENTS, RECOGNITION_TYPES, recognitionType, rectOf, canvasSize, SCREEN_PRESETS, describe, overlays, CLASS_NAMES, legend, labelOf, listRows, matchRow, fontUnits };
+  return { keyLabel, componentInfo, COMPONENTS, RECOGNITION_TYPES, recognitionType, rectOf, canvasSize, SCREEN_PRESETS, describe, overlays, CLASS_NAMES, legend, labelOf, listRows, matchRow, visibleRows, validFilter, fontUnits };
 });
