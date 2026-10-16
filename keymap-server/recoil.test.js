@@ -599,5 +599,3 @@ test('disabledEntries: the own entries of the guns switched off, with their copi
   assert.ok(list.every((e) => e.weapon === M416));
   assert.deepEqual(list.map((e) => e.copies).sort(), [1, 2]);
 });
-  assert.ok(R.removeEntries ? true : false);
-});
