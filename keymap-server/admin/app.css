@@ -1133,8 +1133,8 @@ svg.screen { display: block; width: 100%; height: auto; outline: none; --fs: 34p
   .recoil-layout:not(.single) .recoil-detail-col { position: sticky; top: 68px; align-self: start; max-height: calc(100vh - 124px); overflow-y: auto; }
 }
 .combo-table th, .combo-table td { padding: 9px 10px; }
-.combo-table td:nth-child(4) { white-space: nowrap; }
-.combo-table td:nth-child(-n+3), .combo-table th:nth-child(-n+3) { min-width: 104px; }
+.combo-table td:nth-child(5) { white-space: nowrap; }
+.combo-table td:nth-child(n+2):nth-child(-n+4), .combo-table th:nth-child(n+2):nth-child(-n+4) { min-width: 104px; }
 .combo-table th { font-size: 12px; }
 .coef { margin-left: 5px; font-size: 12px; color: var(--faint); }
 .row-btns { display: inline-flex; gap: 2px; }
@@ -1165,24 +1165,33 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
   .combo-table tbody tr:last-child { border-bottom: 0; }
   .combo-table tbody td { display: block; padding: 0; border: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; background: none; box-shadow: none; }
   /* line 1: grip, muzzle, stock (4 columns each); line 2: source (3), value at 0 (2), last value (2), duration (2), points (1), buttons (2) */
-  .combo-table tbody td:nth-child(1) { grid-column: 1 / 5; }
-  .combo-table tbody td:nth-child(2) { grid-column: 5 / 9; }
-  .combo-table tbody td:nth-child(3) { grid-column: 9 / 13; }
-  .combo-table tbody td:nth-child(4) { grid-column: 1 / 4; }
-  .combo-table tbody td:nth-child(5) { grid-column: 4 / 6; }
-  .combo-table tbody td:nth-child(6) { grid-column: 6 / 8; }
-  .combo-table tbody td:nth-child(7) { grid-column: 8 / 10; }
-  .combo-table tbody td:nth-child(8) { grid-column: 10 / 11; }
-  .combo-table tbody td:nth-child(9) { grid-column: 11 / 13; }
-  .combo-table tbody td:nth-child(n+4)[data-label]::before { content: attr(data-label); display: block; font-size: 11px; line-height: 1.3; color: var(--faint); }
+  .combo-table tbody td:nth-child(2) { grid-column: 1 / 5; }
+  .combo-table tbody td:nth-child(3) { grid-column: 5 / 9; }
+  .combo-table tbody td:nth-child(4) { grid-column: 9 / 13; }
+  .combo-table tbody td:nth-child(5) { grid-column: 1 / 4; }
+  .combo-table tbody td:nth-child(6) { grid-column: 4 / 6; }
+  .combo-table tbody td:nth-child(7) { grid-column: 6 / 8; }
+  .combo-table tbody td:nth-child(8) { grid-column: 8 / 10; }
+  .combo-table tbody td:nth-child(9) { grid-column: 10 / 11; }
+  .combo-table tbody td:nth-child(10) { grid-column: 11 / 13; }
+  .combo-table tbody td:nth-child(n+5)[data-label]::before { content: attr(data-label); display: block; font-size: 11px; line-height: 1.3; color: var(--faint); }
   .combo-table tbody td.num { text-align: left; white-space: normal; }
   .combo-table tbody td.act { text-align: right; align-self: end; }
-  .combo-table tbody td:nth-child(4) { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: flex-start; }
-  .combo-table tbody td:nth-child(4)::before { flex: 0 0 100%; }
+  .combo-table tbody td:nth-child(5) { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: flex-start; }
+  .combo-table tbody td:nth-child(5)::before { flex: 0 0 100%; }
   .combo-table tbody td[colspan] { grid-column: 1 / -1; }
   .combo-table tbody tr.pick:hover { background: var(--surface-2); }
   .combo-table tbody tr.active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
   .combo-table tbody tr.pick:hover td, .combo-table tbody tr.active td, .combo-table tbody tr.active td:first-child { background: none; box-shadow: none; }
+}
+
+.combo-table .tick-cell { width: 34px; padding-right: 0; }
+.row-tick { width: 16px; height: 16px; accent-color: var(--accent); }
+.tick-bar { align-items: center; gap: 10px; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--danger-border); border-radius: 10px; background: var(--danger-soft); }
+@container (max-width: 960px) {
+  .combo-table tbody tr { position: relative; }
+  .combo-table tbody td.tick-cell { position: absolute; left: 8px; top: 10px; width: auto; }
+  .combo-table tbody tr:has(.row-tick) td:nth-child(2) { padding-left: 24px; }
 }
 .fields-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0 10px; }
 .field { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
