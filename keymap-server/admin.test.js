@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { withServer, raw } = require('./harness');
+const R = require('./admin/recoil');
 
 const W = { 'X-Admin-Request': '1' };
 const xml = (v) => `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name="x" value="${v}" />\n</map>\n`;
@@ -102,3 +103,30 @@ test('POST /admin/api/ai/providers/models: returns error when missing baseUrl, h
   });
 });
 
+
+test.afterEach(() => { R.setFireOverrides({}); R.setRuleOverrides({}); R.setDisabledGuns([]); }); // RecoilLib is shared by the whole process
+
+test('standards API: fire parameters are listed, saved, refused when bad (nothing else changes), and reset', async () => {
+  await withServer({}, async ({ port }) => {
+    const g = await raw(port, 'GET', '/admin/api/standards');
+    assert.equal(g.status, 200);
+    assert.deepEqual(g.json.fire, {});
+    const put = (code, body, headers = W) => raw(port, 'PUT', `/admin/api/standards/${code}`, { headers, body });
+    const ok = await put('M416', { fire: { magazine: 40, interval: 0.09 } });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json.fire, { M416: { magazine: 40, interval: 0.09 } });
+    assert.equal(R.fireOf('M416').emptyMs, 3510);
+    // a bad fire next to a good "disabled" changes neither
+    const bad = await put('AKM', { disabled: true, fire: { magazine: 0, interval: 0.1 } });
+    assert.equal(bad.status, 400);
+    assert.deepEqual((await raw(port, 'GET', '/admin/api/standards')).json.disabled, []);
+    assert.equal((await put('Nope', { fire: { magazine: 5, interval: 1 } })).status, 400);
+    assert.equal((await put('M416', {}, {})).status === 200, false, 'no admin header');
+    assert.equal((await put('M416', { fire: null })).json.fire.M416, null);
+    const del = await raw(port, 'DELETE', '/admin/api/standards/M416/fire', { headers: W });
+    assert.equal(del.status, 200);
+    assert.deepEqual(del.json.fire, {});
+    assert.equal(R.fireOf('M416').emptyMs, 2465);
+    assert.equal((await raw(port, 'DELETE', '/admin/api/standards/M416/fire', { headers: W })).status, 400, 'nothing left to reset');
+  });
+});

@@ -304,7 +304,13 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       return json(res, 200, { ok: true, ranking, model: r.model, ms: r.ms, dataset: ctx.dataset });
     }
     // ---- "Tiêu chuẩn súng": the user's corrections of what each gun can take (the page loads them into its own RecoilLib)
-    if (p === '/admin/api/standards' && method === 'GET') return json(res, 200, { overrides: standards.list(), disabled: standards.listDisabled() });
+    const standardsState = () => ({ overrides: standards.list(), disabled: standards.listDisabled(), fire: standards.listFire() });
+    if (p === '/admin/api/standards' && method === 'GET') return json(res, 200, standardsState());
+    if ((m = /^\/admin\/api\/standards\/([^/]+)\/fire$/.exec(p)) && method === 'DELETE') {
+      const r = standards.resetFire(safeDecode(m[1]));
+      if (!r.ok) return err(res, 400, r.error);
+      return json(res, 200, { ok: true, ...standardsState() });
+    }
     if ((m = /^\/admin\/api\/standards\/([^/]+)$/.exec(p)) && (method === 'PUT' || method === 'DELETE')) {
       const code = safeDecode(m[1]);
       let r;
@@ -312,20 +318,20 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       else {
         const body = await jsonBody(req);
         if (!body || typeof body !== 'object') return err(res, 400, 'Invalid request body');
-        if (Object.prototype.hasOwnProperty.call(body, 'disabled')) {
-          r = standards.setDisabled(code, Boolean(body.disabled));
-          if (r.ok && Object.prototype.hasOwnProperty.call(body, 'rule')) {
-            const r2 = standards.set(code, body.rule);
-            if (!r2.ok) r = r2;
-          }
-        } else if (Object.prototype.hasOwnProperty.call(body, 'rule')) {
-          r = standards.set(code, body.rule);
-        } else {
-          return err(res, 400, 'Thiếu "rule" hoặc "disabled".');
+        const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+        if (!has('disabled') && !has('rule') && !has('fire')) return err(res, 400, 'Thiếu "rule", "disabled" hoặc "fire".');
+        // the fire parameters are checked first: a bad one must not leave half of the request written
+        if (has('fire')) {
+          const v = standards.validateFire(code, body.fire);
+          if (!v.ok) return err(res, 400, v.error);
         }
+        r = { ok: true };
+        if (has('disabled')) r = standards.setDisabled(code, Boolean(body.disabled));
+        if (r.ok && has('rule')) r = standards.set(code, body.rule);
+        if (r.ok && has('fire')) r = standards.setFire(code, body.fire);
       }
       if (!r.ok) return err(res, 400, r.error);
-      return json(res, 200, { ok: true, overrides: standards.list(), disabled: standards.listDisabled() });
+      return json(res, 200, { ok: true, ...standardsState() });
     }
     // ---- "Cài đặt AI": the endpoints and their order. Keys never come back; the address of the environment endpoint neither.
     if (p === '/admin/api/ai/providers' && method === 'GET') return json(res, 200, { providers: aiProviders.publicList() });
