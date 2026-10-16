@@ -423,3 +423,12 @@ test('computedFor: base curve times the coefficients, ignoring any own entry; re
   // the zero guns
   assert.deepEqual(R.computedFor(idx, combo({ weapon: W('MORTAR') })).curve, [[0, 0]]);
 });
+
+test('filterCombos: by scope and posture together; null means any, an empty set means none', () => {
+  const list = [{ scope: 1, gesture: 0 }, { scope: 1, gesture: 1 }, { scope: 2, gesture: 0 }, { scope: 3, gesture: 2 }];
+  assert.equal(R.filterCombos(list).length, 4);
+  assert.deepEqual(R.filterCombos(list, { scopes: new Set([1]) }).map((c) => c.gesture), [0, 1]);
+  assert.deepEqual(R.filterCombos(list, { gestures: new Set([0]) }).map((c) => c.scope), [1, 2]);
+  assert.deepEqual(R.filterCombos(list, { scopes: new Set([1, 3]), gestures: new Set([0, 2]) }), [{ scope: 1, gesture: 0 }, { scope: 3, gesture: 2 }]);
+  assert.deepEqual(R.filterCombos(list, { scopes: new Set() }), []);
+});

@@ -2315,16 +2315,55 @@
     const scopeOwn = el('input', { type: 'radio', name: 'batch-scope', value: 'own', checked: ownCombos.length > 0 });
     const scopeAll = el('input', { type: 'radio', name: 'batch-scope', value: 'all', checked: ownCombos.length === 0 });
 
+    // which scopes and postures get the points (all by default); the combination range above is the other half of the filter
+    const selScopes = new Set(scopes);
+    const selGestures = new Set([0, 1, 2]);
+    const range = () => (scopeAll.checked ? allValidCombos : ownCombos);
+    const currentTargets = () => RL.filterCombos(range(), { scopes: selScopes, gestures: selGestures });
+    const countBy = (list, key) => list.reduce((m, c) => m.set(c[key], (m.get(c[key]) || 0) + 1), new Map());
+    let setApplyDisabled = null;
+    const pickBox = (label, on) => {
+      const input = el('input', { type: 'checkbox', checked: true, onchange: (e) => on(e.target.checked) });
+      const n = el('span', { class: 'pick-n' });
+      return { input, n, node: el('label', { class: 'pick' }, input, el('span', {}, label), n) };
+    };
+    const toggle = (set, v, on) => { if (on) set.add(v); else set.delete(v); updateSummary(); };
+    const scopePicks = scopes.map((sc) => ({ sc, ...pickBox(RL.LABELS.SCOPES[sc], (on) => toggle(selScopes, sc, on)) }));
+    const posturePicks = [0, 1, 2].map((ge) => ({ ge, ...pickBox(POSTURE_VN[ge], (on) => toggle(selGestures, ge, on)) }));
+    const setPicks = (picks, set, key, values) => { set.clear(); for (const v of values) set.add(v); picks.forEach((x) => { x.input.checked = set.has(x[key]); }); updateSummary(); };
+    const quick = (label, fn, title) => el('button', { type: 'button', class: 'btn small ghost', title, onclick: fn }, label);
+    const scopeQuick = el('div', { class: 'pick-quick' },
+      quick('Tất cả', () => setPicks(scopePicks, selScopes, 'sc', scopes)),
+      quick('Bỏ chọn', () => setPicks(scopePicks, selScopes, 'sc', [])),
+      scopes.includes(rc.scope) ? quick('Chỉ ống đang xem', () => setPicks(scopePicks, selScopes, 'sc', [rc.scope]), RL.LABELS.SCOPES[rc.scope]) : null);
+    const postureQuick = el('div', { class: 'pick-quick' },
+      quick('Tất cả', () => setPicks(posturePicks, selGestures, 'ge', [0, 1, 2])),
+      quick('Chỉ tư thế đang xem', () => setPicks(posturePicks, selGestures, 'ge', [rc.gesture]), POSTURE_VN[rc.gesture]));
+    const scopePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Ống ngắm' }, scopePicks.map((x) => x.node));
+    const posturePickBox = el('div', { class: 'pick-group', role: 'group', 'aria-label': 'Tư thế' }, posturePicks.map((x) => x.node));
+
     const summaryText = el('div', { class: 'modal-callout-text' });
     const summaryCard = el('div', { class: 'modal-callout info' }, icon('sparkles'), summaryText);
+    const names = (all, picked, labelOf, allText) => (picked.length === all ? allText : picked.length <= 4 ? picked.map(labelOf).join(', ') : `${picked.slice(0, 4).map(labelOf).join(', ')} +${picked.length - 4}`);
 
-    const updateSummary = () => {
+    function updateSummary() {
       const n = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
-      const isAll = scopeAll.checked;
-      const countTargets = isAll ? allValidCombos.length : ownCombos.length;
+      const targets = currentTargets();
+      const inRange = range();
+      const byScope = countBy(RL.filterCombos(inRange, { gestures: selGestures }), 'scope');
+      const byGesture = countBy(RL.filterCombos(inRange, { scopes: selScopes }), 'gesture');
+      scopePicks.forEach((x) => { x.n.textContent = String(byScope.get(x.sc) || 0); });
+      posturePicks.forEach((x) => { x.n.textContent = String(byGesture.get(x.ge) || 0); });
       const method = methodTrend.checked ? 'theo xu hướng mốc trước' : 'theo bước chuẩn ngẫu nhiên';
-      summaryText.textContent = `Sẽ thêm ${n} mốc (${method}) vào ${countTargets} tổ hợp của ${gunName} (bộ dữ liệu: ${MODE_VN[rc.mode]}).`;
-    };
+      let msg;
+      if (!selScopes.size) msg = 'Chưa chọn ống ngắm nào.';
+      else if (!selGestures.size) msg = 'Chưa chọn tư thế nào.';
+      else if (!targets.length) msg = 'Không có tổ hợp nào khớp ống ngắm, tư thế và phạm vi đã chọn.';
+      else msg = `Sẽ thêm ${n} mốc (${method}) vào ${targets.length} tổ hợp của ${gunName}: ${names(scopes.length, [...selScopes], (x) => RL.LABELS.SCOPES[x], 'mọi ống ngắm')} · ${names(3, [...selGestures].sort(), (x) => POSTURE_VN[x], 'cả 3 tư thế')} (bộ dữ liệu: ${MODE_VN[rc.mode]}).`;
+      summaryText.textContent = msg;
+      summaryCard.className = `modal-callout ${targets.length ? 'info' : 'warn'}`;
+      if (setApplyDisabled) setApplyDisabled(!targets.length);
+    }
 
     countInput.oninput = updateSummary;
     methodTrend.onchange = updateSummary;
@@ -2368,7 +2407,7 @@
       title: `Thêm mốc cho súng ${gunName}`,
       tone: 'info',
       body: [
-        el('p', { class: 'muted' }, `Thêm mốc nối tiếp cho ${gunName} ở tất cả tư thế (Đứng, Ngồi, Nằm) và ống ngắm.`),
+        el('p', { class: 'muted' }, `Thêm mốc nối tiếp cho ${gunName} ở các ống ngắm và tư thế bạn chọn.`),
         el('div', { class: 'field' },
           el('span', { class: 'font-semibold text-sm' }, 'Số lượng mốc cần thêm vào mỗi tổ hợp (1–20 mốc):'),
           stepper
@@ -2376,6 +2415,14 @@
         el('div', { class: 'field' },
           el('span', { class: 'font-semibold text-sm' }, 'Quy tắc tính mốc tiếp theo:'),
           methodCards
+        ),
+        el('div', { class: 'field' },
+          el('span', { class: 'font-semibold text-sm' }, 'Ống ngắm (số tổ hợp bị thêm mốc):'),
+          scopePickBox, scopeQuick
+        ),
+        el('div', { class: 'field' },
+          el('span', { class: 'font-semibold text-sm' }, 'Tư thế:'),
+          posturePickBox, postureQuick
         ),
         el('div', { class: 'field' },
           el('span', { class: 'font-semibold text-sm' }, 'Phạm vi tổ hợp áp dụng:'),
@@ -2388,16 +2435,17 @@
         { id: 'cancel', label: 'Hủy' },
         { id: 'apply', label: 'Bắt đầu thêm mốc', primary: true },
       ],
+      onOpen: ({ setDisabled }) => { setApplyDisabled = (v) => setDisabled('apply', v); updateSummary(); },
     });
 
     if (choice !== 'apply') return;
 
     const count = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
     const method = methodTrend.checked ? 'trend' : 'step';
-    const targets = scopeAll.checked ? allValidCombos : ownCombos;
+    const targets = currentTargets();
 
     if (!targets.length) {
-      toast(`${gunName}: không có tổ hợp nào phù hợp với phạm vi đã chọn.`, true);
+      toast(`${gunName}: không có tổ hợp nào phù hợp với ống ngắm, tư thế và phạm vi đã chọn.`, true);
       return;
     }
 

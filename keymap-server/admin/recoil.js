@@ -542,6 +542,9 @@
     return { keys, entries, byGesture, byScope };
   }
 
+  // Keeps the combinations whose scope is in `scopes` and whose posture is in `gestures` (a Set of enum indexes; null = any).
+  const filterCombos = (list, { scopes = null, gestures = null } = {}) => list.filter((c) => (!scopes || scopes.has(c.scope)) && (!gestures || gestures.has(c.gesture)));
+
   // Combos that have their own entry for (weapon, scope, gesture), sorted by grip, muzzle, stock.
   function exactCombos(idx, weapon, scope, gesture) {
     const out = [];
@@ -552,5 +555,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });
