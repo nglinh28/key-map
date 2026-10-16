@@ -962,7 +962,7 @@ textarea.editor:focus { outline: none; border-color: var(--accent); box-shadow: 
 .lv-detail-head .keychips { margin: 0; }
 .lv-props { width: 100%; }
 @media (min-width: 900px) { .lv-props tbody { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; } .lv-props tr { display: grid; grid-template-columns: 9em 1fr; } }
-svg.screen { display: block; width: 100%; height: auto; touch-action: none; outline: none; --fs: 34px; }
+svg.screen { display: block; width: 100%; height: auto; outline: none; --fs: 34px; }
 .screen .frame { fill: var(--surface); stroke: var(--muted); stroke-width: 3; }
 .screen .grid { stroke: var(--line); stroke-width: 1; }
 .screen .grid.major { stroke: color-mix(in srgb, var(--muted) 35%, transparent); stroke-width: 2; }

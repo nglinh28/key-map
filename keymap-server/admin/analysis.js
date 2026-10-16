@@ -379,6 +379,7 @@
     if (rc.itemId !== it.id) { rc.itemId = it.id; rc.drafts.clear(); rc.customCombos = new Set(); } // added combinations and drafts belong to one item
     S.sel = { id: it.id, kind: it.kind, ns: it.ns, label: it.label };
     lay.selected = null;
+    lay.filter = null; lay.q = ''; lay.zoom = 1; // these belong to one item
     rc.picked = null;
     window.scrollTo(0, 0);
     redraw();
@@ -529,6 +530,7 @@
     if (lay.filter === undefined) lay.filter = null;
     if (lay.q === undefined) lay.q = '';
     const comps = doc.components;
+    lay.filter = LL.validFilter(kind, comps, lay.filter);
     const noun = kind === 'recognition' ? 'ô' : 'phím';
     const scr = screenSize();
     const canvas = LL.canvasSize(comps.filter((c) => c && typeof c === 'object'), scr, lay.origin);
@@ -566,7 +568,7 @@
     const rowEls = {};
     const count = el('span', { class: 'muted text-sm', role: 'status' });
     const listBody = el('tbody', {}, rows.map((r) => {
-      const tr = el('tr', { class: 'lv-row', tabindex: '0', 'data-i': r.i, 'aria-selected': 'false' },
+      const tr = el('tr', { class: 'lv-row', tabindex: '0', 'data-i': r.i, 'aria-current': 'false' },
         el('td', {}, el('div', { class: 'lv-keys' }, el('span', { class: `lv-dot c-${r.cls}`, title: r.className, 'aria-hidden': 'true' }), r.keys.length ? r.keys.map((k) => el('span', { class: 'keychip' }, k)) : el('span', {}, r.title)),
           r.keys.length ? null : el('div', { class: 'muted text-sm' }, r.className)),
         el('td', { class: 'mono num text-sm', title: `${r.w}×${r.h}` }, `${r.x}, ${r.y}`));
@@ -599,13 +601,13 @@
       guide.append(svgEl('text', { class: `guide-label${right ? ' end' : ''}`, x: right ? Math.min(canvas.w - 8, r.x + r.w) : Math.max(8, r.x), y: below ? r.y + r.h + 46 : r.y - 16 }, `${Math.round(r.x)}, ${Math.round(r.y)} · ${Math.round(r.w)}×${Math.round(r.h)}`));
     }
     function select(i, { scroll = true, fromList = false } = {}) {
-      if (lay.selected !== null && nodes[lay.selected]) { nodes[lay.selected].classList.remove('sel'); rowEls[lay.selected].setAttribute('aria-selected', 'false'); rowEls[lay.selected].classList.remove('sel'); }
+      if (lay.selected !== null && nodes[lay.selected]) { nodes[lay.selected].classList.remove('sel'); rowEls[lay.selected].setAttribute('aria-current', 'false'); rowEls[lay.selected].classList.remove('sel'); }
       lay.selected = i;
       if (i !== null && nodes[i]) {
         nodes[i].classList.add('sel');
         svg.insertBefore(nodes[i], guide); // on top of its neighbours
         rowEls[i].classList.add('sel');
-        rowEls[i].setAttribute('aria-selected', 'true');
+        rowEls[i].setAttribute('aria-current', 'true');
         if (scroll && rowEls[i].scrollIntoView) rowEls[i].scrollIntoView({ block: 'nearest' });
         if (fromList && nodes[i].scrollIntoView && lay.zoom > 1) nodes[i].scrollIntoView({ block: 'nearest', inline: 'nearest' });
       }
@@ -616,14 +618,13 @@
     // ---- legend, search, filter
     const chipEls = [];
     function applyFilter() {
-      let shown = 0;
+      const ok = new Set(LL.visibleRows(rows, lay.filter, lay.q).map((r) => r.i));
       for (const r of rows) {
-        const inClass = !lay.filter || r.cls === lay.filter;
-        const ok = inClass && LL.matchRow(r, lay.q);
-        rowEls[r.i].hidden = !ok;
-        nodes[r.i].classList.toggle('dim', !inClass || !LL.matchRow(r, lay.q));
-        if (ok) shown++;
+        rowEls[r.i].hidden = !ok.has(r.i);
+        nodes[r.i].classList.toggle('dim', !ok.has(r.i));
       }
+      const shown = ok.size;
+      if (lay.selected !== null && !ok.has(lay.selected)) select(null, { scroll: false }); // a hidden box is not left selected
       count.textContent = shown === rows.length ? `${rows.length} ${noun}` : `${shown}/${rows.length} ${noun}`;
       empty.hidden = shown !== 0;
       chipEls.forEach(([cls, b]) => b.setAttribute('aria-pressed', String(lay.filter === cls)));
@@ -646,24 +647,40 @@
     svg.addEventListener('pointermove', (e) => { const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const p = pt.matrixTransform(svg.getScreenCTM().inverse()); coords.textContent = `x=${Math.round(p.x)}  y=${Math.round(p.y)}`; });
     svg.style.width = `${lay.zoom * 100}%`;
     const fitLetters = () => { const w = svg.getBoundingClientRect().width; if (w > 0) svg.style.setProperty('--fs', `${LL.fontUnits(w / canvas.w, Math.max(9, Math.min(13, w / 90)))}px`); };
-    if (typeof ResizeObserver === 'function') new ResizeObserver(fitLetters).observe(svg);
+    if (lay.ro) lay.ro.disconnect();
+    lay.ro = typeof ResizeObserver === 'function' ? new ResizeObserver(fitLetters) : null;
+    if (lay.ro) lay.ro.observe(svg);
     requestAnimationFrame(fitLetters);
 
     // ---- toolbar
-    const screenSel = el('select', { 'aria-label': 'Kích thước màn hình', onchange: (e) => { lay.screenId = e.target.value; savePrefs(); redraw(); } },
+    const screenSel = el('select', { 'aria-label': 'Kích thước màn hình', 'data-fk': 'screen', onchange: (e) => { lay.screenId = e.target.value; lay.focus = 'screen'; savePrefs(); redraw(); } },
       LL.SCREEN_PRESETS.map((p) => el('option', { value: p.id, selected: p.id === lay.screenId }, p.label)), el('option', { value: 'custom', selected: lay.screenId === 'custom' }, 'Tùy chỉnh…'));
-    const custom = lay.screenId === 'custom' ? ['w', 'h'].map((f) => el('label', { class: 'numfield' }, f === 'w' ? 'Rộng' : 'Cao', el('input', { type: 'number', value: String(lay.custom[f]), min: '100', onchange: (e) => { const n = Math.round(Number(e.target.value)); if (n >= 100) { lay.custom[f] = n; savePrefs(); redraw(); } } }))) : null;
-    const originSel = el('select', { 'aria-label': 'Gốc toạ độ', title: 'Chưa xác nhận base:x/base:y là góc trên-trái hay tâm ô: dùng ảnh nền chụp từ game để đối chiếu rồi chọn đúng.', onchange: (e) => { lay.origin = e.target.value; savePrefs(); redraw(); } },
+    const custom = lay.screenId === 'custom' ? ['w', 'h'].map((f) => el('label', { class: 'numfield' }, f === 'w' ? 'Rộng' : 'Cao', el('input', { type: 'number', 'data-fk': `custom-${f}`, value: String(lay.custom[f]), min: '100', onchange: (e) => { const n = Math.round(Number(e.target.value)); if (n >= 100) { lay.custom[f] = n; lay.focus = `custom-${f}`; savePrefs(); redraw(); } } }))) : null;
+    const originSel = el('select', { 'aria-label': 'Gốc toạ độ', 'data-fk': 'origin', title: 'Chưa xác nhận base:x/base:y là góc trên-trái hay tâm ô: dùng ảnh nền chụp từ game để đối chiếu rồi chọn đúng.', onchange: (e) => { lay.origin = e.target.value; lay.focus = 'origin'; savePrefs(); redraw(); } },
       el('option', { value: 'topleft', selected: lay.origin === 'topleft' }, 'Toạ độ = góc trên-trái ô'), el('option', { value: 'center', selected: lay.origin === 'center' }, 'Toạ độ = tâm ô'));
     const file = el('input', { type: 'file', accept: 'image/*', hidden: true, onchange: (e) => { const f = e.target.files[0]; if (!f) return; if (lay.bg.url) URL.revokeObjectURL(lay.bg.url); lay.bg.url = URL.createObjectURL(f); redraw(); } });
-    const opacity = el('input', { type: 'range', min: '0.1', max: '1', step: '0.05', value: String(lay.bg.opacity), 'aria-label': 'Độ mờ ảnh nền', onchange: (e) => { lay.bg.opacity = Number(e.target.value); redraw(); } });
-    const zi = ZOOMS.indexOf(lay.zoom);
-    const zoomTo = (z) => { lay.zoom = z; redraw(); };
-    const zoomBox = el('div', { class: 'lv-zoom', role: 'group', 'aria-label': 'Phóng to' },
-      el('button', { type: 'button', class: 'btn small', 'aria-label': 'Thu nhỏ', disabled: zi <= 0, onclick: () => zoomTo(ZOOMS[zi - 1]) }, '−'),
-      el('span', { class: 'lv-zoom-n mono', role: 'status' }, `${Math.round(lay.zoom * 100)}%`),
-      el('button', { type: 'button', class: 'btn small', 'aria-label': 'Phóng to', disabled: zi >= ZOOMS.length - 1, onclick: () => zoomTo(ZOOMS[zi + 1]) }, '+'),
-      el('button', { type: 'button', class: 'btn small', disabled: lay.zoom === 1, onclick: () => zoomTo(1) }, 'Vừa khung'));
+    const opacity = el('input', { type: 'range', min: '0.1', max: '1', step: '0.05', value: String(lay.bg.opacity), 'aria-label': 'Độ mờ ảnh nền', 'data-fk': 'opacity', onchange: (e) => { lay.bg.opacity = Number(e.target.value); lay.focus = 'opacity'; redraw(); } });
+    // zoom changes the picture in place (no redraw): the buttons keep focus and the view stays centred where it was
+    const scroller = el('div', { class: 'lv-scroll' }, svg);
+    const zOut = el('button', { type: 'button', class: 'btn small', 'aria-label': 'Thu nhỏ', onclick: () => zoomBy(-1) }, '−');
+    const zIn = el('button', { type: 'button', class: 'btn small', 'aria-label': 'Phóng to', onclick: () => zoomBy(1) }, '+');
+    const zFit = el('button', { type: 'button', class: 'btn small', onclick: () => setZoom(1) }, 'Vừa khung');
+    const zNum = el('span', { class: 'lv-zoom-n mono', role: 'status' });
+    function setZoom(z) {
+      const cx = (scroller.scrollLeft + scroller.clientWidth / 2) / (scroller.scrollWidth || 1);
+      const cy = (scroller.scrollTop + scroller.clientHeight / 2) / (scroller.scrollHeight || 1);
+      lay.zoom = z;
+      svg.style.width = `${z * 100}%`;
+      fitLetters();
+      scroller.scrollLeft = cx * scroller.scrollWidth - scroller.clientWidth / 2;
+      scroller.scrollTop = cy * scroller.scrollHeight - scroller.clientHeight / 2;
+      const zi = ZOOMS.indexOf(z);
+      zNum.textContent = `${Math.round(z * 100)}%`;
+      zOut.disabled = zi <= 0; zIn.disabled = zi >= ZOOMS.length - 1; zFit.disabled = z === 1;
+    }
+    const zoomBy = (d) => { const zi = ZOOMS.indexOf(lay.zoom) + d; if (zi >= 0 && zi < ZOOMS.length) setZoom(ZOOMS[zi]); };
+    const zoomBox = el('div', { class: 'lv-zoom', role: 'group', 'aria-label': 'Phóng to' }, zOut, zNum, zIn, zFit);
+    setZoom(lay.zoom);
     const toolbar = el('div', { class: 'lv-toolbar' }, screenSel, custom, originSel,
       el('label', { class: 'btn small', title: 'Ảnh chỉ xử lý trong trình duyệt, không tải lên server.' }, icon('plus'), 'Ảnh game làm nền', file),
       lay.bg.url ? [opacity, el('button', { class: 'btn small', onclick: () => { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; redraw(); } }, 'Bỏ ảnh nền')] : null,
@@ -672,16 +689,18 @@
     applyFilter();
     if (lay.selected !== null && !nodes[lay.selected]) lay.selected = null;
     select(lay.selected, { scroll: false });
-    return el('div', { class: 'layout2' },
+    const view = el('div', { class: 'layout2' },
       el('div', { class: 'card lv-stage-card' },
         el('div', { class: 'lv-title' }, el('h2', {}, `Màn hình hiển thị vị trí (${comps.length} ${noun})`), el('span', { class: 'muted text-sm' }, 'Chỉ xem, không sửa')),
         toolbar, legendRow,
         el('div', { class: 'lv-grid' },
-          el('div', { class: 'lv-stage' }, el('div', { class: 'lv-scroll' }, svg), coords),
+          el('div', { class: 'lv-stage' }, scroller, coords),
           el('div', { class: 'lv-side' },
             el('div', { class: 'lv-side-head' }, search, count),
             el('div', { class: 'lv-list' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, noun === 'phím' ? 'Phím' : 'Ô'), el('th', { class: 'num' }, 'Vị trí'))), listBody), empty)))),
       el('div', { class: 'card' }, panel));
+    if (lay.focus) { const key = lay.focus; lay.focus = null; requestAnimationFrame(() => { const t = view.querySelector(`[data-fk="${key}"]`); if (t) t.focus(); }); } // a redraw must not drop the keyboard focus
+    return view;
   }
 
   // ---------------------------------------------------------------- recoil analysis (read-only)
@@ -3039,7 +3058,7 @@
   window.Analysis = {
     // called when the tab opens: fetches the file again, then returns the page
     async view() { active = true; aiStatusP = null; S.sel = null; await load(); return draw(); },
-    leave() { active = false; stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (typeof lay !== 'undefined' && lay?.bg?.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
+    leave() { active = false; if (lay.ro) { lay.ro.disconnect(); lay.ro = null; } stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (typeof lay !== 'undefined' && lay?.bg?.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
     discardOk,
   };
 })();

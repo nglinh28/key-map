@@ -148,7 +148,30 @@ test('listRows and matchRow: one row per component, found without case or accent
 
 test('fontUnits: about px pixels on the page, within bounds, and safe on a bad scale', () => {
   assert.equal(Math.round(L.fontUnits(0.5, 13)), 26);
-  assert.equal(L.fontUnits(10, 13), 22);
+  assert.equal(L.fontUnits(10, 13), 1.3, 'zoomed in: small in units, still 13 px on the page');
   assert.equal(L.fontUnits(0.01, 13), 140);
   for (const bad of [0, -1, NaN, Infinity, undefined]) assert.equal(L.fontUnits(bad), 22);
+});
+
+test('recognition maps: the number on the box is searchable, and a bad type from the file cannot break the name', () => {
+  const rows = L.listRows('recognition', [{ type: 8 }, { type: 'constructor' }, { type: 1.5 }, 'abc', null]);
+  assert.equal(rows[0].label, '8');
+  assert.equal(L.matchRow(rows[0], '8'), true);
+  for (const r of rows.slice(1)) { assert.equal(typeof r.title, 'string'); assert.notEqual(r.cls, undefined); assert.ok(L.CLASS_NAMES[r.cls] || r.cls === 'unknown'); }
+  assert.equal(L.recognitionType('length').group, 'unknown');
+  assert.equal(L.legend('keymap', ['abc', 5, null]).length, 1, 'primitives count as unknown components, not junk');
+});
+
+test('visibleRows and validFilter: the filter and the text together, and a stale filter is dropped', () => {
+  const comps = [
+    { 'base:componentIdentifier': 'com.zjx.app:ntp', 'singlehotkeyproperty:first': 44, 'singlehotkeyproperty:second': -1 },
+    { 'base:componentIdentifier': 'com.zjx.app:joystick' },
+  ];
+  const rows = L.listRows('keymap', comps);
+  assert.equal(L.visibleRows(rows, null, '').length, 2);
+  assert.deepEqual(L.visibleRows(rows, 'ntp', '').map((r) => r.i), [0]);
+  assert.deepEqual(L.visibleRows(rows, 'ntp', 'joystick'), []);
+  assert.equal(L.validFilter('keymap', comps, 'ntp'), 'ntp');
+  assert.equal(L.validFilter('recognition', [{ type: 4 }], 'ntp'), null, 'a class this document does not have');
+  assert.equal(L.validFilter('keymap', comps, null), null);
 });
