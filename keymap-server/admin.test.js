@@ -130,3 +130,15 @@ test('standards API: fire parameters are listed, saved, refused when bad (nothin
     assert.equal((await raw(port, 'DELETE', '/admin/api/standards/M416/fire', { headers: W })).status, 400, 'nothing left to reset');
   });
 });
+
+test('AI test and model list never send a stored key to another server', async () => {
+  await withServer({}, async ({ port }) => {
+    const put = await raw(port, 'PUT', '/admin/api/ai/providers', { headers: W, body: { providers: [{ name: 'Mock', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKey: 'sk-secret', enabled: true }] } });
+    const id = put.json.providers.find((p) => !p.builtin).id;
+    for (const route of ['test', 'models']) {
+      const r = await raw(port, 'POST', `/admin/api/ai/providers/${route}`, { headers: W, body: { id, provider: { id, baseUrl: 'http://127.0.0.1:10/v1', model: 'm' } } });
+      assert.equal(r.status, 400, route);
+      assert.match(r.json.error, /nhập lại khóa/);
+    }
+  });
+});

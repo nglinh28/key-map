@@ -79,6 +79,12 @@ const safeDecode = (s) => {
   try { return decodeURIComponent(s); } catch { return s; }
 };
 
+// true when a request would send the STORED key of `saved` to another server than the stored one (no key typed, other origin)
+function keyGoesElsewhere(saved, bp) {
+  if (!saved || !saved.apiKey || (typeof bp.apiKey === 'string' && bp.apiKey !== '')) return false;
+  try { return new URL(saved.baseUrl).origin !== new URL(bp.baseUrl).origin; } catch { return true; }
+}
+
 function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
   const pageCache = new Map();
   // the AI endpoints, in the order they are tried: FreeLLMAPI of the environment first by default, then what "Cài đặt AI" added
@@ -346,6 +352,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       let one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
       if (body && body.provider && typeof body.provider === 'object') {
         const bp = body.provider;
+        if (bp.baseUrl && keyGoesElsewhere(one, bp)) return err(res, 400, 'Đổi địa chỉ máy chủ thì phải nhập lại khóa API (khóa đã lưu không được gửi sang máy chủ khác).');
         if (bp.baseUrl) {
           const key = bp.apiKey !== undefined && bp.apiKey !== '' ? bp.apiKey : ((one && one.apiKey) || '');
           if (key) {
@@ -363,6 +370,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       let one = body && typeof body.id === 'string' ? aiProviders.get(body.id) : null;
       if (body && body.provider && typeof body.provider === 'object') {
         const bp = body.provider;
+        if (bp.baseUrl && keyGoesElsewhere(one, bp)) return err(res, 400, 'Đổi địa chỉ máy chủ thì phải nhập lại khóa API (khóa đã lưu không được gửi sang máy chủ khác).');
         if (bp.baseUrl) {
           one = {
             id: (one && one.id) || bp.id || 'custom-models',

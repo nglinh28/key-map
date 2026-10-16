@@ -170,7 +170,17 @@
           ok: true,
           text: `Kết nối thành công! Model phản hồi: ${r.model} (${Math.round(r.ms)}ms)`,
         });
-        if (p.dirty && !st.saving) { st.testing.delete(i); await saveAll(); st.testOut.set(i, { ok: true, text: `Kết nối thành công với ${r.model} (${Math.round(r.ms)}ms) và đã lưu để dùng model này.` }); }
+        if (p.dirty && st.providers[i] === p) {
+          // "OK → use this model": saved at once, but only when nothing else on the page is waiting to be saved (the whole page is one save)
+          const others = st.providers.some((q, k) => k !== i && (q.dirty || q.apiKey));
+          if (others || st.saving) {
+            st.testOut.set(i, { ok: true, text: `Kết nối thành công với ${r.model} (${Math.round(r.ms)}ms). Chưa lưu: trang còn thay đổi khác, bấm "Lưu tất cả" để dùng model này.` });
+          } else {
+            st.testing.delete(i);
+            const saved = await saveAll();
+            st.testOut.set(i, { ok: saved, text: saved ? `Kết nối thành công với ${r.model} (${Math.round(r.ms)}ms) và đã lưu để dùng model này.` : `Kết nối thành công với ${r.model} nhưng chưa lưu được cấu hình (xem thông báo lỗi). Sửa rồi bấm "Lưu tất cả".` });
+          }
+        }
       } else {
         st.testOut.set(i, {
           ok: false,
@@ -206,8 +216,10 @@
       st.status = await api('GET', '/ai/status').catch(() => ({ enabled: Boolean(first), model: first ? first.model : '' }));
       toast(first ? `Đã lưu cấu hình AI. Nguồn hoạt động chính: ${first.name}.` : 'Đã lưu cấu hình AI. Lưu ý: Chưa có nguồn nào sẵn sàng.');
       await loadData();
+      return true;
     } catch (e) {
       toast('Lưu thất bại: ' + e.message, true);
+      return false;
     } finally {
       st.saving = false;
       render();
