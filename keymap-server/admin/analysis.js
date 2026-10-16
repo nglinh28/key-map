@@ -1602,6 +1602,10 @@
       title: zero ? 'Súng này luôn dùng đường cong 0 trong app' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : undefined,
       onclick: () => showComboModal(ix)
     }, icon('plus'), 'Thêm tổ hợp');
+    const bulkDelBtn = el('button', {
+      type: 'button', class: 'btn small', onclick: guard(() => showBulkDeleteModal(ix)),
+      title: 'Chọn nhiều súng, tư thế, ống ngắm rồi xóa các mục riêng của chúng',
+    }, icon('trash'), 'Xóa nhiều…');
 
     const refFieldsBtn = el('button', {
       type: 'button',
@@ -1679,7 +1683,7 @@
         el('div', { class: 'row' }, el('h2', {}, 'Tổ hợp phụ kiện'),
           el('span', { class: 'muted', title: filtered ? `Đang lọc: ${TF.describe(rc.filters, { grip: 'Tay cầm', muzzle: 'Nòng', stock: 'Báng', source: 'Nguồn', v0: 'Giá trị t=0', vEnd: 'Giá trị cuối', duration: 'Thời lượng', points: 'Mốc' })}` : undefined }, filtered ? `${visible.length}/${model.length}` : String(model.length)),
           filtered || rc.sort ? el('button', { type: 'button', class: 'btn small ghost', onclick: clearFilters }, icon('x'), `Xóa bộ lọc${filtered ? ` (${TF.countActive(rc.filters)})` : ''}`) : null,
-          addComboBtn),
+          bulkDelBtn, addComboBtn),
         disabledNote,
         auditNote,
         bulkRow,
@@ -1940,6 +1944,61 @@
     });
     if (choice !== 'delete' || !sel.size) return;
     await deleteAudited(all.filter((e) => sel.has(auditKey(e))));
+  }
+
+  // "Xóa nhiều…": tick guns, postures and scopes (what is open now by default); every own entry matching all three goes
+  async function showBulkDeleteModal(ix) {
+    const own = RL.entriesWhere(ix.idx);
+    if (!own.length) { toast('Mục này chưa có mục riêng nào để xóa.'); return; }
+    const count = (key) => own.reduce((m, e) => m.set(e[key], (m.get(e[key]) || 0) + 1), new Map());
+    const guns = [...count('weapon').keys()].sort((a, b) => a - b);
+    const scopes = [...count('scope').keys()].sort((a, b) => a - b);
+    const sel = { weapon: new Set(guns.includes(rc.weapon) ? [rc.weapon] : []), gesture: new Set([rc.gesture]), scope: new Set(scopes.includes(rc.scope) ? [rc.scope] : []) };
+    const groups = [
+      { key: 'weapon', title: 'Súng', values: guns, label: (v) => RL.weaponLabel(v) },
+      { key: 'gesture', title: 'Tư thế', values: [0, 1, 2], label: (v) => POSTURE_VN[v] },
+      { key: 'scope', title: 'Ống ngắm', values: scopes, label: (v) => RL.LABELS.SCOPES[v] },
+    ];
+    let ctl = null;
+    const deleteBtn = el('button', { type: 'button', class: 'btn danger-fill', onclick: () => ctl && ctl.close('delete') });
+    const summary = el('p', { class: 'muted' });
+    const chips = [];
+    const matches = () => RL.entriesWhere(ix.idx, { weapons: sel.weapon, gestures: sel.gesture, scopes: sel.scope });
+    const paint = () => {
+      const hit = matches();
+      for (const g of groups) {
+        // how many entries each value would remove given the OTHER two groups
+        const others = { weapons: g.key === 'weapon' ? null : sel.weapon, gestures: g.key === 'gesture' ? null : sel.gesture, scopes: g.key === 'scope' ? null : sel.scope };
+        const per = RL.entriesWhere(ix.idx, others).reduce((m, e) => m.set(e[g.key], (m.get(e[g.key]) || 0) + 1), new Map());
+        for (const c of chips.filter((x) => x.g === g)) { c.input.checked = sel[g.key].has(c.v); c.n.textContent = String(per.get(c.v) || 0); }
+      }
+      const pickedNames = (g) => (sel[g.key].size === g.values.length ? `mọi ${g.title.toLowerCase()}` : sel[g.key].size ? [...sel[g.key]].sort((a, b) => a - b).slice(0, 4).map(g.label).join(', ') + (sel[g.key].size > 4 ? ` +${sel[g.key].size - 4}` : '') : `chưa chọn ${g.title.toLowerCase()}`);
+      summary.textContent = hit.length ? `Sẽ xóa ${hit.length} mục riêng (${groups.map(pickedNames).join(' · ')}).` : `Không có mục riêng nào khớp (${groups.map(pickedNames).join(' · ')}).`;
+      deleteBtn.replaceChildren(icon('trash'), `Xóa ${hit.length} mục`);
+      deleteBtn.disabled = !hit.length;
+    };
+    const sections = groups.map((g) => {
+      const boxes = g.values.map((v) => {
+        const input = el('input', { type: 'checkbox', onchange: (e) => { if (e.target.checked) sel[g.key].add(v); else sel[g.key].delete(v); paint(); } });
+        const n = el('span', { class: 'opt-chip-n' });
+        chips.push({ g, v, input, n });
+        return el('label', { class: 'opt-chip' }, input, el('span', {}, g.label(v)), n);
+      });
+      const quick = (text, fn) => el('button', { type: 'button', class: 'btn small ghost', onclick: () => { fn(); paint(); } }, text);
+      return el('div', { class: 'bulk-del-group' }, el('div', { class: 'row' }, el('strong', {}, g.title),
+        quick('Tất cả', () => { sel[g.key] = new Set(g.values); }), quick('Bỏ chọn', () => { sel[g.key] = new Set(); })),
+      el('div', { class: 'opt-chips', role: 'group', 'aria-label': g.title }, boxes));
+    });
+    paint();
+    const choice = await showModal({
+      title: 'Xóa nhiều tổ hợp', tone: 'warn', className: 'wide',
+      body: [el('p', {}, `Chọn súng, tư thế và ống ngắm của bộ dữ liệu "${ix.ds.key}". Chỉ các mục riêng khớp cả ba nhóm bị xóa; tổ hợp tính từ hệ số không bị ảnh hưởng. Số bên cạnh mỗi lựa chọn là số mục sẽ xóa nếu chọn nó.`),
+        ...sections, summary, el('div', { class: 'row' }, deleteBtn)],
+      actions: [{ id: 'close', label: 'Đóng' }],
+      onOpen: (c) => { ctl = c; },
+    });
+    if (choice !== 'delete') return;
+    await deleteAudited(matches(), 'đã chọn');
   }
 
   // the own entries of guns switched off in "Tiêu chuẩn súng": tick the guns, then the same deletion as the check against the table

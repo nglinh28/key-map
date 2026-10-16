@@ -542,6 +542,18 @@
     return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
+  // The own entries (one per key) whose gun, posture and scope are all in the given sets; a missing set means "any".
+  // -> [{ weapon, scope, grip, muzzle, stock, gesture, copies }]
+  function entriesWhere(idx, { weapons = null, gestures = null, scopes = null } = {}) {
+    const out = [];
+    for (const [key, list] of idx.map) {
+      const [weapon, scope, grip, muzzle, stock, gesture] = key.split('|').map(Number);
+      if ((weapons && !weapons.has(weapon)) || (gestures && !gestures.has(gesture)) || (scopes && !scopes.has(scope))) continue;
+      out.push({ weapon, scope, grip, muzzle, stock, gesture, copies: list.length });
+    }
+    return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
+  }
+
   // Deletes the own entries (every copy of each key) of many combinations in one go: the copy is made once, not once per combination.
   // list: [{ weapon, scope, grip, muzzle, stock, gesture }]. -> { doc, key, removed (entries), keys (combinations that had one) }
   function removeEntries(doc, mode, list) {
@@ -707,5 +719,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, disabledEntries, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, evenTimes, resample, retime, withEvenTimes, spreadAfter, durationGap, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, disabledEntries, entriesWhere, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, evenTimes, resample, retime, withEvenTimes, spreadAfter, durationGap, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });

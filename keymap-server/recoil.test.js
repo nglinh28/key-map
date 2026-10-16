@@ -606,3 +606,19 @@ test('disabledEntries: the own entries of the guns switched off, with their copi
     assert.equal(ds.data[AUG].v.length, 1, 'other guns keep their entries');
   } finally { R.setDisabledGuns([]); }
 });
+
+test('entriesWhere: filters the own entries by gun, posture and scope; a missing set means any', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const idx = R.indexData(dataset((g) => {
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100]]));
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 1, [[0, 90]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 70]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 71]]));
+  }));
+  assert.equal(R.entriesWhere(idx).length, 3);
+  assert.equal(R.entriesWhere(idx, { weapons: new Set([AUG]) }).length, 2);
+  assert.equal(R.entriesWhere(idx, { weapons: new Set([AUG]), gestures: new Set([1]) }).length, 1);
+  assert.deepEqual(R.entriesWhere(idx, { weapons: new Set([M416]) }).map((e) => e.copies), [2]);
+  assert.equal(R.entriesWhere(idx, { scopes: new Set([S('X1')]) }).length, 3);
+  assert.equal(R.entriesWhere(idx, { weapons: new Set() }).length, 0, 'an empty set matches nothing');
+});
