@@ -1851,3 +1851,8 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 /* "Xóa nhiều…": a group of choices per criterion */
 .bulk-del-group { margin: 10px 0; }
 .bulk-del-group .row { align-items: center; gap: 8px; margin-bottom: 6px; }
+
+/* backups: the older versions the server keeps of each file */
+.hist-file > summary { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.hist-list { list-style: none; margin: 4px 0 10px; padding: 0 0 0 4px; display: grid; gap: 4px; }
+.hist-list .row { align-items: center; gap: 4px 10px; flex-wrap: wrap; }

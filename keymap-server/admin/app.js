@@ -688,8 +688,73 @@
     }
   }
 
+  const pickedVersions = new Set(); // 'file\u0000version' ticked for deleting
+
+  // Older versions the server keeps of each file (made by every change, 10 per file at most), with a way to look at and delete them
+  function historyCard(files) {
+    const keyOf = (name, version) => `${name}\u0000${version}`;
+    const all = files.flatMap((f) => f.versions.map((v) => ({ name: f.name, ...v })));
+    for (const k of [...pickedVersions]) if (!all.some((v) => keyOf(v.name, v.version) === k)) pickedVersions.delete(k);
+    const total = all.reduce((n, v) => n + v.bytes, 0);
+    const delBtn = el('button', { type: 'button', class: 'btn small danger', onclick: guard(() => remove(all.filter((v) => pickedVersions.has(keyOf(v.name, v.version))))) });
+    const refresh = () => { const n = pickedVersions.size; delBtn.disabled = !n; delBtn.replaceChildren(icon('trash'), n ? `Xóa ${n} bản đã chọn` : 'Xóa bản đã chọn'); };
+    async function remove(list) {
+      if (!list.length) return;
+      const bytes = list.reduce((n, v) => n + v.bytes, 0);
+      const ok = await confirmModal({ title: `Xóa ${list.length} bản sửa cũ?`, tone: 'danger', confirmLabel: `Xóa ${list.length} bản`,
+        body: [el('p', {}, `Giải phóng khoảng ${fmtBytes(bytes)} trên server, từ ${new Set(list.map((v) => v.name)).size} file.`),
+          el('p', { class: 'muted' }, 'Không thể hoàn tác. File mới nhất và các ngày sao lưu không bị ảnh hưởng.')] });
+      if (!ok) return;
+      const bar = window.Ui.progressDialog({ title: `Đang xóa ${list.length} bản sửa cũ…`, steps: ['Gửi yêu cầu', 'Cập nhật trang'] });
+      try {
+        const byFile = new Map();
+        for (const v of list) { if (!byFile.has(v.name)) byFile.set(v.name, []); byFile.get(v.name).push(v.version); }
+        let done = 0; let freed = 0; let n = 0;
+        for (const [name, versions] of byFile) {
+          bar.update({ step: 0, pct: 10 + Math.round((done / byFile.size) * 70), detail: `Đang xóa ${versions.length} bản của ${name}…` });
+          for (let i = 0; i < versions.length; i += 200) {
+            const r = await api('POST', '/sync/history/delete', { name, versions: versions.slice(i, i + 200) });
+            freed += r.freed; n += r.deleted.length;
+          }
+          done++;
+        }
+        pickedVersions.clear();
+        bar.update({ step: 1, pct: 92, detail: 'Tải lại danh sách…' });
+        await bar.finish(`Đã xóa ${n} bản sửa cũ, giải phóng ${fmtBytes(freed)}.`);
+        render();
+      } catch (e) { await bar.fail(`Không xóa được: ${e.message || e}.`); }
+    }
+    const keepBtn = el('button', { type: 'button', class: 'btn small', disabled: !files.some((f) => f.versions.length > 1), onclick: guard(async () => {
+      const max = Math.max(...files.map((f) => f.versions.length));
+      const input = el('input', { type: 'number', min: '1', max: String(max - 1), value: '1', 'aria-label': 'Số bản giữ lại mỗi file' });
+      const go = await showModal({ title: 'Dọn bản sửa cũ', tone: 'info', body: [el('p', {}, 'Mỗi file giữ lại bao nhiêu bản mới nhất? Các bản cũ hơn sẽ được xóa.'), el('label', { class: 'numfield' }, 'Số bản giữ lại mỗi file', input)], actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Tiếp tục', primary: true }] });
+      if (go !== 'go') return;
+      const keep = Math.floor(Number(input.value));
+      if (!(keep >= 1)) { toast('Nhập số từ 1 trở lên.', true); return; }
+      const old = files.flatMap((f) => f.versions.slice(keep).map((v) => ({ name: f.name, ...v })));
+      if (!old.length) { toast('Không có bản nào cũ hơn để xóa.'); return; }
+      await remove(old);
+    }) }, icon('clock'), 'Dọn cũ…');
+    const groups = files.map((f) => el('details', { class: 'disclosure flat hist-file' },
+      el('summary', {}, el('span', { class: 'mono' }, f.name), el('span', { class: 'muted' }, ` ${f.versions.length} bản · ${fmtBytes(f.versions.reduce((n, v) => n + v.bytes, 0))}`)),
+      el('ul', { class: 'hist-list' }, f.versions.map((v) => el('li', { class: 'row' },
+        el('input', { type: 'checkbox', class: 'ver-pick', 'aria-label': `Chọn bản ${clockDateTime(v.saved_at)} của ${f.name} để xóa`, checked: pickedVersions.has(keyOf(f.name, v.version)),
+          onchange: (e) => { if (e.target.checked) pickedVersions.add(keyOf(f.name, v.version)); else pickedVersions.delete(keyOf(f.name, v.version)); refresh(); } }),
+        el('span', {}, `Bản trước lúc ${clockDateTime(v.saved_at)}`), el('span', { class: 'muted' }, ` · ${fmtBytes(v.bytes)}`),
+        f.name === CACHE_FILE ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => window.Analysis.openSource(`v:${v.version}`)) }, icon('layers'), 'Phân tích') : null,
+        el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => remove([{ name: f.name, ...v }])) }, icon('trash'), 'Xóa')))))); 
+    const node = el('section', { class: 'card' },
+      el('details', { class: 'disclosure flat' },
+        el('summary', {}, el('strong', {}, 'Bản sửa trên server'), el('span', { class: 'muted' }, all.length ? ` ${all.length} bản · ${fmtBytes(total)}` : ' chưa có')),
+        el('p', { class: 'muted' }, 'Mỗi lần file đổi (app đẩy lên hoặc sửa trên web), server giữ bản trước đó, tối đa 10 bản mỗi file. Xóa bớt để giải phóng dung lượng.'),
+        all.length ? el('div', { class: 'row day-tools' }, delBtn, keepBtn) : null,
+        ...groups));
+    refresh();
+    return node;
+  }
+
   async function viewBackups() {
-    const { days } = await api('GET', '/sync/backups');
+    const [{ days }, hist] = await Promise.all([api('GET', '/sync/backups'), api('GET', '/sync/history').catch(() => ({ files: [] }))]);
     const autorun = state.autorun || '';
     state.autorun = '';
     for (const d of [...pickedDays]) if (!days.some((x) => x.date === d)) pickedDays.delete(d);
@@ -699,6 +764,7 @@
         i === 0 ? el('input', { type: 'checkbox', class: 'day-pick', disabled: true, title: 'Ngày mới nhất được tạo lại ngay nên không xóa', 'aria-label': 'Ngày mới nhất không xóa được' }) : el('input', { type: 'checkbox', class: 'day-pick', 'aria-label': `Chọn ngày ${d.date} để xóa`, checked: pickedDays.has(d.date), onchange: (e) => { if (e.target.checked) pickedDays.add(d.date); else pickedDays.delete(d.date); refreshBar(); } }),
         el('span', { class: 't-title' }, d.date), i === 0 ? badge('Mới nhất', 'ok') : null,
         d.databases ? el('button', { type: 'button', class: 'btn small ghost', onclick: guard(() => showDay(d.date)) }, icon('eye'), 'Xem file') : null,
+        d.databases ? el('button', { type: 'button', class: 'btn small ghost', title: `Phân tích ${CACHE_FILE} của ngày ${d.date}`, onclick: guard(() => window.Analysis.openSource(d.date)) }, icon('layers'), 'Phân tích cache') : null,
         i === 0 ? null : el('button', { type: 'button', class: 'btn small ghost danger', onclick: guard(() => deleteDays([d])) }, icon('trash'), 'Xóa')),
       el('div', { class: 't-meta' }, `${d.databases} file · ${fmtBytes(d.bytes)} · cập nhật ${clockDateTime(d.updated_at)}${d.last_actor ? ` bởi ${d.last_actor}` : ''}`));
     const allBox = el('input', { type: 'checkbox', 'aria-label': 'Chọn tất cả các ngày', onchange: (e) => { pickedDays.clear(); if (e.target.checked) for (const d of days.slice(1)) pickedDays.add(d.date); for (const b of document.querySelectorAll('.day-pick:not(:disabled)')) b.checked = e.target.checked; refreshBar(); } });
@@ -715,6 +781,7 @@
     const node = el('div', {},
       pageHead('Sao lưu theo ngày', 'Mỗi ngày một bản chứa cả bộ file. Khôi phục về máy: app Android → "Khôi phục theo ngày…". Xóa bớt ngày cũ để giải phóng dung lượng server.', el('span', { class: 'muted' }, `${days.length} ngày · ${fmtBytes(days.reduce((n, d) => n + (d.bytes || 0), 0))}`)),
       syncCard(autorun),
+      historyCard(hist.files),
       el('section', { class: 'card' }, tools, days.length ? el('ol', { class: 'timeline' }, days.map(item)) : emptyState('clock', 'Chưa có bản sao lưu nào', 'Bản đầu tiên được tạo khi app gửi file lên.')));
     if (tools) refreshBar();
     return node;

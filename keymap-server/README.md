@@ -196,6 +196,8 @@ Dùng cùng lớp bảo vệ với trang web (`Host` hợp lệ, header `X-Admin
 | `GET …/backups/<YYYY-MM-DD>/databases` | Cả bộ file của một ngày (tên thật, có dấu và CJK) |
 | `GET …/backups/<YYYY-MM-DD>/databases/<tên>` | Một file của một ngày |
 | `POST …/backups/delete` `{days:[…]}` | Xóa các ngày sao lưu để giải phóng dung lượng (file mới nhất và lịch sử phiên bản không bị ảnh hưởng) |
+| `GET /admin/api/sync/history` | Các bản cũ (mỗi lần file đổi) của mọi file, tối đa 10 bản mỗi file |
+| `POST /admin/api/sync/history/delete` `{name, versions:[…]}` | Xóa một số bản cũ của một file (file hiện tại không đổi) |
 | `POST …/hello`, `GET …/devices`, `DELETE …/devices/<id>`, `POST /admin/api/presence` | Kết nối app ↔ web. Câu trả lời của `hello` có `commands`: các lệnh đang chờ thiết bị đó |
 | `POST /admin/api/cache/delete` | `{file, ids, etag, labels}`: cắt các mục khỏi file cache trên server (cần `etag` hiện hành, 409 nếu file đã đổi; 404 nếu id không có ở đâu; 400 nếu id/file sai) và tạo lệnh cho các thiết bị đã biết |
 | `GET /admin/api/cache/commands` | Các lệnh gần đây (50 mới nhất) với trạng thái `pending` / `done` / `attention` / `server_only` / `expired` và kết quả từng thiết bị |

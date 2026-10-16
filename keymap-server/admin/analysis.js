@@ -3366,5 +3366,7 @@
     async view() { active = true; aiStatusP = null; S.sel = null; await load(); return draw(); },
     leave() { active = false; if (lay.ro) { lay.ro.disconnect(); lay.ro = null; } stopSuggestions(); clearInterval(pollTimer); pollTimer = null; if (typeof lay !== 'undefined' && lay?.bg?.url) { URL.revokeObjectURL(lay.bg.url); lay.bg.url = null; } },
     discardOk,
+    // opens the tab on an older source: '' (newest), 'YYYY-MM-DD' (a backup day) or 'v:<version>' (an older version of the file)
+    openSource(src) { S.src = src; S.sel = null; S.pick = ''; rc.drafts.clear(); rc.customCombos = new Set(); rc.itemId = ''; return window.goTo('analysis'); },
   };
 })();
