@@ -1728,3 +1728,14 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .pick input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; flex: none; }
 .pick-n { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 400; }
 .pick-quick { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* "Sửa tiêu chuẩn": fire parameters */
+.fire-box { display: grid; gap: 8px; }
+.fire-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 14rem)); gap: 12px; }
+.fire-box .field { margin: 0; }
+.fire-box p { margin: 0; }
+@media (max-width: 520px) { .fire-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* a long window body is a flex column that scrolls: its children keep their height instead of being squeezed (the fieldsets of "Sửa tiêu chuẩn" were) */
+.modal-body > * { flex-shrink: 0; }
+.modal-body label.field input[type="checkbox"] { width: auto; min-height: 0; flex: none; }

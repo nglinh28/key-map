@@ -44,6 +44,7 @@
       const off = Object.prototype.hasOwnProperty.call(RL.getRuleOverrides(), code) && !a; // the user switched the rule off
       const status = a ? (a.edited ? 'Đã sửa' : 'Có chuẩn') : off ? 'Đã tắt chuẩn' : zero ? 'Luôn 0' : WAITING.has(code) ? 'Chờ xác nhận' : 'Chưa có nguồn';
       const label = RL.weaponLabel(w);
+      const fire = zero ? null : RL.fireOf(w, { ignoreDisabled: true }); // a disabled gun keeps its data
       const c = st.counts && st.counts.get(w);
       out.push({
         w, code, label, tag: `${code} (${w})`, cls: CLASS_VN[RL.gunClass(w)] || CLASS_VN[GUN_CLASS[code]] || '—', a, status, edited: Boolean((a && a.edited) || off), zero, disabled,
@@ -53,6 +54,7 @@
         stocks: a ? (a.stocks.size ? listText(a.stocks, RL.STOCKS, SHORT.stock) : none) : '—',
         zoom: a ? (a.maxZoom === null ? 'không giới hạn' : a.maxZoom === 0 ? 'không lắp được' : `đến ${a.maxZoom}x`) : '—',
         source: a ? a.sourceLabel : '—',
+        fire, magazine: fire ? fire.magazine : null, interval: fire ? fire.interval : null, emptyS: fire ? Math.round(fire.emptyMs / 10) / 100 : null,
         own: c ? c.own : null, bad: c ? c.bad : null,
       });
     }
@@ -61,10 +63,12 @@
 
   const COLS = [
     ['tag', 'Súng (số)', {}], ['cls', 'Loại', {}], ['use', 'Sử dụng', {}], ['muzzles', 'Nòng', {}], ['grips', 'Tay cầm', {}], ['stocks', 'Báng', {}],
-    ['zoom', 'Ống ngắm', {}], ['status', 'Trạng thái', {}],
+    ['zoom', 'Ống ngắm', {}], ['magazine', 'Băng', { numeric: true }], ['interval', 'Giây/phát', { numeric: true }], ['emptyS', 'Hết băng (s)', { numeric: true }], ['status', 'Trạng thái', {}],
   ];
   const COUNT_COLS = [['own', 'Mục riêng', { numeric: true }], ['bad', 'Sai chuẩn', { numeric: true }]];
   const value = (r, col) => r[col];
+  const vnum = (n) => String(n).replace('.', ',');
+  const secondsOf = (ms) => vnum(Math.round(ms / 10) / 100); // 2465 -> 2,47 (from the whole ms, so no 2.46 from float rounding)
 
   const statusBadge = (s) => badge(s, { 'Có chuẩn': 'ok', 'Đã sửa': 'info', 'Đã tắt chuẩn': 'warn', 'Chờ xác nhận': 'warn', 'Luôn 0': 'neutral', 'Chưa có nguồn': 'neutral' }[s] || 'neutral');
   const hasRule = (s) => s === 'Có chuẩn' || s === 'Đã sửa';
@@ -108,6 +112,7 @@
     const r = await promise;
     RL.setRuleOverrides(r.overrides);
     if (r.disabled) RL.setDisabledGuns(r.disabled);
+    if (r.fire) RL.setFireOverrides(r.fire);
     if (st.counts) compute(); // "Sai chuẩn" follows the new table
     toast(done);
     refresh();
@@ -142,6 +147,26 @@
     note.value = a && a.source === 'edited' ? a.note || '' : '';
     const useCheck = el('input', { type: 'checkbox', checked: !r.disabled });
     const useRow = el('label', { class: 'field row card my-2' }, useCheck, el('span', {}, 'Sử dụng súng này trong hệ thống và AI (bỏ tích = tắt súng, không gợi ý và không thêm tổ hợp)'));
+    // fire parameters: what the gun fires (one normal magazine) -> T, the length of a recoil curve
+    const f0 = r.fire;
+    const magInput = el('input', { type: 'number', min: '2', max: '200', step: '1', inputmode: 'numeric', 'aria-label': 'Số viên một băng', value: f0 ? String(f0.magazine) : '' });
+    const intInput = el('input', { type: 'number', min: '0.02', max: '3', step: 'any', inputmode: 'decimal', 'aria-label': 'Số giây giữa hai phát', value: f0 ? String(f0.interval) : '' });
+    const emptyLine = el('p', { class: 'muted text-sm', role: 'status' });
+    const typedFire = () => (magInput.value === '' && intInput.value === '' ? null : { magazine: magInput.value === '' ? NaN : Number(magInput.value), interval: intInput.value === '' ? NaN : Number(intInput.value) });
+    const paintEmpty = () => {
+      const f = typedFire();
+      const c = f && RL.checkFire(f);
+      emptyLine.textContent = !f ? 'Chưa có thông số bắn: các mốc của súng này giữ cách tính thời gian cũ (bước 450–678 ms).'
+        : c.ok ? `Hết một băng: ${secondsOf(RL.emptyMsOf(c.fire))} s (${c.fire.magazine} viên × ${vnum(c.fire.interval)} s). Các mốc độ giật sẽ chia đều trên thời gian này.` : c.error;
+    };
+    magInput.oninput = paintEmpty; intInput.oninput = paintEmpty;
+    paintEmpty();
+    const fireBox = el('div', { class: 'card my-2 fire-box', role: 'group', 'aria-label': 'Thông số bắn (băng thường)' }, el('strong', {}, 'Thông số bắn (băng thường)'),
+      el('div', { class: 'fire-grid' }, el('label', { class: 'field' }, 'Số viên một băng', magInput), el('label', { class: 'field' }, 'Giây giữa hai phát', intInput)),
+      emptyLine,
+      f0 ? el('p', { class: 'muted text-sm' }, `Đang dùng: ${f0.sourceLabel}${f0.note ? ` · ${f0.note}` : ''}.`) : null);
+    const initial = JSON.stringify([[...pick.muzzles].sort(), [...pick.grips].sort(), [...pick.stocks].sort(), zoom.value, note.value]);
+    for (;;) {
     const id = await showModal({
       title: `Sửa tiêu chuẩn: ${r.tag}`, tone: 'info', className: 'wide',
       body: [
@@ -152,6 +177,7 @@
         group('Báng', RL.STOCKS, RL.LABELS.STOCKS, 'stocks'),
         el('label', { class: 'field' }, 'Ống ngắm tối đa', zoom),
         el('label', { class: 'field' }, 'Ghi chú (nguồn, lý do sửa)', note),
+        fireBox,
         a ? el('p', { class: 'muted text-sm' }, `Đang dùng: ${a.sourceLabel}.`) : el('p', { class: 'muted text-sm' }, 'Súng này chưa có chuẩn: lưu ở đây sẽ tạo chuẩn mới cho nó.'),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, ...(a ? [{ id: 'off', label: 'Tắt chuẩn (cho phép mọi tổ hợp)' }] : []), { id: 'save', label: 'Lưu tiêu chuẩn', primary: true }],
@@ -161,8 +187,22 @@
       return;
     }
     if (id !== 'save') return;
-    const rule = { muzzles: [...pick.muzzles], grips: [...pick.grips], stocks: [...pick.stocks], maxZoom: zoom.value === '' ? null : Number(zoom.value), note: note.value };
-    await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, { rule, disabled: !useCheck.checked }), `${r.code}: đã lưu tiêu chuẩn mới. Mọi phép kiểm tra từ giờ dùng bảng này.`);
+    // the fire parameters are sent when they changed (both cleared = the gun has none), the rule only when its own fields changed
+    const typed = typedFire();
+    const fireChecked = typed && RL.checkFire(typed);
+    if (fireChecked && !fireChecked.ok) { toast(fireChecked.error, true); continue; } // the window opens again with what was typed
+    const fireNow = fireChecked ? fireChecked.fire : null;
+    const fireChanged = JSON.stringify(fireNow) !== JSON.stringify(f0 ? { magazine: f0.magazine, interval: f0.interval } : null);
+    const ruleChanged = JSON.stringify([[...pick.muzzles].sort(), [...pick.grips].sort(), [...pick.stocks].sort(), zoom.value, note.value]) !== initial;
+    const body = { disabled: !useCheck.checked };
+    if (ruleChanged) body.rule = { muzzles: [...pick.muzzles], grips: [...pick.grips], stocks: [...pick.stocks], maxZoom: zoom.value === '' ? null : Number(zoom.value), note: note.value };
+    if (fireChanged) body.fire = fireNow;
+    await saveOverrides(api('PUT', `/standards/${encodeURIComponent(r.code)}`, body), ruleChanged ? `${r.code}: đã lưu tiêu chuẩn mới. Mọi phép kiểm tra từ giờ dùng bảng này.` : fireChanged ? `${r.code}: đã lưu thông số bắn.` : `${r.code}: không có gì thay đổi.`);
+    return;
+    }
+  }
+  async function resetFire(r) {
+    await saveOverrides(api('DELETE', `/standards/${encodeURIComponent(r.code)}/fire`), `${r.code}: đã dùng lại thông số bắn mặc định.`);
   }
   async function resetRule(r) {
     const ok = await showModal({
@@ -196,10 +236,16 @@
           : r.status === 'Chờ xác nhận' ? 'Mới có một nguồn thứ cấp cho súng này. Khi bạn xác nhận, nó sẽ được thêm vào bảng; đến lúc đó mọi tổ hợp của nó vẫn được phép.'
             : 'Chưa tìm được nguồn đáng tin cho mã này, nên chưa có chuẩn: mọi tổ hợp của nó vẫn được phép và không bị kiểm tra.'),
       a ? el('p', { class: 'muted text-sm' }, a.note) : null,
+      r.zero ? null : el('dl', { class: 'kv' },
+        el('dt', {}, 'Băng thường'), el('dd', {}, r.fire ? `${r.fire.magazine} viên` : 'chưa có số liệu'),
+        el('dt', {}, 'Giây giữa hai phát'), el('dd', {}, r.fire ? vnum(r.fire.interval) : '—'),
+        el('dt', {}, 'Hết một băng'), el('dd', {}, r.fire ? `${secondsOf(r.fire.emptyMs)} s` : 'chưa có số liệu: các mốc dùng bước thời gian cũ'),
+        r.fire ? [el('dt', {}, 'Nguồn thông số'), el('dd', {}, `${r.fire.sourceLabel}${r.fire.note ? ` · ${r.fire.note}` : ''}`)] : null),
       el('div', { class: 'row mt-4' },
         r.zero ? null : el('button', { type: 'button', class: 'btn small primary', onclick: guard(() => editRule(r)) }, icon('pencil'), 'Sửa tiêu chuẩn'),
         el('button', { type: 'button', class: `btn small ${r.disabled ? 'ok' : 'danger'}`, onclick: guard(() => toggleGunUsage(r)) }, icon(r.disabled ? 'check' : 'x'), r.disabled ? 'Bật sử dụng súng' : 'Tắt không sử dụng'),
         r.edited ? el('button', { type: 'button', class: 'btn small', onclick: guard(() => resetRule(r)) }, icon('history'), 'Khôi phục mặc định') : null,
+        r.fire && r.fire.edited ? el('button', { type: 'button', class: 'btn small', onclick: guard(() => resetFire(r)) }, icon('history'), 'Đặt lại thông số bắn') : null,
         el('button', { type: 'button', class: 'btn small ghost', onclick: () => copyText(r.tag, 'Đã sao chép mã súng') }, icon('copy'), 'Sao chép mã')));
   }
 
@@ -222,6 +268,7 @@
         td('use', 'Sử dụng', el('button', { type: 'button', class: `btn mini ${r.disabled ? 'ghost' : 'ok'}`, title: r.disabled ? 'Đang tắt: bấm để bật sử dụng' : 'Đang dùng: bấm để tắt sử dụng', onclick: (e) => { e.stopPropagation(); toggleGunUsage(r); } }, r.disabled ? 'Đã tắt' : 'Đang dùng')),
         td('muzzles', 'Nòng', r.muzzles), td('grips', 'Tay cầm', r.grips), td('stocks', 'Báng', r.stocks),
         td('zoom', 'Ống ngắm', r.zoom),
+        td('magazine', 'Băng', r.fire ? String(r.magazine) : '—', 'num'), td('interval', 'Giây/phát', r.fire ? vnum(r.interval) : '—', 'num'), td('emptyS', 'Hết băng (s)', r.fire ? secondsOf(r.fire.emptyMs) : '—', 'num'),
         td('status', 'Trạng thái', el('div', { class: 'inline-flex items-center gap-1' }, r.disabled ? badge('Đã tắt', 'danger') : null, statusBadge(r.status))),
         ...(st.counts ? [td('own', 'Mục riêng', r.own == null ? '—' : String(r.own), 'num'), td('bad', 'Sai chuẩn', r.bad == null ? '—' : String(r.bad), `num${r.bad ? ' bad' : ''}`)] : []));
     });
