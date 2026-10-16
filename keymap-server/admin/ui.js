@@ -223,9 +223,12 @@
       document.removeEventListener('pointerdown', onOutside, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll, true);
       if (focusBack) btn.focus();
     }
     const onResize = () => close(false);
+    // the menu has fixed coordinates: a page or a column that scrolls takes its button away, so it closes (scrolling inside the menu does not)
+    const onScroll = (e) => { if (menu && e.target instanceof Node && menu.contains(e.target)) return; close(false); };
     function open() {
       document.dispatchEvent(new Event('ft-close-menus'));
       menu = el('div', {
@@ -249,6 +252,7 @@
       document.addEventListener('pointerdown', onOutside, true);
       document.addEventListener('keydown', onKey, true);
       window.addEventListener('resize', onResize);
+      window.addEventListener('scroll', onScroll, true);
       const first = menu.querySelector('[role="menuitem"]:not([aria-disabled="true"])');
       if (first) first.focus();
     }

@@ -55,11 +55,16 @@
     if (!active) return;
     const y = window.scrollY;
     const app = $('#app');
+    const detailNow = app.querySelector('.recoil-detail-col'); // the detail scrolls inside itself (sticky column): keep its place across a redraw of the same combination
+    const detailTop = detailNow ? detailNow.scrollTop : 0;
+    const detailKey = rc.editKey;
     app.style.minHeight = `${app.offsetHeight}px`;
     const swap = () => {
       app.replaceChildren(draw());
       labelStacked(app);
       window.scrollTo(0, y);
+      const detailNext = app.querySelector('.recoil-detail-col');
+      if (detailNext && detailTop && rc.editKey === detailKey) detailNext.scrollTop = detailTop;
     };
     const release = () => requestAnimationFrame(() => { app.style.minHeight = ''; });
     const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
