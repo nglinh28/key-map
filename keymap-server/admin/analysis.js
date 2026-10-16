@@ -1663,7 +1663,7 @@
     stage(3, 92, 'Đang cập nhật trang…');
     await frame();
     toast(done);
-    onSaved();
+    try { onSaved(); } catch (e) { toast(`Đã lưu vào server nhưng không dọn được bản nháp (${e.message || e}). Bấm "Tải lại" nếu thấy dữ liệu cũ.`, true); } // the file is saved whatever happens here
     rc.dirty = false;
     rc.fresh = false;
     rc.freshBase = null;
@@ -1672,12 +1672,17 @@
     rc.bad.clear();
     try {
       const at = new Date().toISOString();
+      // read the new file first and replace file, parsed and analysis together: if reading fails, nothing is half replaced (the old etag then makes the
+      // next save a conflict that reloads, instead of a save built on the old analysis that would undo this one)
+      const parsed = CX.parse(newXml);
+      const analysis = CX.analyze(parsed);
       S.data.file = { ...S.data.file, text: newXml, etag: saved.etag, bytes: textBytes(newXml), updated_at: at, web_edit: { at } };
-      S.data.parsed = CX.parse(newXml);
-      S.data.analysis = CX.analyze(S.data.parsed);
+      S.data.parsed = parsed;
+      S.data.analysis = analysis;
       redraw({ smooth: true });
     } catch {
-      await refresh(); // the file is saved; if it cannot be read here, read it again from the server
+      // the file is saved; if it cannot be read here, read it again from the server; if even that fails the save is still a save
+      try { await refresh(); } catch (e) { toast(`Đã lưu vào server nhưng chưa tải lại được trang (${e.message || e}). Bấm "Tải lại" để xem bản mới.`, true); }
     }
     return true;
   }
@@ -1739,7 +1744,16 @@
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'delete', label: 'Xóa mục riêng', danger: true }],
     });
     if (ok !== 'delete') return;
-    await putRecoilItem(edit.doc, 'Đã xóa mục riêng và lưu vào server');
+    // the same window with steps as the saves: what is being done, and how far it is
+    const bar = window.Ui.progressDialog({ title: 'Đang xóa mục riêng…', steps: ['Áp dụng thay đổi', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 20, detail: `Đã bỏ ${edit.removed > 1 ? `${edit.removed} mục riêng` : 'mục riêng'} khỏi bản sao của mục…` });
+      await nextFrame();
+      const saved = await putRecoilItem(edit.doc, 'Đã xóa mục riêng và lưu vào server', (step, pct, detail) => bar.update({ step, pct, detail }));
+      if (saved) await bar.finish('Đã xóa mục riêng.'); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không xóa được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
   }
 
   // ---------------------------------------------------------------- "Kiểm tra theo chuẩn": own entries that the table of accessories says cannot exist
