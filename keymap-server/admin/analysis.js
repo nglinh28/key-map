@@ -1973,8 +1973,8 @@
         for (const c of chips.filter((x) => x.g === g)) { c.input.checked = sel[g.key].has(c.v); c.n.textContent = String(per.get(c.v) || 0); }
       }
       const pickedNames = (g) => (sel[g.key].size === g.values.length ? `mọi ${g.title.toLowerCase()}` : sel[g.key].size ? [...sel[g.key]].sort((a, b) => a - b).slice(0, 4).map(g.label).join(', ') + (sel[g.key].size > 4 ? ` +${sel[g.key].size - 4}` : '') : `chưa chọn ${g.title.toLowerCase()}`);
-      summary.textContent = hit.length ? `Sẽ xóa ${hit.length} mục riêng (${groups.map(pickedNames).join(' · ')}).` : `Không có mục riêng nào khớp (${groups.map(pickedNames).join(' · ')}).`;
-      deleteBtn.replaceChildren(icon('trash'), `Xóa ${hit.length} mục`);
+      summary.textContent = hit.length ? `Sẽ xóa ${hit.length} tổ hợp có mục riêng (${groups.map(pickedNames).join(' · ')}).` : `Không có tổ hợp nào có mục riêng khớp (${groups.map(pickedNames).join(' · ')}).`;
+      deleteBtn.replaceChildren(icon('trash'), `Xóa ${hit.length} tổ hợp`);
       deleteBtn.disabled = !hit.length;
     };
     const sections = groups.map((g) => {
@@ -1992,7 +1992,7 @@
     paint();
     const choice = await showModal({
       title: 'Xóa nhiều tổ hợp', tone: 'warn', className: 'wide',
-      body: [el('p', {}, `Chọn súng, tư thế và ống ngắm của bộ dữ liệu "${ix.ds.key}". Chỉ các mục riêng khớp cả ba nhóm bị xóa; tổ hợp tính từ hệ số không bị ảnh hưởng. Số bên cạnh mỗi lựa chọn là số mục sẽ xóa nếu chọn nó.`),
+      body: [el('p', {}, `Chọn súng, tư thế và ống ngắm của bộ dữ liệu "${ix.ds.key}". Chỉ các mục riêng khớp cả ba nhóm bị xóa; tổ hợp tính từ hệ số không bị ảnh hưởng. Số bên cạnh mỗi lựa chọn là số tổ hợp sẽ xóa nếu chọn nó (xóa cả các bản trùng khóa).`),
         ...sections, summary, el('div', { class: 'row' }, deleteBtn)],
       actions: [{ id: 'close', label: 'Đóng' }],
       onOpen: (c) => { ctl = c; },
