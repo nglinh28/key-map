@@ -583,3 +583,21 @@ test('durationGap: how far the length of a curve is from T (0.05 = 5%)', () => {
   assert.equal(R.durationGap([[0, 0], [1900, 1]], 0), 0);
   assert.equal(R.durationGap([], 2000), 1);
 });
+
+test('disabledEntries: the own entries of the guns switched off, with their copies', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const idx = R.indexData(dataset((g) => {
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 70]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 71]]));
+    g[M416].v.push(entry(0, 0, 0, S('X1'), 1, [[0, 60]]));
+  }));
+  assert.deepEqual(R.disabledEntries(idx), []);
+  R.setDisabledGuns(['M416']);
+  const list = R.disabledEntries(idx);
+  assert.equal(list.length, 2);
+  assert.ok(list.every((e) => e.weapon === M416));
+  assert.deepEqual(list.map((e) => e.copies).sort(), [1, 2]);
+});
+  assert.ok(R.removeEntries ? true : false);
+});
