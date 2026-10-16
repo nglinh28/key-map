@@ -171,6 +171,7 @@ test('Vietnamese names follow the agreed table', () => {
   assert.equal(L.GRIPS[G('HORIZONTAL')], 'Tay cầm tam giác');
   assert.equal(L.GRIPS[G('THUMB')], 'Tay cầm ngón cái');
   assert.equal(L.GRIPS[G('LIGHT')], 'Tay cầm nhẹ');
+  assert.equal(L.GRIPS[G('HALF')], 'Tay cầm Hồng (Tay cầm nửa)');
   assert.equal(L.STOCKS[K('GENERAL')], 'Báng súng (Tactical Stock)');
   assert.equal(L.SCOPES[S('hippie')], 'Bắn hông (không ngắm)');
   assert.equal(L.SCOPES[S('X1')], '1x (Red Dot, Holo)');

@@ -67,7 +67,7 @@ Hệ thống dùng bảng này ở mọi chỗ **thêm hoặc gợi ý** tổ h�
 | AR chỉ nòng | `AKM` `FAMAS` | 3 loại | không | không | đến 6x |
 | Groza | `Groza` | chỉ giảm thanh | không | không | đến 6x |
 | Micro UZI | `UZI` | 3 loại | không | báng riêng | chỉ 1x |
-| Vector | `Vector` | 3 loại | đứng, nhẹ, Hồng (nửa), Laser | báng chiến thuật | đến 6x |
+| Vector | `Vector` | 3 loại | đứng, nhẹ, Hồng (Tay cầm nửa), Laser | báng chiến thuật | đến 6x |
 | UMP45 | `UMP45` | 3 loại | 5 + Laser | không | đến 6x |
 | Tommy Gun | `Thomson` | chỉ giảm thanh | chỉ tay cầm đứng | không | chỉ 1x |
 | Bizon | `Bison` | 3 loại | không | không | đến 6x |
