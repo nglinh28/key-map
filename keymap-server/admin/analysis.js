@@ -1647,7 +1647,7 @@
     }, icon('trash'), `Xóa súng đã tắt${offList.length ? ` (${offList.length})` : ''}`);
     const auditNote = mine.length ? alert('warn', el('span', {}, `${RL.weaponLabel(rc.weapon)} có ${mine.length} mục riêng không đúng chuẩn phụ kiện (${[...new Set(mine.flatMap((e) => e.problems.map((p) => SLOT_VN[p.slot])))].join(', ')}). `,
       el('button', { type: 'button', class: 'btn small', onclick: guard(() => showAuditModal(ix)) }, 'Xem và xóa'))) : null;
-    const disabledNote = gunDisabled ? alert('warn', el('span', {}, `Súng ${RL.weaponLabel(rc.weapon)} (${RL.WEAPONS[rc.weapon]}) đã bị TẮT KHÔNG SỬ DỤNG trong Tiêu chuẩn súng. Các chức năng Thêm tổ hợp, Tạo đủ cho cả súng, Quét tất cả và AI gợi ý mốc bị vô hiệu hóa cho súng này.`)) : null;
+    const disabledNote = gunDisabled ? alert('warn', el('span', {}, `Súng ${RL.weaponLabel(rc.weapon)} (${RL.WEAPONS[rc.weapon]}) đã bị TẮT KHÔNG SỬ DỤNG trong Tiêu chuẩn súng. Các chức năng Thêm tổ hợp, Tính mốc cả bảng và AI gợi ý mốc bị vô hiệu hóa cho súng này.`)) : null;
     const rule = RL.describeAttachments(rc.weapon);
     const selectors = el('div', { class: 'card' },
       el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), offBtn, auditBtn, refFieldsBtn),
@@ -2145,7 +2145,7 @@
       const draft = rc.drafts.get(p.key);
       items.push({ key: p.key, o: p.o, curve: open ? rc.editCurve : draft ? draft.curve : p.r.curve, how: draft ? ({ ai: 'AI', server: 'server', coef: 'theo hệ số' }[draft.source] || 'đã sửa') : open && rc.dirty && rc.freshBase && JSON.stringify(rc.editCurve) !== rc.freshBase ? 'đã sửa' : 'theo hệ số' });
     }
-    // "Quét tất cả": proposals of the AI for entries that already exist (only those of the dataset shown: touch / gyro / raw)
+    // "Tính mốc cả bảng" (review scope): proposals of the AI for entries that already exist (only those of the dataset shown: touch / gyro / raw)
     for (const [key, d] of rc.drafts) {
       if (!d.review || !key.endsWith(`|${rc.mode}`) || items.some((i) => i.key === key)) continue;
       const gun = d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(key.split('|')[0]);
@@ -2227,12 +2227,12 @@
   function computeButton(ix) {
     const zero = RL.isZeroWeapon(rc.weapon);
     const gunDisabled = RL.isGunDisabled(rc.weapon);
-    const running = Boolean(rc.bulk && rc.bulk.table);
+    const running = Boolean(rc.bulk); // any bulk run (table compare or review) is stopped with this button
     const count = wholeTableTargets().length;
     return el('button', {
       type: 'button', class: 'btn small', 'data-bulk': 'table',
       disabled: running ? false : (!latest() || zero || gunDisabled || Boolean(rc.filling) || Boolean(rc.bulk)), // the Stop button always works
-      title: running ? 'Dừng (phần đã tính vẫn được so sánh)'
+      title: running ? 'Dừng (phần đã tính xong vẫn được giữ lại)'
         : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng'
         : zero ? 'Súng này luôn dùng đường cong 0 trong app'
         : !latest() ? 'Chỉ tính được khi đang xem "Mới nhất"'
@@ -2253,16 +2253,15 @@
     const status = await aiStatus();
     const todo = wholeTableTargets();
     const own = RL.entriesWhere(ix.idx, { weapons: new Set([rc.weapon]) }).length;
+    const firstOn = !todo.length ? (status.enabled && own ? 'review' : 'gun') : 'table'; // the one that opens selected
     const mk = (value, title, desc, badgeText, disabled) => {
       const input = el('input', { type: 'radio', name: 'compute-scope', value, disabled: Boolean(disabled) });
-      return { input, card: choiceCard({ input, title, desc, badge: badgeText ? badge(badgeText, 'info') : null, disabled: Boolean(disabled) }) };
+      return { input, card: choiceCard({ input, title, desc, badge: badgeText ? badge(badgeText, 'info') : null, disabled: Boolean(disabled), checked: value === firstOn }) };
     };
     const here = `${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]}`;
     const a = mk('table', `Cả bảng này: ${here}`, 'Server và AI tính từng tổ hợp (kể cả dòng đã có mục riêng và dòng đang ẩn), rồi cửa sổ so sánh độ khác nhau để bạn chọn AI, server hoặc giữ nguyên từng dòng.', `${todo.length} tổ hợp`, !todo.length);
     const b = mk('gun', `Cả súng ${RL.weaponLabel(rc.weapon)}`, 'Quét MỌI ống ngắm × 3 tư thế theo bảng chuẩn, thêm các tổ hợp còn thiếu kèm mốc (server, AI cho các tổ hợp quan trọng nhất), kiểm tra lại rồi đưa vào danh sách.');
     const c = mk('review', 'Chỉ các mục riêng đã có của súng', 'AI xem lại từng mục riêng (mọi ống ngắm × tư thế) theo bảng chuẩn và đề xuất mốc mới nếu lệch. Cần bật AI.', `${own} mục`, !status.enabled || !own);
-    const first = [a, b, c].find((x) => !x.input.disabled);
-    if (first) first.input.checked = true;
     const go = await showModal({
       title: 'Tính mốc cả bảng', tone: 'info',
       body: [el('p', {}, 'Chọn phạm vi. Mọi kết quả chỉ là bản nháp (chưa lưu): bấm "Lưu tất cả" để ghi.'), el('div', { class: 'choice-group' }, a.card, b.card, c.card),
@@ -2272,7 +2271,7 @@
     if (go !== 'go') return;
     const chosen = [a, b, c].find((x) => x.input.checked);
     if (!chosen) return;
-    if (chosen === a) await tableCompare();
+    if (chosen === a) await tableCompare({ confirmed: true });
     else if (chosen === b) await fillGun(ix);
     else await scanAll();
   }
@@ -2280,15 +2279,15 @@
   // "Tính mốc cả bảng", the first scope: server and AI answer for every row of the table (rows with an own entry too); then one window shows how
   // different the answers are (against the coefficient curve and against each other) and the user chooses per row. Nothing is written: the choices
   // become drafts.
-  async function tableCompare() {
-    if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
+  async function tableCompare({ confirmed = false } = {}) {
+    if (rc.bulk) return;
     if (rc.filling) { toast('Đang tạo tổ hợp cho cả súng: đợi xong rồi hãy tính.', true); return; }
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
     const status = await aiStatus();
     const todo = wholeTableTargets();
     if (!todo.length) { toast('Không có tổ hợp nào cần tính: mọi tổ hợp của ống ngắm và tư thế này đang có bản nháp hoặc đang được sửa.'); return; }
     const threads = status.enabled ? aiThreads(status) : 6;
-    const go = await showModal({
+    const go = confirmed ? 'go' : await showModal({
       title: `Tính mốc cho ${todo.length} tổ hợp của bảng này?`, tone: 'info',
       body: [
         el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]}: ${todo.filter((t) => t.cur).length} dòng đã có mục riêng (để so với dữ liệu hiện có) và ${todo.filter((t) => !t.cur).length} dòng đang tính từ hệ số, kể cả những dòng đang ẩn trong bảng.`),
@@ -2359,7 +2358,7 @@
       if (!t || rc.drafts.has(c.key) || editing || !same || nowRow.source === 'zero') { skipped++; continue; }
       if (t.cur && JSON.stringify(c.curve) === JSON.stringify(t.cur)) { skipped++; continue; } // the same as the saved one: nothing to propose
       if (t.cur) {
-        // an entry that exists: a proposal like the ones of "Quét tất cả" (the saved one stays until "Lưu tất cả")
+        // an entry that exists: a proposal like the ones of the review scope (the saved one stays until "Lưu tất cả")
         const change = window.SuggestUi.meanDiff(c.curve, t.cur, { abs: true }) || 0;
         rc.drafts.set(c.key, { curve: c.curve, source: c.source, review: true, o: t.o, change, reasoning: '', provider: '', flags: [] });
       } else {
@@ -2555,7 +2554,7 @@
   }
 
 
-  // ---------------------------------------------------------------- "Quét tất cả": the AI reviews the entries the gun already has
+  // ---------------------------------------------------------------- "Tính mốc cả bảng", review scope: the AI reviews the entries the gun already has
   // 1. the server looks at every own entry of the gun (every scope and posture) without AI and says which look odd (far from similar guns,
   //    crouch/prone above standing, more accessories pulling harder); 2. the user picks: only those, or every entry, and how many at most;
   // 3. the AI reviews them one by one against the same evidence and the table of accessories, the answer checked against the current entry;
@@ -3011,7 +3010,7 @@
     }
   }
 
-  // ---------------------------------------------------------------- "Tạo đủ cho cả súng": every scope and every posture of the gun, in one go
+  // ---------------------------------------------------------------- "Tính mốc cả bảng", whole-gun scope: every scope and every posture of the gun, in one go
   // 1. the server says, for each scope the gun can take and each of the three postures, which combinations the gun can still take (the table of
   //    accessories decides) and the page does not have yet; 2. the points are made: from similar guns where the server can, else the coefficient
   //    curve, and the AI answers for the most important ones (it is slow); 3. everything is checked again (curves, the table, a second scan that

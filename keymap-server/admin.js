@@ -387,7 +387,7 @@ function createAdmin({ cfg, devices, backups, databases, commands, readBody }) {
       return json(res, 200, await ai.listModels(one, { signal: ac.signal }));
     }
 
-    // ---- "Quét tất cả": the server finds which own entries of a gun look odd (no AI), then the page asks the AI to review those one by one
+    // ---- review scope: the server finds which own entries of a gun look odd (no AI), then the page asks the AI to review those one by one
     if (p === '/admin/api/recoil/review-scan' && method === 'POST') {
       const ctx = recoilContext(await jsonBody(req), { partial: true });
       if (ctx.error) return err(res, ctx.status, ctx.error);

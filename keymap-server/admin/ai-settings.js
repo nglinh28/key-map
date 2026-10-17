@@ -381,7 +381,7 @@
         ),
         el('h2', {}, isReady ? 'Các tính năng AI trên web đã sẵn sàng' : 'Chưa có nhà cung cấp AI nào được kích hoạt'),
         el('p', {}, isReady
-          ? `Hệ thống sẽ hỏi nguồn ưu tiên cao nhất đang bật (${activeProvider ? activeProvider.name : 'AI'}). Bạn có thể sử dụng các chức năng AI tạo mốc, Quét tất cả và Gợi ý trong tab Phân tích cache.`
+          ? `Hệ thống sẽ hỏi nguồn ưu tiên cao nhất đang bật (${activeProvider ? activeProvider.name : 'AI'}). Bạn có thể sử dụng "Tính mốc cả bảng", "Tính mốc (server + AI)" và Gợi ý trong tab Phân tích cache.`
           : 'Để sử dụng các chức năng "Tính mốc cả bảng", "Tính mốc (server + AI)": Vui lòng thêm hoặc bật một nguồn AI bên dưới, nhập Địa chỉ Base URL cùng API Key hợp lệ rồi bấm "Lưu tất cả cấu hình".')
       ),
       el('div', { class: 'row' },
