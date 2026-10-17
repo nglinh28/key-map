@@ -1662,7 +1662,6 @@
     }, icon('sparkles'), 'Cài đặt AI');
     const saveAllBtn = saveAllButton(model);
     rc.model = model;
-    rc.visible = visible;
     const otherStats = weaponDraftStats(rc.weapon);
     const dropOthersBtn = otherStats.others > 0 ? el('button', {
       type: 'button', class: 'btn small ghost danger',
@@ -2215,16 +2214,23 @@
     return pendingCombos(rc.weapon).filter((p) => p.o.weapon === rc.weapon && !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
   }
 
-  // the rows of the table that have no own entry yet (their points come from the coefficients) and no draft: what "AI tính cả bảng" works on
-  function wholeTableTargets(visible) {
+  // every combination the gun can take in the scope and posture shown that has no own entry yet (its points come from the coefficients) and no draft:
+  // what "Tính mốc cả bảng" works on. It does not depend on which rows the table shows (the toggle "Hiện cả tổ hợp tính từ hệ số", the filters).
+  function wholeTableTargets() {
     if (RL.isGunDisabled(rc.weapon) || RL.isZeroWeapon(rc.weapon) || !rc.idx) return [];
     const out = [];
-    for (const m of visible || []) {
-      if (m.r.source === 'exact' || m.r.source === 'zero') continue;
-      const o = rcCombo(m.c);
-      const key = recoilKey(o);
-      if (rc.drafts.has(key) || (rc.editKey === key && rc.dirty && !(rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase))) continue;
-      out.push({ o, r: m.r, key });
+    for (let g = 0; g < RL.GRIPS.length; g++) {
+      for (let m = 0; m < RL.MUZZLES.length; m++) {
+        for (let st = 0; st < RL.STOCKS.length; st++) {
+          if (RL.comboProblems(rc.weapon, rc.scope, { grip: g, muzzle: m, stock: st }).length) continue;
+          const o = { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: g, muzzle: m, stock: st };
+          const r = RL.resolve(rc.idx.idx, o);
+          if (r.source === 'exact' || r.source === 'zero') continue;
+          const key = recoilKey(o);
+          if (rc.drafts.has(key) || (rc.editKey === key && rc.dirty && !(rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase))) continue;
+          out.push({ o, r, key });
+        }
+      }
     }
     return out;
   }
@@ -2280,20 +2286,20 @@
     if (rc.filling) { toast('Đang "Tạo đủ cho cả súng": đợi xong rồi hãy tính.', true); return; }
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
     const status = await aiStatus();
-    const todo = wholeTableTargets(rc.visible);
-    if (!todo.length) { toast('Không có dòng nào cần tính: mọi dòng đang hiện đã có mục riêng hoặc bản nháp.'); return; }
+    const todo = wholeTableTargets();
+    if (!todo.length) { toast('Không có tổ hợp nào cần tính: mọi tổ hợp hợp lệ của ống ngắm và tư thế này đã có mục riêng hoặc bản nháp.'); return; }
     const threads = status.enabled ? aiThreads(status) : 6;
     const go = await showModal({
       title: `Tính mốc cho ${todo.length} tổ hợp trong bảng?`, tone: 'info',
       body: [
-        el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (các dòng đang hiện trong bảng, chưa có mục riêng).`),
+        el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (mọi tổ hợp phụ kiện hợp lệ của ống ngắm và tư thế này mà chưa có mục riêng, kể cả những dòng đang ẩn trong bảng).`),
         status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào: phần đã tính vẫn được đưa sang bước so sánh.`) : null,
         el('p', { class: 'muted' }, 'Xong sẽ mở cửa sổ so sánh: độ khác nhau của từng tổ hợp, bạn chọn AI, server hoặc bỏ qua cho từng dòng rồi mới điền vào bảng (bản nháp, chưa lưu).'),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Bắt đầu (${todo.length})`, primary: true }],
     });
     if (go !== 'go') return;
-    const targets = wholeTableTargets(rc.visible).filter((t) => todo.some((x) => x.key === t.key));
+    const targets = wholeTableTargets().filter((t) => todo.some((x) => x.key === t.key));
     if (!targets.length) return;
     const itemId = S.sel.id;
     const mode = rc.mode;
@@ -3486,12 +3492,19 @@
       title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server tính từ các súng tương tự và AI tính song song; bạn so sánh rồi chọn một kết quả để điền vào bảng bên dưới (chưa lưu).',
       onclick: guard(() => suggestPoints(o)),
     }, icon('sparkles'), 'Tính mốc (server + AI)');
-    const tableCount = wholeTableTargets(rc.visible).length;
+    const tableCount = wholeTableTargets().length;
     const tableRun = Boolean(rc.bulk && rc.bulk.table);
     const tableBtn = el('button', {
       type: 'button', class: 'btn small', 'data-bulk': 'table',
       disabled: tableRun ? false : (!latest() || zero || gunDisabled || Boolean(rc.filling) || (!rc.bulk && !tableCount) || Boolean(rc.bulk)), // the Stop button always works
-      title: tableRun ? 'Dừng (phần đã tính vẫn được so sánh)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server và AI tính cho MỌI dòng đang hiện trong bảng mà chưa có mục riêng (tự động, có tiến trình), rồi một cửa sổ cho thấy độ khác nhau để bạn chọn AI, server hoặc bỏ qua từng dòng. Chưa lưu gì.',
+      title: tableRun ? 'Dừng (phần đã tính vẫn được so sánh)'
+        : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng'
+        : zero ? 'Súng này luôn dùng đường cong 0 trong app'
+        : !latest() ? 'Chỉ tính được khi đang xem "Mới nhất"'
+        : rc.filling ? 'Đang "Tạo đủ cho cả súng": đợi xong'
+        : rc.bulk ? 'Đang có một việc khác chạy'
+        : !tableCount ? 'Mọi tổ hợp hợp lệ của ống ngắm và tư thế này đã có mục riêng hoặc bản nháp: không còn gì để tính'
+        : 'Server và AI tính cho MỌI tổ hợp hợp lệ của ống ngắm và tư thế này mà chưa có mục riêng (tự động, có tiến trình), rồi một cửa sổ cho thấy độ khác nhau để bạn chọn AI, server hoặc bỏ qua từng dòng. Chưa lưu gì.',
       onclick: guard(() => tableCompare()),
     }, icon(tableRun ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, tableRun ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `Tính mốc cả bảng${tableCount ? ` (${tableCount})` : ''}`));
 
