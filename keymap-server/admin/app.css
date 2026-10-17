@@ -1858,3 +1858,22 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 .hist-list .row { align-items: center; gap: 4px 10px; flex-wrap: wrap; }
 
 .audit-gun > summary > input[type="checkbox"] { margin-right: 8px; vertical-align: middle; }
+
+/* "Tính mốc cả bảng": one row per combination with the differences between the answers */
+.batch-tools { align-items: center; gap: 6px 8px; flex-wrap: wrap; margin: 8px 0; }
+.batch-tools .check { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.batch-list { display: grid; gap: 4px; max-height: 52vh; overflow-y: auto; }
+.batch-row { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; background: var(--surface); }
+.batch-row > summary { display: grid; grid-template-columns: minmax(0, 1fr) 96px 96px 96px 104px; gap: 8px; align-items: center; cursor: pointer; }
+.batch-name { overflow-wrap: anywhere; }
+.batch-cell { text-align: right; }
+.batch-row[open] { background: var(--surface-2); }
+@media (max-width: 640px) {
+  .batch-row > summary { grid-template-columns: 1fr 1fr 1fr; }
+  .batch-name { grid-column: 1 / -1; }
+  .batch-cell::before { content: attr(data-label); display: block; font-size: 11px; color: var(--faint); text-align: left; }
+  .batch-row > summary select { grid-column: 1 / -1; }
+}
+
+.batch-head { display: grid; grid-template-columns: minmax(0, 1fr) 96px 96px 96px 104px; gap: 8px; padding: 0 12px 4px; font-size: 11.5px; color: var(--faint); }
+@media (max-width: 640px) { .batch-head { display: none; } }

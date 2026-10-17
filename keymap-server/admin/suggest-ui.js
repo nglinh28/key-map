@@ -187,5 +187,93 @@
     return { source: picked.source, curve: state[picked.source].data.curve.map(([t, v]) => [t, v]) };
   }
 
-  window.SuggestUi = { compare, compareChart, meanDiff };
+  // How different the results of many combinations are, one row each: server and AI against the coefficient curve, and the AI against the server.
+  // The user chooses per row (AI / server / skip) and applies them all at once. Nothing is saved here.
+  // items: [{ key, label, coef: [[t,v]...], server: { ok, curve }|null, ai: { ok, curve }|null }]. -> [{ key, source, curve }] or null (cancelled).
+  const WARN = 0.25; // a mean difference above this (25%) is shown as a warning
+  async function reviewBatch({ items, aiOn }) {
+    const rows = items.map((it) => {
+      const s = it.server && it.server.ok ? it.server.curve : null;
+      const a = it.ai && it.ai.ok ? it.ai.curve : null;
+      const dS = s ? meanDiff(s, it.coef) : null;
+      const dA = a ? meanDiff(a, it.coef) : null;
+      const dAS = s && a ? meanDiff(a, s) : null;
+      // default: the AI when it is within the warning margin of the coefficient curve, else the server, else (only the AI answered) skip
+      const choice = a && (dA == null || Math.abs(dA) <= WARN) ? 'ai' : s ? 'server' : 'skip';
+      return { it, s, a, dS, dA, dAS, choice, why: it.ai && !it.ai.ok ? it.ai.reason : '', whyServer: it.server && !it.server.ok ? it.server.reason : '' };
+    });
+    const worst = (r) => Math.max(...[r.dS, r.dA].filter((x) => x != null).map(Math.abs), 0);
+    let onlyBig = false;
+    let modalApi = null;
+    const list = el('div', { class: 'batch-list' });
+    const summary = el('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
+    const diffTag = (d) => (d == null ? el('span', { class: 'muted' }, '—') : el('span', { class: Math.abs(d) > WARN ? 'tag warn' : 'tag' }, pct(d)));
+    const paintSummary = () => {
+      const n = (c) => rows.filter((r) => r.choice === c).length;
+      const use = n('ai') + n('server');
+      summary.textContent = `Sẽ điền ${use}/${rows.length} tổ hợp: AI ${n('ai')}, server ${n('server')} · bỏ qua ${n('skip')} (bản nháp, chưa lưu).`;
+      if (modalApi) modalApi.setDisabled('apply', use === 0);
+    };
+    function rowNode(r) {
+      const select = el('select', { 'aria-label': `Chọn kết quả cho ${r.it.label}`, onchange: (e) => { r.choice = e.target.value; paintSummary(); } },
+        el('option', { value: 'ai', disabled: !r.a, selected: r.choice === 'ai' }, 'AI'),
+        el('option', { value: 'server', disabled: !r.s, selected: r.choice === 'server' }, 'Server'),
+        el('option', { value: 'skip', selected: r.choice === 'skip' }, 'Bỏ qua'));
+      select.onclick = (e) => e.stopPropagation();
+      const chart = el('div', { class: 'compare-chart-slot' });
+      const det = el('details', { class: 'batch-row' },
+        el('summary', {},
+          el('span', { class: 'batch-name' }, r.it.label),
+          el('span', { class: 'batch-cell', 'data-label': 'Server so với hệ số' }, diffTag(r.dS)),
+          el('span', { class: 'batch-cell', 'data-label': 'AI so với hệ số' }, diffTag(r.dA)),
+          el('span', { class: 'batch-cell', 'data-label': 'AI so với server' }, diffTag(r.dAS)),
+          select),
+        chart,
+        r.why ? el('p', { class: 'muted text-xs' }, `AI: ${r.why}`) : null,
+        r.whyServer ? el('p', { class: 'muted text-xs' }, `Server: ${r.whyServer}`) : null);
+      det.addEventListener('toggle', () => {
+        if (!det.open || chart.childElementCount) return;
+        const sr = [
+          { label: 'Theo hệ số (app dùng nếu không có mục riêng)', curve: r.it.coef, cls: 'series-coef', mark: null },
+          { label: 'Server (từ súng tương tự)', curve: r.s, cls: 'series-server', mark: 'circle' },
+          { label: 'AI', curve: r.a, cls: 'series-ai', mark: 'square' },
+        ];
+        chart.replaceChildren(compareChart(sr), legend(sr));
+      });
+      r.node = det;
+      r.select = select;
+      return det;
+    }
+    function paintList() {
+      const shown = rows.filter((r) => !onlyBig || worst(r) > WARN || (r.dAS != null && Math.abs(r.dAS) > WARN));
+      list.replaceChildren(...(shown.length ? shown.map((r) => r.node || rowNode(r)) : [el('p', { class: 'muted' }, 'Không có dòng nào lệch nhiều.')]));
+    }
+    const setAll = (fn) => { for (const r of rows) { r.choice = fn(r); if (r.select) r.select.value = r.choice; } paintSummary(); };
+    const quick = (label, fn) => el('button', { type: 'button', class: 'btn small ghost', onclick: () => { setAll(fn); paintList(); } }, label);
+    const bigBox = el('input', { type: 'checkbox', onchange: (e) => { onlyBig = e.target.checked; paintList(); } });
+    const bigCount = rows.filter((r) => worst(r) > WARN || (r.dAS != null && Math.abs(r.dAS) > WARN)).length;
+    for (const r of rows) rowNode(r);
+    paintList(); paintSummary();
+    const choice = await showModal({
+      title: `So sánh kết quả của ${rows.length} tổ hợp`, tone: 'info', className: 'wide',
+      body: [
+        el('p', { class: 'muted' }, `Mỗi dòng: độ khác nhau trung bình giữa các đường cong (so sánh trên trục thời gian chuẩn hóa) · màu cảnh báo khi lệch hơn ${Math.round(WARN * 100)}%. Bấm một dòng để xem biểu đồ chồng ba đường cong. Chọn AI, server hoặc bỏ qua cho từng dòng.`),
+        el('div', { class: 'row batch-tools' },
+          quick('Mặc định', (r) => r.a && (r.dA == null || Math.abs(r.dA) <= WARN) ? 'ai' : r.s ? 'server' : 'skip'),
+          aiOn ? quick('Tất cả dùng AI (nếu có)', (r) => (r.a ? 'ai' : r.s ? 'server' : 'skip')) : null,
+          quick('Tất cả dùng server (nếu có)', (r) => (r.s ? 'server' : 'skip')),
+          quick('Bỏ qua tất cả', () => 'skip'),
+          el('label', { class: 'check' }, bigBox, ` Chỉ dòng lệch nhiều (${bigCount})`)),
+        summary,
+        el('div', { class: 'batch-head', 'aria-hidden': 'true' }, el('span', {}, 'Tổ hợp'), el('span', { class: 'batch-cell' }, 'Server / hệ số'), el('span', { class: 'batch-cell' }, 'AI / hệ số'), el('span', { class: 'batch-cell' }, 'AI / server'), el('span', {}, 'Dùng')),
+        list,
+      ],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'apply', label: 'Điền vào bảng (chưa lưu)', primary: true }],
+      onOpen: (m) => { modalApi = m; paintSummary(); },
+    });
+    if (choice !== 'apply') return null;
+    return rows.filter((r) => r.choice !== 'skip').map((r) => ({ key: r.it.key, source: r.choice, curve: (r.choice === 'ai' ? r.a : r.s).map(([t, v]) => [t, v]) }));
+  }
+
+  window.SuggestUi = { compare, compareChart, meanDiff, reviewBatch };
 })();

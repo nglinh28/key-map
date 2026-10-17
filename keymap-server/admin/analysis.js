@@ -1645,12 +1645,6 @@
       title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
       onclick: guard(() => aiCreateAll()),
     }, icon(rc.bulk ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, bulkLabel()));
-    const tableTargets = wholeTableTargets(visible);
-    const tableBtn = el('button', {
-      type: 'button', class: 'btn small', 'data-bulk': 'table', disabled: zero || gunDisabled || !latest() || Boolean(rc.filling) || (!rc.bulk && !tableTargets.length) || Boolean(rc.bulk && !rc.bulk.table),
-      title: rc.bulk && rc.bulk.table ? 'Dừng (các tổ hợp đã tính xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Hỏi AI từng tổ hợp một cho MỌI dòng đang hiện trong bảng mà chưa có mục riêng, tự động, có thanh tiến trình. AI lỗi hoặc không hợp lý thì dùng kết quả của server. Chưa lưu gì: bấm "Lưu tất cả".',
-      onclick: guard(() => aiWholeTable()),
-    }, icon(rc.bulk && rc.bulk.table ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, rc.bulk && rc.bulk.table ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `AI tính cả bảng${tableTargets.length ? ` (${tableTargets.length})` : ''}`));
     const fillBtn = el('button', {
       type: 'button', class: 'btn small', disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
       title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Quét MỌI ống ngắm × tư thế của súng này, tạo mốc cho mọi tổ hợp còn thiếu theo bảng chuẩn (AI/server/hệ số), kiểm tra lại rồi thêm vào danh sách. Chưa lưu gì: bấm "Lưu tất cả".',
@@ -1686,7 +1680,7 @@
         }
       },
     }, icon('trash'), `Bỏ nháp súng khác (${otherStats.others})`) : null;
-    const bulkRow = el('div', { class: 'row' }, aiBtn, tableBtn, fillBtn, scanAllBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
+    const bulkRow = el('div', { class: 'row' }, aiBtn, fillBtn, scanAllBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
     const audit = auditOf(ix);
     const mine = audit.filter((e) => e.weapon === rc.weapon);
     const auditBtn = el('button', {
@@ -2278,40 +2272,99 @@
     return last || { ok: false, reason: 'Đã dừng.' };
   }
 
-  async function aiWholeTable() {
-    if (rc.bulk) { rc.bulk.ac.abort(); return; }
+  // "Tính mốc cả bảng": server and AI answer for every row of the table that has no own entry; then one window shows how different the
+  // answers are (against the coefficient curve and against each other) and the user chooses per row. Nothing is written: the choices become drafts.
+  async function tableCompare() {
+    if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
+    if (rc.filling) { toast('Đang "Tạo đủ cho cả súng": đợi xong rồi hãy tính.', true); return; }
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
     const status = await aiStatus();
     const todo = wholeTableTargets(rc.visible);
     if (!todo.length) { toast('Không có dòng nào cần tính: mọi dòng đang hiện đã có mục riêng hoặc bản nháp.'); return; }
     const threads = status.enabled ? aiThreads(status) : 6;
     const go = await showModal({
-      title: `AI tính ${todo.length} tổ hợp trong bảng?`, tone: 'info',
+      title: `Tính mốc cho ${todo.length} tổ hợp trong bảng?`, tone: 'info',
       body: [
-        el('p', {}, `Lần lượt hỏi ${status.enabled ? 'AI' : 'server (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (các dòng đang hiện trong bảng, chưa có mục riêng).`),
-        status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào; phần đã tính vẫn giữ.`) : null,
-        el('p', { class: 'muted' }, 'AI lỗi hoặc cho đường cong không hợp lý thì dùng kết quả của server. Kết quả là bản nháp, chưa lưu: bấm "Lưu tất cả" để ghi.'),
+        el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (các dòng đang hiện trong bảng, chưa có mục riêng).`),
+        status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào: phần đã tính vẫn được đưa sang bước so sánh.`) : null,
+        el('p', { class: 'muted' }, 'Xong sẽ mở cửa sổ so sánh: độ khác nhau của từng tổ hợp, bạn chọn AI, server hoặc bỏ qua cho từng dòng rồi mới điền vào bảng (bản nháp, chưa lưu).'),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Bắt đầu (${todo.length})`, primary: true }],
     });
     if (go !== 'go') return;
-    await aiCreateAll(wholeTableTargets(rc.visible).filter((t) => todo.some((x) => x.key === t.key)), { table: true, status });
+    const targets = wholeTableTargets(rc.visible).filter((t) => todo.some((x) => x.key === t.key));
+    if (!targets.length) return;
+    const itemId = S.sel.id;
+    const mode = rc.mode;
+    const src = S.src;
+    const idxNow = rc.idx.idx;
+    const ac = new AbortController();
+    const sameRun = () => !ac.signal.aborted && active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src;
+    rc.bulk = { ac, done: 0, total: targets.length, failed: 0, ai: 0, server: 0, table: true };
+    redraw();
+    const results = [];
+    try {
+      await runPool(targets, status.enabled ? aiThreads(status) : 6, async (m) => {
+        if (!sameRun()) { ac.abort(); return; }
+        const o = m.o;
+        const body = { id: itemId, mode, combo: { weapon: o.weapon, scope: o.scope, gesture: o.gesture, grip: o.grip, muzzle: o.muzzle, stock: o.stock } };
+        const [srv, ai] = await Promise.all([
+          api('POST', '/recoil/suggest', body, { signal: ac.signal }).catch(() => null),
+          status.enabled ? askAi(body, { signal: ac.signal, stopped: () => ac.signal.aborted }) : Promise.resolve(null),
+        ]);
+        if (!sameRun()) { ac.abort(); return; }
+        const good = (res) => { const c = res && res.ok ? RL.checkCurve(res.curve) : null; return c && c.ok ? { ok: true, curve: c.curve } : { ok: false, reason: (res && res.reason) || 'Không có kết quả.' }; };
+        const sv = srv ? good(srv) : null;
+        const av = ai ? good(ai) : null;
+        if (sv && sv.ok) rc.bulk.server++;
+        if (av && av.ok) rc.bulk.ai++;
+        if (!(sv && sv.ok) && !(av && av.ok)) rc.bulk.failed++;
+        results.push({ key: m.key, o, label: comboLine(o), coef: RL.resolve(idxNow, o).curve.map(([t, v]) => [Number(t), Number(v)]), server: sv, ai: av });
+        rc.bulk.done++;
+        paintBulk();
+      });
+    } catch (e) {
+      toast(`Dừng giữa chừng vì lỗi: ${e.message || e}`, true);
+    }
+    const stopped = ac.signal.aborted;
+    const moved = !(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src);
+    rc.bulk = null;
+    redraw();
+    if (moved) { toast('Đã đổi mục, bộ dữ liệu hoặc nguồn khi đang tính: kết quả bị bỏ.', true); return; }
+    const useful = results.filter((x) => (x.server && x.server.ok) || (x.ai && x.ai.ok));
+    if (!useful.length) { toast(`${stopped ? 'Đã dừng. ' : ''}Chưa có tổ hợp nào có kết quả (${results.length} tổ hợp lỗi).`, true); return; }
+    useful.sort((a, b) => targets.findIndex((t) => t.key === a.key) - targets.findIndex((t) => t.key === b.key));
+    const chosen = await window.SuggestUi.reviewBatch({ items: useful, aiOn: Boolean(status.enabled) });
+    if (!chosen || !chosen.length) return;
+    if (!(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src)) { toast('Đã đổi mục khi đang so sánh: không điền gì.', true); return; }
+    if (!rc.customCombos) rc.customCombos = new Set();
+    let applied = 0;
+    for (const c of chosen) {
+      const t = useful.find((x) => x.key === c.key);
+      if (!t || rc.drafts.has(c.key)) continue;
+      const suspect = !plausible(c.curve, t.coef, { ignoreDuration: Boolean(RL.fireOf(t.o.weapon)) });
+      rc.customCombos.add(RL.comboKey(t.o));
+      rc.drafts.set(c.key, { curve: c.curve, source: c.source, suspect });
+      applied++;
+    }
+    redraw();
+    toast(`Đã điền ${applied} tổ hợp vào bảng (chưa lưu): bấm "Lưu tất cả" để ghi.`);
   }
 
-  async function aiCreateAll(targets = null, { table = false, status: known = null } = {}) {
+  async function aiCreateAll() {
     if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
     if (rc.filling) { toast('Đang "Tạo đủ cho cả súng": đợi xong rồi hãy tính.', true); return; }
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
-    const todo = targets || aiTargets();
+    const todo = aiTargets();
     if (!todo.length) { toast('Không có tổ hợp mới nào cần tạo mốc. Thêm tổ hợp bằng "Thêm tổ hợp", "Thêm tất cả" hoặc "Tạo đủ cho cả súng".'); return; }
-    const status = known || await aiStatus();
+    const status = await aiStatus();
     const itemId = S.sel.id;
     const mode = rc.mode;
     const src = S.src;
     const idxNow = rc.idx.idx; // the reference curves come from the data the run started with
     const sameRun = () => !ac.signal.aborted && active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src;
     const ac = new AbortController();
-    rc.bulk = { ac, done: 0, total: todo.length, failed: 0, ai: 0, server: 0, table };
+    rc.bulk = { ac, done: 0, total: todo.length, failed: 0, ai: 0, server: 0 };
     redraw();
     try {
     await runPool(todo, status.enabled ? aiThreads(status) : 6, async (m) => {
@@ -2332,8 +2385,6 @@
         if (checked.ok && (source !== 'ai' || plausible(checked.curve, RL.resolve(idxNow, o).curve, { ignoreDuration: Boolean(RL.fireOf(o.weapon)) }))) pick = { source, curve: checked.curve };
       }
       if (pick) {
-        if (table) { if (!rc.customCombos) rc.customCombos = new Set(); rc.customCombos.add(RL.comboKey(o)); } // now a combination to be saved as an own entry
-        if (table) pick.suspect = !plausible(pick.curve, RL.resolve(idxNow, o).curve, { ignoreDuration: Boolean(RL.fireOf(o.weapon)) });
         rc.drafts.set(m.key, pick);
         rc.bulk[pick.source]++;
       } else rc.bulk.failed++;
@@ -3428,6 +3479,14 @@
       title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server tính từ các súng tương tự và AI tính song song; bạn so sánh rồi chọn một kết quả để điền vào bảng bên dưới (chưa lưu).',
       onclick: guard(() => suggestPoints(o)),
     }, icon('sparkles'), 'Tính mốc (server + AI)');
+    const tableCount = wholeTableTargets(rc.visible).length;
+    const tableRun = Boolean(rc.bulk && rc.bulk.table);
+    const tableBtn = el('button', {
+      type: 'button', class: 'btn small', 'data-bulk': 'table',
+      disabled: !latest() || zero || gunDisabled || Boolean(rc.filling) || (!rc.bulk && !tableCount) || Boolean(rc.bulk && !rc.bulk.table),
+      title: tableRun ? 'Dừng (phần đã tính vẫn được so sánh)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server và AI tính cho MỌI dòng đang hiện trong bảng mà chưa có mục riêng (tự động, có tiến trình), rồi một cửa sổ cho thấy độ khác nhau để bạn chọn AI, server hoặc bỏ qua từng dòng. Chưa lưu gì.',
+      onclick: guard(() => tableCompare()),
+    }, icon(tableRun ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, tableRun ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `Tính mốc cả bảng${tableCount ? ` (${tableCount})` : ''}`));
 
     const autoBox = el('label', { class: 'auto-step', title: `Khi sửa thời gian (hoặc giá trị) của một mốc, các mốc sau tự tính lại từ mốc đứng trước nó. ${stepHint()}` },
       el('input', { type: 'checkbox', checked: rc.autoStep, onchange: (e) => { rc.autoStep = e.target.checked; try { localStorage.setItem(AUTO_KEY, rc.autoStep ? 'on' : 'off'); } catch { /* private mode */ } } }),
@@ -3470,7 +3529,7 @@
       el('p', { class: 'muted text-xs chart-hint' }, fire ? 'Kéo một chấm lên xuống để đổi giá trị của mốc (thời gian chia đều trên băng đạn nên không kéo ngang). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ (giữ Shift: bước lớn).' : 'Kéo một chấm để đổi giá trị (lên xuống) và thời gian (ngang, giữa hai mốc bên cạnh). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ ← → (giữ Shift: bước lớn).'),
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
-      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, resetBtn),
+      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, tableBtn, resetBtn),
       el('div', { class: 'row' }, saveBtns[1]),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),
