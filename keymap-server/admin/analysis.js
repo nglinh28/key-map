@@ -2217,7 +2217,7 @@
   // every combination the gun can take in the scope and posture shown that has no own entry yet (its points come from the coefficients) and no draft:
   // what "Tính mốc cả bảng" works on. It does not depend on which rows the table shows (the toggle "Hiện cả tổ hợp tính từ hệ số", the filters).
   function wholeTableTargets() {
-    if (RL.isGunDisabled(rc.weapon) || RL.isZeroWeapon(rc.weapon) || !rc.idx) return [];
+    if (RL.isGunDisabled(rc.weapon) || RL.isZeroWeapon(rc.weapon) || !rc.idx || !rc.idx.idx) return [];
     const out = [];
     for (let g = 0; g < RL.GRIPS.length; g++) {
       for (let m = 0; m < RL.MUZZLES.length; m++) {
@@ -2290,7 +2290,7 @@
     if (!todo.length) { toast('Không có tổ hợp nào cần tính: mọi tổ hợp hợp lệ của ống ngắm và tư thế này đã có mục riêng hoặc bản nháp.'); return; }
     const threads = status.enabled ? aiThreads(status) : 6;
     const go = await showModal({
-      title: `Tính mốc cho ${todo.length} tổ hợp trong bảng?`, tone: 'info',
+      title: `Tính mốc cho ${todo.length} tổ hợp?`, tone: 'info',
       body: [
         el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (mọi tổ hợp phụ kiện hợp lệ của ống ngắm và tư thế này mà chưa có mục riêng, kể cả những dòng đang ẩn trong bảng).`),
         status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào: phần đã tính vẫn được đưa sang bước so sánh.`) : null,
