@@ -187,7 +187,7 @@
       body: [
         el('div', { class: 'se-head' }, statusBadge(r.status), r.disabled ? badge('Đã tắt sử dụng', 'danger') : badge('Đang sử dụng', 'ok'),
           el('span', { class: 'muted text-sm' }, [r.label !== r.code ? r.label : null, r.cls !== '—' ? r.cls : null].filter(Boolean).join(' · '))),
-        el('p', { class: 'muted text-sm' }, 'Chọn đúng những gì súng này lắp được trong game. Bảng này là cơ sở để kiểm tra dữ liệu ("Sai chuẩn"), gợi ý và tạo tổ hợp, "Quét tất cả", và là điều AI được báo khi tính mốc: không chọn = súng không lắp được.'),
+        el('p', { class: 'muted text-sm' }, 'Chọn đúng những gì súng này lắp được trong game. Bảng này là cơ sở để kiểm tra dữ liệu ("Sai chuẩn"), gợi ý và tạo tổ hợp, "Tính mốc cả bảng", và là điều AI được báo khi tính mốc: không chọn = súng không lắp được.'),
         el('div', { class: 'se-grid' },
           el('div', { class: 'se-col' },
             el('section', { class: 'se-card' }, el('h3', {}, 'Phụ kiện lắp được'),

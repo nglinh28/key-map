@@ -97,7 +97,7 @@ function buildMessages(idx, target, { limit = 5 } = {}) {
   ];
 }
 
-// ---------------------------------------------------------------- reviewing an entry that already exists ("Quét tất cả")
+// ---------------------------------------------------------------- reviewing an entry that already exists ("rà soát mục đã có")
 const SYSTEM_REVIEW = `You help tune the recoil curves in the controller config of a mobile shooter game.
 A curve is a list of points [time_ms, value]: time starts at 0 and strictly increases, the value is the vertical pull strength at that time.
 Task: the TARGET gun and combination (scope, posture, accessories) ALREADY has its own entry: current_curve. Review it against the evidence and propose the curve it should have.
@@ -397,10 +397,10 @@ function createAi(cfg = {}, { fetchImpl = globalThis.fetch, providers = null } =
     return ask('curve', buildMessages(idx, target, opts), opts, curveTaker(idx, target));
   }
 
-  // "Quét tất cả": a combination that has its own entry, reviewed. -> { ok, curve, reasoning, change } (change: see curveChange)
+  // Review: a combination that has its own entry, reviewed. -> { ok, curve, reasoning, change } (change: see curveChange)
   async function review(idx, target, opts = {}) {
     const own = idx.map.get(S.keyOf(target.weapon, target.scope, target.grip, target.muzzle, target.stock, target.gesture));
-    if (!own) return { ok: false, reason: 'Tổ hợp này chưa có mục riêng: dùng "AI tạo mốc" thay vì rà soát.' };
+    if (!own) return { ok: false, reason: 'Tổ hợp này chưa có mục riêng: dùng "Tính mốc cả bảng" thay vì rà soát.' };
     const current = own[own.length - 1].recoilValue.map(([t, v]) => [Number(t), Number(v)]);
     const r = await ask('curve', buildReviewMessages(idx, target, opts), opts, (a) => {
       const parsed = parseAnswer(a.content);
