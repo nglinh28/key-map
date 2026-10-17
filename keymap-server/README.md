@@ -15,8 +15,8 @@ Mỗi súng trong tab **Tiêu chuẩn súng** có **số viên một băng thư�
 
 - Với súng có T, đường cong có n mốc thì mốc thứ i nằm ở `round(i × T ÷ (n − 1))` ms: **chia đều**, tổng thời lượng luôn là T.
 - **Thêm mốc**: thêm một mốc rồi chia đều lại; hình dạng đường cong giữ nguyên (nội suy tuyến tính theo thời gian chuẩn hóa, hai đầu giữ đúng giá trị). Xóa một mốc thì các mốc còn lại chia đều lại. Sửa thời gian một mốc (khi bật "Tự tính các mốc sau") thì các mốc sau chia đều từ mốc đó đến T.
-- **Chia đều thời gian theo băng đạn** (từng đường cong) và **Chia đều thời gian cả súng** (mọi mục riêng của súng, là bản nháp): các đường cong đã lưu **không tự đổi**, nên đường cong cũ báo "lệch x% so với băng đạn" cho đến khi bạn bấm.
-- **Thêm mốc cho súng**: nội suy lại trên T (không còn chọn "theo xu hướng" hay "theo bước chuẩn").
+- **Chia đều thời gian theo băng đạn** (từng đường cong) và **Chia đều thời gian cả súng** (trong nút **Mốc cho cả súng…**, mọi mục riêng của súng, là bản nháp): các đường cong đã lưu **không tự đổi**, nên đường cong cũ báo "lệch x% so với băng đạn" cho đến khi bạn bấm.
+- **Thêm mốc cho súng** (cũng trong nút **Mốc cho cả súng…**): nội suy lại trên T (không còn chọn "theo xu hướng" hay "theo bước chuẩn").
 - **AI và server**: câu hỏi gửi cho AI có `time_axis` (T và số mốc); AI chỉ quyết định giá trị, server đặt lại thời gian cho đều trên T và không từ chối vì thời lượng. `analogCurve` cũng kết thúc ở T. Khi rà soát ("rà soát mục đã có") chiều dài của mục đã lưu không bị coi là khác thường.
 - Súng chưa có thông số bắn giữ nguyên cách cũ (bước ngẫu nhiên 450–678 ms, kiểm tra thời lượng 0,25–4 lần).
 - Với súng bắn từng phát (DMR, sniper, shotgun) số giây là chu kỳ tối thiểu; M16 và Mk47 bắn theo loạt nên thực tế chậm hơn; chưa tính thay đạn.
@@ -36,7 +36,7 @@ Hai bên độc lập (AI **không** thấy kết quả của server). Số đo 
 
 Trên dữ liệu thật hiện tại các súng gần như có cùng bộ tổ hợp, nên loại thứ nhất hầu như trống và loại thứ hai là nguồn chính. Sau đó **AI** (nền, sau ~0,6 giây, hủy nếu bạn đổi súng/tư thế) chỉ **xếp hạng và giải thích** các ứng viên đó (nhãn "AI #n"); AI không thể thêm tổ hợp ngoài danh sách của server. AI tắt hoặc lỗi thì danh sách vẫn hiện, chỉ không có nhãn AI.
 
-**Liệt kê và thêm tất cả tổ hợp còn thiếu**: danh sách gợi ý mờ chỉ hiện 6 tổ hợp "đáng làm trước" (server chọn tối đa 8: súng tương tự đã có, hoặc loại tổ hợp mà hệ số thường sai ≥ 6%; AI chỉ xếp hạng chúng). Nút **Hiện thêm n tổ hợp còn thiếu** hiện nốt phần còn lại: mọi tổ hợp mà súng này lắp được (theo quy tắc phụ kiện và bộ lọc của bảng) nhưng chưa có mục riêng (`missing` trong `combo-suggestions`). Muốn tính mốc cho tất cả các tổ hợp (kể cả còn thiếu) thì dùng **Tính mốc cả bảng** (xem dưới), không cần thêm từng tổ hợp. Nút **Lưu tất cả** cũng có ở đầu danh sách gợi ý.
+**Liệt kê các tổ hợp còn thiếu**: danh sách gợi ý mờ chỉ hiện 6 tổ hợp "đáng làm trước" (server chọn tối đa 8: súng tương tự đã có, hoặc loại tổ hợp mà hệ số thường sai ≥ 6%; AI chỉ xếp hạng chúng). Nút **Hiện thêm n tổ hợp còn thiếu** hiện nốt phần còn lại: mọi tổ hợp mà súng này lắp được (theo quy tắc phụ kiện và bộ lọc của bảng) nhưng chưa có mục riêng (`missing` trong `combo-suggestions`). Muốn tính mốc cho tất cả các tổ hợp (kể cả còn thiếu) thì dùng **Tính mốc cả bảng** (xem dưới), không cần thêm từng tổ hợp.
 
 **Bảng không cần kéo ngang**: khi cột danh sách hẹp (có chi tiết bên phải, hoặc cửa sổ nhỏ) mỗi dòng của bảng tổ hợp tự thành hai dòng: dòng trên là tay cầm / nòng / báng, dòng dưới là nguồn, giá trị t=0, giá trị cuối, thời lượng, số mốc (mỗi số có chú thích), nên luôn thấy đủ giá trị. Bảng mốc cũng co theo bề ngang.
 
