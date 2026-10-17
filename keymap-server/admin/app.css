@@ -1877,3 +1877,8 @@ details.disclosure.flat > summary { padding: 8px 0; font-size: 13px; }
 
 .batch-head { display: grid; grid-template-columns: minmax(0, 1fr) 96px 96px 96px 104px; gap: 8px; padding: 0 12px 4px 12px; font-size: 11.5px; color: var(--faint); }
 @media (max-width: 640px) { .batch-head { display: none; } }
+
+/* "Dọn dẹp": one row per tool */
+.cleanup-list { display: grid; gap: 8px; margin-top: 8px; }
+.cleanup-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+@media (max-width: 640px) { .cleanup-row { grid-template-columns: 1fr auto; } .cleanup-row .badge { display: none; } }
