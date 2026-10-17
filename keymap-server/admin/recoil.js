@@ -532,6 +532,54 @@
     return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
+  // The keys that have several own entries: the app keeps only the last one of each, the others change nothing.
+  // -> [{ weapon, scope, grip, muzzle, stock, gesture, copies, distinct, curves: [{ curve, count, last }] }] (in gun, scope, posture order)
+  function duplicateGroups(idx) {
+    const out = [];
+    for (const [key, list] of idx.map) {
+      if (list.length < 2) continue;
+      const [weapon, scope, grip, muzzle, stock, gesture] = key.split('|').map(Number);
+      const byText = new Map();
+      for (const e of list) {
+        const t = JSON.stringify(e.recoilValue);
+        if (!byText.has(t)) byText.set(t, { curve: e.recoilValue, count: 0, last: false });
+        byText.get(t).count++;
+      }
+      byText.get(JSON.stringify(list[list.length - 1].recoilValue)).last = true;
+      out.push({ weapon, scope, grip, muzzle, stock, gesture, copies: list.length, distinct: byText.size, curves: [...byText.values()] });
+    }
+    return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
+  }
+
+  // Keeps ONE own entry (the last one: the one the app uses) for each listed key and removes the earlier copies; a copy of the document is returned.
+  // list: [{ weapon, scope, grip, muzzle, stock, gesture }]. -> { doc, key, removed (entries), keys (keys that had copies) }
+  function dedupeEntries(doc, mode, list) {
+    const next = clone(doc);
+    const ds = pickDataset(next, mode);
+    if (!ds) throw new Error('Mục này không có recoil_data.');
+    const byGun = new Map();
+    for (const o of list) {
+      if (!byGun.has(o.weapon)) byGun.set(o.weapon, new Set());
+      byGun.get(o.weapon).add(`${o.scope}|${o.grip}|${o.muzzle}|${o.stock}|${o.gesture}`);
+    }
+    let removed = 0;
+    const hit = new Set();
+    for (const [weapon, keys] of byGun) {
+      const group = ds.data[weapon];
+      if (!group || !Array.isArray(group.v)) continue;
+      const lastAt = new Map();
+      group.v.forEach((e, i) => { const k = `${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`; if (keys.has(k)) lastAt.set(k, i); });
+      group.v = group.v.filter((e, i) => {
+        const k = `${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
+        if (!keys.has(k) || lastAt.get(k) === i) return true;
+        removed++;
+        hit.add(`${weapon}|${k}`);
+        return false;
+      });
+    }
+    return { doc: next, key: ds.key, removed, keys: hit.size };
+  }
+
   // The own entries of the guns that are switched off in "Tiêu chuẩn súng" (same shape as auditEntries, without problems).
   function disabledEntries(idx) {
     const out = [];
@@ -719,5 +767,5 @@
     return out.sort((a, b) => a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
 
-  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, disabledEntries, entriesWhere, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, evenTimes, resample, retime, withEvenTimes, spreadAfter, durationGap, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
+  return { WEAPONS, SCOPES, GRIPS, MUZZLES, STOCKS, POSTURES, LABELS, COEF_LABELS, MUZZLE_COEF, GRIP_COEF, STOCK_COEF, POSTURE_COEF, weaponLabel, coefLabel, indexData, resolve, computedFor, curveStats, pickDataset, weaponSummary, exactCombos, batchCombos, filterCombos, coefficientsFor, isZeroWeapon, ATTACHMENT_RULES, attachmentsFor, comboProblems, setRuleOverrides, getRuleOverrides, checkRule, ruleOf, MAX_ZOOMS, SOURCES, describeAttachments, checkCurve, applyCurveEdit, curveEditor, removeEntry, auditEntries, disabledEntries, duplicateGroups, dedupeEntries, entriesWhere, removeEntries, STEP, DIRECTIONS, stepTime, stepDelta, stepValue, nextPoint, cascadeFrom, extendCurve, comboKey, findDuplicateCombo, setDisabledGuns, getDisabledGuns, isGunDisabled, FIRE_DEFAULTS, checkFire, emptyMsOf, setFireOverrides, getFireOverrides, fireOf, evenTimes, resample, retime, withEvenTimes, spreadAfter, durationGap, GUN_CLASS_MAP, GUN_CLASSES, gunClass };
 });
