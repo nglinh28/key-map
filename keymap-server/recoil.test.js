@@ -623,3 +623,45 @@ test('entriesWhere: filters the own entries by gun, posture and scope; a missing
   assert.equal(R.entriesWhere(idx, { scopes: new Set([S('X1')]) }).length, 3);
   assert.equal(R.entriesWhere(idx, { weapons: new Set() }).length, 0, 'an empty set matches nothing');
 });
+
+test('duplicateGroups and dedupeEntries: several entries with one key, the last one is kept', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const doc = { recoil_data: dataset((g) => {
+    g[AUG].v.push(entry(0, 0, 0, S('X1'), 0, [[0, 100]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 70]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 71]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 70]]));
+    g[M416].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 72]]));
+    g[M416].v.push(entry(0, 0, 0, S('X1'), 1, [[0, 60]]));
+  }) };
+  const idx = R.indexData(doc.recoil_data);
+  const groups = R.duplicateGroups(idx);
+  assert.equal(groups.length, 1);
+  assert.deepEqual([groups[0].copies, groups[0].distinct], [4, 3]);
+  assert.deepEqual(groups[0].curves.map((c) => [c.count, c.last]), [[2, false], [1, false], [1, true]]);
+  const res = R.dedupeEntries(doc, 'raw', groups);
+  assert.deepEqual([res.removed, res.keys], [3, 1]);
+  const after = R.indexData(R.pickDataset(res.doc, 'raw').data);
+  assert.equal(R.duplicateGroups(after).length, 0);
+  assert.deepEqual(after.map.get([groups[0].weapon, groups[0].scope, groups[0].grip, groups[0].muzzle, groups[0].stock, groups[0].gesture].join('|')).map((e) => e.recoilValue), [[[0, 72]]], 'the last copy is the one that stays');
+  assert.equal(R.pickDataset(res.doc, 'raw').data[M416].v.length, 2, 'other keys are untouched');
+  assert.equal(doc.recoil_data[M416].v.length, 5, 'the input is not changed');
+});
+
+test('dedupeEntries: an entry with a missing field is matched, and equal numbers on two guns do not mix', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const doc = { recoil_data: dataset((g) => {
+    const a = entry(5, 1, 0, S('X1'), 0, [[0, 1]]);
+    const b = entry(5, 1, 0, S('X1'), 0, [[0, 2]]);
+    delete a.stock; delete b.stock; // a field the file does not have
+    g[M416].v.push(a, b);
+    g[AUG].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 3]]), entry(5, 1, 0, S('X1'), 0, [[0, 4]]));
+  }) };
+  const groups = R.duplicateGroups(R.indexData(doc.recoil_data));
+  assert.equal(groups.length, 2);
+  const res = R.dedupeEntries(doc, 'raw', groups.filter((g) => g.weapon === M416));
+  assert.deepEqual([res.removed, res.keys], [1, 1], 'the entry without a field is deduplicated');
+  const ds = R.pickDataset(res.doc, 'raw').data;
+  assert.equal(ds[M416].v.length, 1);
+  assert.equal(ds[AUG].v.length, 2, 'the other gun is untouched');
+});

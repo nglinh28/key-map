@@ -1624,6 +1624,11 @@
       title: zero ? 'Súng này luôn dùng đường cong 0 trong app' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : undefined,
       onclick: () => showComboModal(ix)
     }, icon('plus'), 'Thêm tổ hợp');
+    const dupList = RL.duplicateGroups(ix.idx);
+    const dupBtn = el('button', {
+      type: 'button', class: `btn small${dupList.length ? '' : ' ghost'}`, disabled: !dupList.length, onclick: guard(() => showDedupeModal(dupList, ix.ds.key)),
+      title: dupList.length ? 'Có tổ hợp được ghi nhiều lần cùng khóa: giữ một mục (mục cuối, cái app đang dùng), bỏ các bản trùng' : 'Không có tổ hợp nào bị trùng khóa',
+    }, icon('layers'), `Gộp trùng${dupList.length ? ` (${dupList.length})` : ''}`);
     const bulkDelBtn = el('button', {
       type: 'button', class: 'btn small', onclick: guard(() => showBulkDeleteModal(ix)),
       title: 'Chọn nhiều súng, tư thế, ống ngắm rồi xóa các mục riêng của chúng',
@@ -1712,7 +1717,7 @@
         el('div', { class: 'row' }, el('h2', {}, 'Tổ hợp phụ kiện'),
           el('span', { class: 'muted', title: filtered ? `Đang lọc: ${TF.describe(rc.filters, { grip: 'Tay cầm', muzzle: 'Nòng', stock: 'Báng', source: 'Nguồn', v0: 'Giá trị t=0', vEnd: 'Giá trị cuối', duration: 'Thời lượng', points: 'Mốc' })}` : undefined }, filtered ? `${visible.length}/${model.length}` : String(model.length)),
           filtered || rc.sort ? el('button', { type: 'button', class: 'btn small ghost', onclick: clearFilters }, icon('x'), `Xóa bộ lọc${filtered ? ` (${TF.countActive(rc.filters)})` : ''}`) : null,
-          bulkDelBtn, addComboBtn),
+          dupBtn, bulkDelBtn, addComboBtn),
         disabledNote,
         auditNote,
         bulkRow,
@@ -2029,6 +2034,75 @@
     });
     if (choice !== 'delete') return;
     await deleteAudited(matches(), 'đã chọn');
+  }
+
+  // "Gộp trùng": one key written several times in the file. The app keeps the LAST copy of each key, so keeping that one changes nothing in the app.
+  async function showDedupeModal(all, dsKey) {
+    const keyOf = (e) => `${e.weapon}|${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
+    const sel = new Set(all.map(keyOf));
+    let ctl = null;
+    const extra = all.reduce((n, e) => n + e.copies - 1, 0);
+    const allBox = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Chọn tất cả tổ hợp trùng khóa' });
+    const delBtn = el('button', { type: 'button', class: 'btn danger-fill', onclick: () => ctl && ctl.close('go') });
+    const counter = el('span', { class: 'muted' });
+    const boxes = new Map();
+    const paint = () => {
+      const picked = all.filter((e) => sel.has(keyOf(e)));
+      const n = picked.reduce((m, e) => m + e.copies - 1, 0);
+      allBox.checked = picked.length === all.length;
+      allBox.indeterminate = picked.length > 0 && picked.length < all.length;
+      counter.textContent = `Đã chọn ${picked.length}/${all.length} tổ hợp · sẽ bỏ ${n} mục thừa`;
+      delBtn.replaceChildren(icon('trash'), `Gộp ${picked.length} tổ hợp (bỏ ${n} mục)`);
+      delBtn.disabled = !picked.length;
+      for (const [k, b] of boxes) b.checked = sel.has(k);
+    };
+    allBox.onchange = () => { sel.clear(); if (allBox.checked) for (const e of all) sel.add(keyOf(e)); paint(); };
+    const row = (e) => {
+      const k = keyOf(e);
+      const box = el('input', { type: 'checkbox', checked: true, onchange: () => { if (box.checked) sel.add(k); else sel.delete(k); paint(); } });
+      boxes.set(k, box);
+      const stat = (c) => { const st = RL.curveStats(c.curve); return `${st.points} mốc · đầu ${num(st.v0)} · cuối ${num(st.vEnd)} · ${st.duration} ms`; };
+      return el('details', { class: 'audit-gun' },
+        el('summary', {}, box, el('span', {}, `${fullLine(e)} `), el('span', { class: e.distinct > 1 ? 'tag warn' : 'tag' }, `×${e.copies} · ${e.distinct} nội dung khác nhau`)),
+        el('ul', { class: 'hist-list' }, e.curves.map((c) => el('li', {}, `${c.count} bản: ${stat(c)}`, c.last ? el('span', { class: 'tag ok' }, ' mục cuối: app dùng, được giữ lại') : null))));
+    };
+    paint();
+    const choice = await showModal({
+      title: 'Gộp các tổ hợp bị trùng khóa', tone: 'warn', className: 'wide',
+      body: [el('p', {}, `${all.length} tổ hợp của bộ dữ liệu "${dsKey}" được ghi nhiều lần cùng một khóa (tổng ${extra} mục thừa). App chỉ dùng mục cuối của mỗi khóa, nên giữ mục cuối và bỏ các mục trước đó không đổi gì trong app. Dòng "nội dung khác nhau" nghĩa là các bản trùng không giống hệt nhau: bản cuối sẽ thắng.`),
+        el('label', { class: 'row audit-all' }, allBox, el('span', { class: 'font-semibold' }, 'Chọn tất cả'), counter),
+        el('div', { class: 'audit-list' }, all.map(row)), el('div', { class: 'row' }, delBtn)],
+      actions: [{ id: 'close', label: 'Đóng' }],
+      onOpen: (c) => { ctl = c; },
+    });
+    if (choice !== 'go' || !sel.size) return;
+    await dedupeRun(all.filter((e) => sel.has(keyOf(e))));
+  }
+
+  async function dedupeRun(list) {
+    if (!(await discardOk())) return;
+    const doc = S.data.analysis.docs.get(S.sel.id);
+    if (!doc) { toast('Không tìm thấy dữ liệu mục này trong file.', true); return; }
+    const extra = list.reduce((n, e) => n + e.copies - 1, 0);
+    const ok = await showModal({
+      title: `Gộp ${list.length} tổ hợp trùng khóa?`, tone: 'error',
+      body: [el('p', {}, `Mỗi tổ hợp giữ lại 1 mục (mục cuối, cái app đang dùng); bỏ tổng ${extra} mục thừa khỏi bộ dữ liệu của mục này trên server.`),
+        el('p', { class: 'muted' }, 'Bản hiện tại trên server được giữ một bản trong lịch sử (tối đa 10 bản cũ để khôi phục).'), alert('warn', window.Ui.webEditNote())],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Gộp ${list.length} tổ hợp`, danger: true }],
+    });
+    if (ok !== 'go') return;
+    if (!(await oldSourceOk())) return;
+    const bar = window.Ui.progressDialog({ title: `Đang gộp ${list.length} tổ hợp trùng…`, steps: ['Gộp các bản trùng', 'Tạo file XML', 'Gửi lên server', 'Cập nhật trang'] });
+    try {
+      bar.update({ step: 0, pct: 20, detail: `Đang gộp ${list.length} tổ hợp…` });
+      await nextFrame();
+      const res = RL.dedupeEntries(doc, rc.mode, list);
+      bar.update({ step: 0, pct: 45, detail: `Bỏ ${res.removed} mục thừa của ${res.keys} tổ hợp` });
+      const saved = await putRecoilItem(res.doc, `Đã gộp ${res.keys} tổ hợp trùng khóa (bỏ ${res.removed} mục) trên server`, (step, pct, detail) => bar.update({ step, pct, detail }));
+      if (saved) await bar.finish(`Đã bỏ ${res.removed} mục thừa.`); else bar.close();
+    } catch (e) {
+      await bar.fail(`Không gộp được: ${e.message || e}. Chưa có gì được ghi vào server.`);
+    }
   }
 
   // the own entries of guns switched off in "Tiêu chuẩn súng": tick the guns, then the same deletion as the check against the table
@@ -3406,7 +3480,7 @@
           el('h2', {}, `Hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`), coefTable)));
   }
 
-  async function refresh() { await load(); redraw({ smooth: true }); }
+  async function refresh() { rc.idx = null; await load(); redraw({ smooth: true }); }
 
   // the command palette can jump to an item of the cache
   window.Palette.register(() => {
