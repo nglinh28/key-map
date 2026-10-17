@@ -1918,6 +1918,25 @@
     await deleteAudited(all.filter((e) => sel.has(auditKey(e))));
   }
 
+  // "Mốc cho cả súng…": more points for every entry of the gun, or the times of every entry spread evenly over the magazine
+  async function showGunPointsChooser(ix) {
+    const fire = RL.fireOf(rc.weapon);
+    const mk = (value, title, desc, disabled) => {
+      const input = el('input', { type: 'radio', name: 'gun-points', value, disabled: Boolean(disabled) });
+      return { input, card: choiceCard({ input, title, desc, disabled: Boolean(disabled), checked: value === 'add' }) };
+    };
+    const a = mk('add', 'Thêm mốc cho cả súng', 'Thêm mốc nối tiếp cho các mục riêng của súng này ở mọi tư thế và ống ngắm (bạn chọn phạm vi và số mốc).');
+    const b = mk('retime', 'Chia đều thời gian cả súng', fire ? `Chia đều thời gian của mọi mục riêng trên thời gian bắn hết băng (${secondsText(fire.emptyMs)} s); hình dạng đường cong giữ nguyên.` : 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng).', !fire);
+    const go = await showModal({
+      title: `Mốc cho cả ${RL.weaponLabel(rc.weapon)}`, tone: 'info',
+      body: [el('p', {}, 'Mọi thay đổi chỉ là bản nháp (chưa lưu): bấm "Lưu tất cả" để ghi.'), el('div', { class: 'choice-group' }, a.card, b.card)],
+      actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: 'Tiếp tục', primary: true }],
+    });
+    if (go !== 'go') return;
+    if (a.input.checked) await showBatchAddPointsModal(ix);
+    else if (b.input.checked) await showRetimeGunModal(ix);
+  }
+
   // "Dọn dẹp": the door to every tool that removes or merges own entries. One row per tool, with how many things it would touch.
   async function showCleanupModal(ix, { audit, offList, dupList }) {
     let ctl = null;
@@ -3447,20 +3466,14 @@
     }, icon('clock'), 'Chia đều thời gian theo băng đạn');
 
     const gunDisabled = RL.isGunDisabled(o.weapon);
-    const batchAddPointsBtn = el('button', {
+    // the two things that work on EVERY entry of the gun live behind one button: more points, or points spread evenly over the magazine time
+    const gunPointsBtn = el('button', {
       type: 'button',
       class: 'btn small',
       disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
-      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Thêm mốc nối tiếp cho súng này ở tất cả tư thế và ống ngắm dựa vào dữ liệu mốc trước đó.',
-      onclick: guard(() => showBatchAddPointsModal(ix)),
-    }, icon('plus'), 'Thêm mốc cho súng');
-    const retimeGunBtn = el('button', {
-      type: 'button',
-      class: 'btn small',
-      disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk) || !RL.fireOf(o.weapon),
-      title: RL.fireOf(o.weapon) ? 'Chia đều thời gian của mọi mục riêng của súng này trên thời gian bắn hết băng (bản nháp, chưa ghi file).' : 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng)',
-      onclick: guard(() => showRetimeGunModal(ix)),
-    }, icon('clock'), 'Chia đều thời gian cả súng');
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Việc cho cả súng (mọi tư thế và ống ngắm): thêm mốc nối tiếp, hoặc chia đều thời gian trên thời gian bắn hết băng. Chưa ghi gì vào file.',
+      onclick: guard(() => showGunPointsChooser(ix)),
+    }, icon('layers'), 'Mốc cho cả súng…');
     const suggestBtn = el('button', {
       type: 'button',
       class: 'btn small',
@@ -3506,7 +3519,7 @@
       el('p', { class: 'muted text-xs chart-hint' }, fire ? 'Kéo một chấm lên xuống để đổi giá trị của mốc (thời gian chia đều trên băng đạn nên không kéo ngang). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ (giữ Shift: bước lớn).' : 'Kéo một chấm để đổi giá trị (lên xuống) và thời gian (ngang, giữa hai mốc bên cạnh). Chọn chấm bằng phím Tab rồi dùng mũi tên ↑ ↓ ← → (giữ Shift: bước lớn).'),
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
-      el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, tableBtn, resetBtn),
+      el('div', { class: 'row' }, addBtn, retimeBtn, gunPointsBtn, suggestBtn, tableBtn, resetBtn),
       el('div', { class: 'row save-row' }, saveBtn),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),

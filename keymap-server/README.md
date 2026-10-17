@@ -15,8 +15,8 @@ Mỗi súng trong tab **Tiêu chuẩn súng** có **số viên một băng thư�
 
 - Với súng có T, đường cong có n mốc thì mốc thứ i nằm ở `round(i × T ÷ (n − 1))` ms: **chia đều**, tổng thời lượng luôn là T.
 - **Thêm mốc**: thêm một mốc rồi chia đều lại; hình dạng đường cong giữ nguyên (nội suy tuyến tính theo thời gian chuẩn hóa, hai đầu giữ đúng giá trị). Xóa một mốc thì các mốc còn lại chia đều lại. Sửa thời gian một mốc (khi bật "Tự tính các mốc sau") thì các mốc sau chia đều từ mốc đó đến T.
-- **Chia đều thời gian theo băng đạn** (từng đường cong) và **Chia đều thời gian cả súng** (mọi mục riêng của súng, là bản nháp): các đường cong đã lưu **không tự đổi**, nên đường cong cũ báo "lệch x% so với băng đạn" cho đến khi bạn bấm.
-- **Thêm mốc cho súng**: nội suy lại trên T (không còn chọn "theo xu hướng" hay "theo bước chuẩn").
+- **Chia đều thời gian theo băng đạn** (từng đường cong) và **Chia đều thời gian cả súng** (trong nút **Mốc cho cả súng…**, mọi mục riêng của súng, là bản nháp): các đường cong đã lưu **không tự đổi**, nên đường cong cũ báo "lệch x% so với băng đạn" cho đến khi bạn bấm.
+- **Thêm mốc cho súng** (cũng trong nút **Mốc cho cả súng…**): nội suy lại trên T (không còn chọn "theo xu hướng" hay "theo bước chuẩn").
 - **AI và server**: câu hỏi gửi cho AI có `time_axis` (T và số mốc); AI chỉ quyết định giá trị, server đặt lại thời gian cho đều trên T và không từ chối vì thời lượng. `analogCurve` cũng kết thúc ở T. Khi rà soát ("rà soát mục đã có") chiều dài của mục đã lưu không bị coi là khác thường.
 - Súng chưa có thông số bắn giữ nguyên cách cũ (bước ngẫu nhiên 450–678 ms, kiểm tra thời lượng 0,25–4 lần).
 - Với súng bắn từng phát (DMR, sniper, shotgun) số giây là chu kỳ tối thiểu; M16 và Mk47 bắn theo loạt nên thực tế chậm hơn; chưa tính thay đạn.
