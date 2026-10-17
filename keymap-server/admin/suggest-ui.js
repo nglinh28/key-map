@@ -196,15 +196,17 @@
     const rows = items.map((it) => {
       const s = it.server && it.server.ok ? it.server.curve : null;
       const a = it.ai && it.ai.ok ? it.ai.curve : null;
-      const dS = s ? meanDiff(s, it.coef) : null;
-      const dA = a ? meanDiff(a, it.coef) : null;
+      const base = it.cur || it.coef; // what the answers are measured against: the saved entry when there is one, else the coefficient curve
+      const dS = s ? meanDiff(s, base) : null;
+      const dA = a ? meanDiff(a, base) : null;
       const dAS = s && a ? meanDiff(a, s) : null;
       // the size of a difference is the MEAN OF THE ABSOLUTE gaps (a signed mean lets a curve that crosses the other score 0%); the cells show the signed one
-      const bS = s ? meanDiff(s, it.coef, { abs: true }) : null;
-      const bA = a ? meanDiff(a, it.coef, { abs: true }) : null;
+      const bS = s ? meanDiff(s, base, { abs: true }) : null;
+      const bA = a ? meanDiff(a, base, { abs: true }) : null;
       const bAS = s && a ? meanDiff(a, s, { abs: true }) : null;
       // default: the AI when it is within the warning margin of the coefficient curve, else the server, else (only the AI answered, no reference to judge it) skip
-      const choice = a && bA != null && bA <= WARN ? 'ai' : s ? 'server' : a && bA == null ? 'ai' : 'skip';
+      // an entry that already exists is kept unless the user chooses otherwise
+      const choice = it.cur ? 'skip' : a && bA != null && bA <= WARN ? 'ai' : s ? 'server' : a && bA == null ? 'ai' : 'skip';
       return { it, s, a, dS, dA, dAS, bS, bA, bAS, choice, def: choice, why: it.ai && !it.ai.ok ? it.ai.reason : '', whyServer: it.server && !it.server.ok ? it.server.reason : '' };
     });
     const big = (r) => [r.bS, r.bA, r.bAS].some((x) => x != null && x > WARN);
@@ -216,20 +218,20 @@
     const paintSummary = () => {
       const n = (c) => rows.filter((r) => r.choice === c).length;
       const use = n('ai') + n('server');
-      summary.textContent = `Sẽ điền ${use}/${rows.length} tổ hợp: AI ${n('ai')}, server ${n('server')} · bỏ qua ${n('skip')} (bản nháp, chưa lưu).`;
+      summary.textContent = `Sẽ điền ${use}/${rows.length} tổ hợp: AI ${n('ai')}, server ${n('server')} · giữ nguyên/bỏ qua ${n('skip')} (bản nháp, chưa lưu).`;
       if (modalApi) modalApi.setDisabled('apply', use === 0);
     };
     function rowNode(r) {
       const select = el('select', { 'aria-label': `Chọn kết quả cho ${r.it.label}`, onchange: (e) => { r.choice = e.target.value; paintSummary(); } },
         el('option', { value: 'ai', disabled: !r.a, selected: r.choice === 'ai' }, 'AI'),
         el('option', { value: 'server', disabled: !r.s, selected: r.choice === 'server' }, 'Server'),
-        el('option', { value: 'skip', selected: r.choice === 'skip' }, 'Bỏ qua'));
+        el('option', { value: 'skip', selected: r.choice === 'skip' }, r.it.cur ? 'Giữ hiện có' : 'Bỏ qua'));
       const chart = el('div', { class: 'compare-chart-slot' });
       const det = el('details', { class: 'batch-details' },
         el('summary', {},
-          el('span', { class: 'batch-name' }, r.it.label),
-          el('span', { class: 'batch-cell', 'data-label': 'Server so với hệ số' }, diffTag(r.dS, r.bS)),
-          el('span', { class: 'batch-cell', 'data-label': 'AI so với hệ số' }, diffTag(r.dA, r.bA)),
+          el('span', { class: 'batch-name' }, r.it.label, r.it.cur ? el('span', { class: 'tag ok' }, ' đã có mục riêng') : null),
+          el('span', { class: 'batch-cell', 'data-label': 'Server so với gốc' }, diffTag(r.dS, r.bS)),
+          el('span', { class: 'batch-cell', 'data-label': 'AI so với gốc' }, diffTag(r.dA, r.bA)),
           el('span', { class: 'batch-cell', 'data-label': 'AI so với server' }, diffTag(r.dAS, r.bAS))),
         chart,
         r.why ? el('p', { class: 'muted text-xs' }, `AI: ${r.why}`) : null,
@@ -238,6 +240,7 @@
         if (!det.open || chart.childElementCount) return;
         const sr = [
           { label: 'Theo hệ số (app dùng nếu không có mục riêng)', curve: r.it.coef, cls: 'series-coef', mark: null },
+          { label: 'Hiện có (mục riêng đang lưu)', curve: r.it.cur, cls: 'series-now', mark: null },
           { label: 'Server (từ súng tương tự)', curve: r.s, cls: 'series-server', mark: 'circle' },
           { label: 'AI', curve: r.a, cls: 'series-ai', mark: 'square' },
         ];
@@ -263,16 +266,16 @@
       title: `So sánh kết quả của ${rows.length} tổ hợp`, tone: 'info', className: 'wide',
       body: [
         note ? el('p', { class: 'font-semibold' }, note) : null,
-        el('p', { class: 'muted' }, `Mỗi dòng: độ khác nhau trung bình giữa các đường cong (so sánh trên trục thời gian chuẩn hóa) · màu cảnh báo khi lệch hơn ${Math.round(WARN * 100)}%. Bấm một dòng để xem biểu đồ chồng ba đường cong. Chọn AI, server hoặc bỏ qua cho từng dòng.`),
+        el('p', { class: 'muted' }, `Mỗi dòng: độ khác nhau trung bình giữa các đường cong (so sánh trên trục thời gian chuẩn hóa), đo so với mục riêng đang lưu nếu có, không thì so với hệ số · màu cảnh báo khi lệch hơn ${Math.round(WARN * 100)}%. Bấm một dòng để xem biểu đồ chồng các đường cong. Dòng đã có mục riêng mặc định giữ nguyên; chọn AI hoặc server để đề xuất thay.`),
         el('div', { class: 'row batch-tools' },
           quick('Mặc định', (r) => r.def),
           aiOn ? quick('Tất cả dùng AI (nếu có)', (r) => (r.a ? 'ai' : r.s ? 'server' : 'skip')) : null,
           quick('Tất cả dùng server (nếu có)', (r) => (r.s ? 'server' : 'skip')),
-          quick('Bỏ qua tất cả', () => 'skip'),
+          quick('Giữ nguyên tất cả', () => 'skip'),
           el('label', { class: 'check' }, bigBox, ` Chỉ dòng lệch nhiều (${bigCount})`)),
         el('p', { class: 'muted text-xs' }, 'Các nút chọn nhanh và số đếm áp dụng cho tất cả dòng, kể cả dòng đang bị ẩn bởi bộ lọc.'),
         summary,
-        el('div', { class: 'batch-head', 'aria-hidden': 'true' }, el('span', {}, 'Tổ hợp'), el('span', { class: 'batch-cell' }, 'Server / hệ số'), el('span', { class: 'batch-cell' }, 'AI / hệ số'), el('span', { class: 'batch-cell' }, 'AI / server'), el('span', {}, 'Dùng')),
+        el('div', { class: 'batch-head', 'aria-hidden': 'true' }, el('span', {}, 'Tổ hợp'), el('span', { class: 'batch-cell' }, 'Server / gốc'), el('span', { class: 'batch-cell' }, 'AI / gốc'), el('span', { class: 'batch-cell' }, 'AI / server'), el('span', {}, 'Dùng')),
         list,
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'apply', label: 'Điền vào bảng (chưa lưu)', primary: true }],
