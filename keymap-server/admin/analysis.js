@@ -1215,7 +1215,7 @@
           ...(byFilter && st.status !== 'loading' ? [el('div', { class: 'ghost-head' }, 'Không có gợi ý nào khớp bộ lọc của bảng. ', el('button', { type: 'button', class: 'btn small', onclick: () => { rc.filters = {}; rc.sort = null; redraw(); } }, icon('x'), 'Xóa bộ lọc'))] : []),
           ...(everyMissing.length || unsaved ? [el('div', { class: 'ghost-head' },
             el('span', {}, everyMissing.length ? `Còn ${everyMissing.length} tổ hợp súng này lắp được mà chưa có mục riêng${unsaved ? ` · ${unsaved} tổ hợp chưa lưu` : ''}` : `${unsaved} tổ hợp chưa lưu`),
-            el('span', { class: 'head-actions' }))] : []));
+          )] : []));
         return;
       }
       const aiNote = st.ai.status === 'loading' ? ' · AI đang xem…' : st.ai.status === 'ok' ? ` · AI (${st.ai.model || 'auto'}) đã xếp hạng` : st.ai.status === 'fail' ? ` · AI: ${st.ai.reason}` : '';
@@ -3223,14 +3223,13 @@
     const fireSlot = el('div', { class: 'meta fire-line' });
     const dirtyBadgeSlot = el('span', {}, '');
 
-    // two buttons (a node can only sit in one place): one beside the title, one under the table of points; both follow canSave()
-    const makeSaveBtn = () => el('button', {
+    // the one save button of this column: under the table of points, kept in view at the bottom of the column; it follows canSave()
+    const saveBtn = el('button', {
       type: 'button',
       class: 'btn primary',
       disabled: !canSave(),
       onclick: guard(() => saveRecoil(ix, o, curve)),
     }, icon('check'), 'Lưu độ giật vào server');
-    const saveBtn = makeSaveBtn();
 
     const resetBtn = el('button', {
       type: 'button',
@@ -3508,7 +3507,7 @@
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
       el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, tableBtn, resetBtn),
-      el('div', { class: 'row' }, saveBtn),
+      el('div', { class: 'row save-row' }, saveBtn),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Cách tính và hệ số'),
