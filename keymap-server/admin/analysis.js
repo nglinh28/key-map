@@ -1641,7 +1641,7 @@
     }, icon('layers'), 'Danh sách trường & hệ số');
 
     const aiBtn = el('button', {
-      type: 'button', class: 'btn small', 'data-bulk': 'ai', disabled: zero || gunDisabled || !latest() || Boolean(rc.filling) || (!rc.bulk && !aiTargets().length),
+      type: 'button', class: 'btn small', 'data-bulk': 'ai', disabled: Boolean(rc.bulk && rc.bulk.table) || zero || gunDisabled || !latest() || Boolean(rc.filling) || (!rc.bulk && !aiTargets().length),
       title: rc.bulk ? 'Dừng việc tạo mốc (các tổ hợp đã tạo xong vẫn giữ)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Tạo mốc cho mọi tổ hợp mới trong danh sách: AI trả lời thì dùng, không thì dùng kết quả của server. Chưa lưu gì.',
       onclick: guard(() => aiCreateAll()),
     }, icon(rc.bulk ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, bulkLabel()));
@@ -2241,6 +2241,7 @@
     if (!b) return [];
     const bar = window.Ui.progressBar(b.total ? (b.done / b.total) * 100 : 0);
     if (b.review) return [bar.node, el('span', {}, `Đang rà soát ${b.done}/${b.total} · đề xuất đổi ${b.changed} · giữ nguyên ${b.same}${b.failed ? ` · lỗi ${b.failed}` : ''}`)];
+    if (b.table) return [bar.node, el('span', {}, `Đang tính ${b.done}/${b.total} tổ hợp · AI trả lời ${b.ai} · server trả lời ${b.server}${b.failed ? ` · không có kết quả ${b.failed}` : ''}`)];
     return [bar.node, el('span', {}, `Đang tạo mốc ${b.done}/${b.total} · AI ${b.ai} · server ${b.server}${b.failed ? ` · lỗi ${b.failed}` : ''}`)];
   }
 
@@ -2299,7 +2300,9 @@
     const src = S.src;
     const idxNow = rc.idx.idx;
     const ac = new AbortController();
-    const sameRun = () => !ac.signal.aborted && active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src;
+    const view = `${rc.weapon}|${rc.scope}|${rc.gesture}`; // the table the run was started on
+    const here = () => `${rc.weapon}|${rc.scope}|${rc.gesture}` === view;
+    const sameRun = () => !ac.signal.aborted && active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src && here();
     rc.bulk = { ac, done: 0, total: targets.length, failed: 0, ai: 0, server: 0, table: true };
     redraw();
     const results = [];
@@ -2327,28 +2330,32 @@
       toast(`Dừng giữa chừng vì lỗi: ${e.message || e}`, true);
     }
     const stopped = ac.signal.aborted;
-    const moved = !(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src);
+    const moved = !(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src && here());
     rc.bulk = null;
     redraw();
-    if (moved) { toast('Đã đổi mục, bộ dữ liệu hoặc nguồn khi đang tính: kết quả bị bỏ.', true); return; }
+    if (moved) { toast('Đã đổi mục, bộ dữ liệu, nguồn hoặc súng/ống ngắm/tư thế khi đang tính: kết quả bị bỏ.', true); return; }
     const useful = results.filter((x) => (x.server && x.server.ok) || (x.ai && x.ai.ok));
     if (!useful.length) { toast(`${stopped ? 'Đã dừng. ' : ''}Chưa có tổ hợp nào có kết quả (${results.length} tổ hợp lỗi).`, true); return; }
     useful.sort((a, b) => targets.findIndex((t) => t.key === a.key) - targets.findIndex((t) => t.key === b.key));
-    const chosen = await window.SuggestUi.reviewBatch({ items: useful, aiOn: Boolean(status.enabled) });
+    const chosen = await window.SuggestUi.reviewBatch({ items: useful, aiOn: Boolean(status.enabled), note: stopped ? `Đã dừng: ${results.length}/${targets.length} tổ hợp đã tính.` : '' });
     if (!chosen || !chosen.length) return;
-    if (!(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src)) { toast('Đã đổi mục khi đang so sánh: không điền gì.', true); return; }
+    if (!(active && S.sel && S.sel.id === itemId && rc.mode === mode && S.src === src && here()) || !latest()) { toast('Đã đổi mục, nguồn hoặc bảng khi đang so sánh: không điền gì.', true); return; }
     if (!rc.customCombos) rc.customCombos = new Set();
     let applied = 0;
+    let skipped = 0;
     for (const c of chosen) {
       const t = useful.find((x) => x.key === c.key);
-      if (!t || rc.drafts.has(c.key)) continue;
+      // the same rules as when the run started, checked again: a row that got a draft, an own entry or a hand edit meanwhile is left alone
+      const nowRow = t && rc.idx ? RL.resolve(rc.idx.idx, t.o) : null;
+      const editing = t && rc.editKey === c.key && rc.dirty && !(rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase);
+      if (!t || rc.drafts.has(c.key) || editing || !nowRow || nowRow.source === 'exact' || nowRow.source === 'zero') { skipped++; continue; }
       const suspect = !plausible(c.curve, t.coef, { ignoreDuration: Boolean(RL.fireOf(t.o.weapon)) });
       rc.customCombos.add(RL.comboKey(t.o));
       rc.drafts.set(c.key, { curve: c.curve, source: c.source, suspect });
       applied++;
     }
     redraw();
-    toast(`Đã điền ${applied} tổ hợp vào bảng (chưa lưu): bấm "Lưu tất cả" để ghi.`);
+    toast(`Đã điền ${applied} tổ hợp của ${RL.weaponLabel(rc.weapon)} vào bảng (chưa lưu)${skipped ? `, bỏ qua ${skipped} dòng đã thay đổi trong lúc tính` : ''}: bấm "Lưu tất cả" để ghi.`);
   }
 
   async function aiCreateAll() {
@@ -3483,7 +3490,7 @@
     const tableRun = Boolean(rc.bulk && rc.bulk.table);
     const tableBtn = el('button', {
       type: 'button', class: 'btn small', 'data-bulk': 'table',
-      disabled: !latest() || zero || gunDisabled || Boolean(rc.filling) || (!rc.bulk && !tableCount) || Boolean(rc.bulk && !rc.bulk.table),
+      disabled: tableRun ? false : (!latest() || zero || gunDisabled || Boolean(rc.filling) || (!rc.bulk && !tableCount) || Boolean(rc.bulk)), // the Stop button always works
       title: tableRun ? 'Dừng (phần đã tính vẫn được so sánh)' : gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Server và AI tính cho MỌI dòng đang hiện trong bảng mà chưa có mục riêng (tự động, có tiến trình), rồi một cửa sổ cho thấy độ khác nhau để bạn chọn AI, server hoặc bỏ qua từng dòng. Chưa lưu gì.',
       onclick: guard(() => tableCompare()),
     }, icon(tableRun ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, tableRun ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `Tính mốc cả bảng${tableCount ? ` (${tableCount})` : ''}`));

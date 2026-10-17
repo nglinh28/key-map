@@ -11,7 +11,7 @@
   const failure = (e) => ({ ok: false, reason: e && e.message ? e.message : 'Không gọi được server.' });
 
   // how far a curve is from the coefficient curve, as a mean relative difference on a time axis normalised by duration
-  function meanDiff(curve, ref) {
+  function meanDiff(curve, ref, { abs = false } = {}) {
     if (!ref || !ref.length) return null;
     const dc = curve[curve.length - 1][0] || 1;
     const dr = ref[ref.length - 1][0] || 1;
@@ -25,7 +25,8 @@
       const u = i / 19;
       const r = at(ref, u * dr);
       if (Math.abs(r) < 1e-9) continue;
-      sum += at(curve, u * dc) / r - 1; n++;
+      const d = at(curve, u * dc) / r - 1;
+      sum += abs ? Math.abs(d) : d; n++;
     }
     return n ? sum / n : null;
   }
@@ -191,23 +192,27 @@
   // The user chooses per row (AI / server / skip) and applies them all at once. Nothing is saved here.
   // items: [{ key, label, coef: [[t,v]...], server: { ok, curve }|null, ai: { ok, curve }|null }]. -> [{ key, source, curve }] or null (cancelled).
   const WARN = 0.25; // a mean difference above this (25%) is shown as a warning
-  async function reviewBatch({ items, aiOn }) {
+  async function reviewBatch({ items, aiOn, note = '' }) {
     const rows = items.map((it) => {
       const s = it.server && it.server.ok ? it.server.curve : null;
       const a = it.ai && it.ai.ok ? it.ai.curve : null;
       const dS = s ? meanDiff(s, it.coef) : null;
       const dA = a ? meanDiff(a, it.coef) : null;
       const dAS = s && a ? meanDiff(a, s) : null;
-      // default: the AI when it is within the warning margin of the coefficient curve, else the server, else (only the AI answered) skip
-      const choice = a && (dA == null || Math.abs(dA) <= WARN) ? 'ai' : s ? 'server' : 'skip';
-      return { it, s, a, dS, dA, dAS, choice, why: it.ai && !it.ai.ok ? it.ai.reason : '', whyServer: it.server && !it.server.ok ? it.server.reason : '' };
+      // the size of a difference is the MEAN OF THE ABSOLUTE gaps (a signed mean lets a curve that crosses the other score 0%); the cells show the signed one
+      const bS = s ? meanDiff(s, it.coef, { abs: true }) : null;
+      const bA = a ? meanDiff(a, it.coef, { abs: true }) : null;
+      const bAS = s && a ? meanDiff(a, s, { abs: true }) : null;
+      // default: the AI when it is within the warning margin of the coefficient curve, else the server, else (only the AI answered, no reference to judge it) skip
+      const choice = a && bA != null && bA <= WARN ? 'ai' : s ? 'server' : a && bA == null ? 'ai' : 'skip';
+      return { it, s, a, dS, dA, dAS, bS, bA, bAS, choice, def: choice, why: it.ai && !it.ai.ok ? it.ai.reason : '', whyServer: it.server && !it.server.ok ? it.server.reason : '' };
     });
-    const worst = (r) => Math.max(...[r.dS, r.dA].filter((x) => x != null).map(Math.abs), 0);
+    const big = (r) => [r.bS, r.bA, r.bAS].some((x) => x != null && x > WARN);
     let onlyBig = false;
     let modalApi = null;
     const list = el('div', { class: 'batch-list' });
     const summary = el('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
-    const diffTag = (d) => (d == null ? el('span', { class: 'muted' }, '—') : el('span', { class: Math.abs(d) > WARN ? 'tag warn' : 'tag' }, pct(d)));
+    const diffTag = (d, b) => (d == null ? el('span', { class: 'muted' }, '—') : el('span', { class: b > WARN ? 'tag warn' : 'tag', title: `Lệch trung bình ${(b * 100).toFixed(1).replace('.', ',')}% (tuyệt đối)` }, pct(d)));
     const paintSummary = () => {
       const n = (c) => rows.filter((r) => r.choice === c).length;
       const use = n('ai') + n('server');
@@ -219,15 +224,13 @@
         el('option', { value: 'ai', disabled: !r.a, selected: r.choice === 'ai' }, 'AI'),
         el('option', { value: 'server', disabled: !r.s, selected: r.choice === 'server' }, 'Server'),
         el('option', { value: 'skip', selected: r.choice === 'skip' }, 'Bỏ qua'));
-      select.onclick = (e) => e.stopPropagation();
       const chart = el('div', { class: 'compare-chart-slot' });
-      const det = el('details', { class: 'batch-row' },
+      const det = el('details', { class: 'batch-details' },
         el('summary', {},
           el('span', { class: 'batch-name' }, r.it.label),
-          el('span', { class: 'batch-cell', 'data-label': 'Server so với hệ số' }, diffTag(r.dS)),
-          el('span', { class: 'batch-cell', 'data-label': 'AI so với hệ số' }, diffTag(r.dA)),
-          el('span', { class: 'batch-cell', 'data-label': 'AI so với server' }, diffTag(r.dAS)),
-          select),
+          el('span', { class: 'batch-cell', 'data-label': 'Server so với hệ số' }, diffTag(r.dS, r.bS)),
+          el('span', { class: 'batch-cell', 'data-label': 'AI so với hệ số' }, diffTag(r.dA, r.bA)),
+          el('span', { class: 'batch-cell', 'data-label': 'AI so với server' }, diffTag(r.dAS, r.bAS))),
         chart,
         r.why ? el('p', { class: 'muted text-xs' }, `AI: ${r.why}`) : null,
         r.whyServer ? el('p', { class: 'muted text-xs' }, `Server: ${r.whyServer}`) : null);
@@ -240,30 +243,34 @@
         ];
         chart.replaceChildren(compareChart(sr), legend(sr));
       });
-      r.node = det;
+      // the choice sits BESIDE the details: a select inside a summary would toggle the row and is not reachable for screen readers
+      const wrap = el('div', { class: 'batch-row' }, det, select);
+      r.node = wrap;
       r.select = select;
-      return det;
+      return wrap;
     }
     function paintList() {
-      const shown = rows.filter((r) => !onlyBig || worst(r) > WARN || (r.dAS != null && Math.abs(r.dAS) > WARN));
+      const shown = rows.filter((r) => !onlyBig || big(r));
       list.replaceChildren(...(shown.length ? shown.map((r) => r.node || rowNode(r)) : [el('p', { class: 'muted' }, 'Không có dòng nào lệch nhiều.')]));
     }
     const setAll = (fn) => { for (const r of rows) { r.choice = fn(r); if (r.select) r.select.value = r.choice; } paintSummary(); };
     const quick = (label, fn) => el('button', { type: 'button', class: 'btn small ghost', onclick: () => { setAll(fn); paintList(); } }, label);
     const bigBox = el('input', { type: 'checkbox', onchange: (e) => { onlyBig = e.target.checked; paintList(); } });
-    const bigCount = rows.filter((r) => worst(r) > WARN || (r.dAS != null && Math.abs(r.dAS) > WARN)).length;
+    const bigCount = rows.filter(big).length;
     for (const r of rows) rowNode(r);
     paintList(); paintSummary();
     const choice = await showModal({
       title: `So sánh kết quả của ${rows.length} tổ hợp`, tone: 'info', className: 'wide',
       body: [
+        note ? el('p', { class: 'font-semibold' }, note) : null,
         el('p', { class: 'muted' }, `Mỗi dòng: độ khác nhau trung bình giữa các đường cong (so sánh trên trục thời gian chuẩn hóa) · màu cảnh báo khi lệch hơn ${Math.round(WARN * 100)}%. Bấm một dòng để xem biểu đồ chồng ba đường cong. Chọn AI, server hoặc bỏ qua cho từng dòng.`),
         el('div', { class: 'row batch-tools' },
-          quick('Mặc định', (r) => r.a && (r.dA == null || Math.abs(r.dA) <= WARN) ? 'ai' : r.s ? 'server' : 'skip'),
+          quick('Mặc định', (r) => r.def),
           aiOn ? quick('Tất cả dùng AI (nếu có)', (r) => (r.a ? 'ai' : r.s ? 'server' : 'skip')) : null,
           quick('Tất cả dùng server (nếu có)', (r) => (r.s ? 'server' : 'skip')),
           quick('Bỏ qua tất cả', () => 'skip'),
           el('label', { class: 'check' }, bigBox, ` Chỉ dòng lệch nhiều (${bigCount})`)),
+        el('p', { class: 'muted text-xs' }, 'Các nút chọn nhanh và số đếm áp dụng cho tất cả dòng, kể cả dòng đang bị ẩn bởi bộ lọc.'),
         summary,
         el('div', { class: 'batch-head', 'aria-hidden': 'true' }, el('span', {}, 'Tổ hợp'), el('span', { class: 'batch-cell' }, 'Server / hệ số'), el('span', { class: 'batch-cell' }, 'AI / hệ số'), el('span', { class: 'batch-cell' }, 'AI / server'), el('span', {}, 'Dùng')),
         list,
