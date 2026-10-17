@@ -546,7 +546,7 @@
         byText.get(t).count++;
       }
       byText.get(JSON.stringify(list[list.length - 1].recoilValue)).last = true;
-      out.push({ weapon, scope, grip, muzzle, stock, gesture, copies: list.length, distinct: byText.size, curves: [...byText.values()] });
+      out.push({ key, weapon, scope, grip, muzzle, stock, gesture, copies: list.length, distinct: byText.size, curves: [...byText.values()] });
     }
     return out.sort((a, b) => a.weapon - b.weapon || a.scope - b.scope || a.gesture - b.gesture || a.grip - b.grip || a.muzzle - b.muzzle || a.stock - b.stock);
   }
@@ -557,23 +557,21 @@
     const next = clone(doc);
     const ds = pickDataset(next, mode);
     if (!ds) throw new Error('Mục này không có recoil_data.');
-    const byGun = new Map();
-    for (const o of list) {
-      if (!byGun.has(o.weapon)) byGun.set(o.weapon, new Set());
-      byGun.get(o.weapon).add(`${o.scope}|${o.grip}|${o.muzzle}|${o.stock}|${o.gesture}`);
-    }
+    // keys are matched the way indexData builds them (from the raw fields), so an entry with a missing field is found too
+    const wanted = new Set(list.map((o) => o.key || keyOf(o.weapon, o.scope, o.grip, o.muzzle, o.stock, o.gesture)));
     let removed = 0;
     const hit = new Set();
-    for (const [weapon, keys] of byGun) {
+    for (const weapon of new Set(list.map((o) => o.weapon))) {
       const group = ds.data[weapon];
       if (!group || !Array.isArray(group.v)) continue;
+      const keyAt = (e) => keyOf(weapon, e.scope, e.grip, e.muzzle, e.stock, e.gesture);
       const lastAt = new Map();
-      group.v.forEach((e, i) => { const k = `${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`; if (keys.has(k)) lastAt.set(k, i); });
+      group.v.forEach((e, i) => { const k = keyAt(e); if (wanted.has(k)) lastAt.set(k, i); });
       group.v = group.v.filter((e, i) => {
-        const k = `${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
-        if (!keys.has(k) || lastAt.get(k) === i) return true;
+        const k = keyAt(e);
+        if (!wanted.has(k) || lastAt.get(k) === i) return true;
         removed++;
-        hit.add(`${weapon}|${k}`);
+        hit.add(k);
         return false;
       });
     }

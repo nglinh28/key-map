@@ -647,3 +647,21 @@ test('duplicateGroups and dedupeEntries: several entries with one key, the last 
   assert.equal(R.pickDataset(res.doc, 'raw').data[M416].v.length, 2, 'other keys are untouched');
   assert.equal(doc.recoil_data[M416].v.length, 5, 'the input is not changed');
 });
+
+test('dedupeEntries: an entry with a missing field is matched, and equal numbers on two guns do not mix', () => {
+  const M416 = R.WEAPONS.indexOf('M416');
+  const doc = { recoil_data: dataset((g) => {
+    const a = entry(5, 1, 0, S('X1'), 0, [[0, 1]]);
+    const b = entry(5, 1, 0, S('X1'), 0, [[0, 2]]);
+    delete a.stock; delete b.stock; // a field the file does not have
+    g[M416].v.push(a, b);
+    g[AUG].v.push(entry(5, 1, 0, S('X1'), 0, [[0, 3]]), entry(5, 1, 0, S('X1'), 0, [[0, 4]]));
+  }) };
+  const groups = R.duplicateGroups(R.indexData(doc.recoil_data));
+  assert.equal(groups.length, 2);
+  const res = R.dedupeEntries(doc, 'raw', groups.filter((g) => g.weapon === M416));
+  assert.deepEqual([res.removed, res.keys], [1, 1], 'the entry without a field is deduplicated');
+  const ds = R.pickDataset(res.doc, 'raw').data;
+  assert.equal(ds[M416].v.length, 1);
+  assert.equal(ds[AUG].v.length, 2, 'the other gun is untouched');
+});

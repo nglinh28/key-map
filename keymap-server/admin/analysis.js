@@ -1626,7 +1626,7 @@
     }, icon('plus'), 'Thêm tổ hợp');
     const dupList = RL.duplicateGroups(ix.idx);
     const dupBtn = el('button', {
-      type: 'button', class: `btn small${dupList.length ? '' : ' ghost'}`, disabled: !dupList.length, onclick: guard(() => showDedupeModal(dupList)),
+      type: 'button', class: `btn small${dupList.length ? '' : ' ghost'}`, disabled: !dupList.length, onclick: guard(() => showDedupeModal(dupList, ix.ds.key)),
       title: dupList.length ? 'Có tổ hợp được ghi nhiều lần cùng khóa: giữ một mục (mục cuối, cái app đang dùng), bỏ các bản trùng' : 'Không có tổ hợp nào bị trùng khóa',
     }, icon('layers'), `Gộp trùng${dupList.length ? ` (${dupList.length})` : ''}`);
     const bulkDelBtn = el('button', {
@@ -2037,7 +2037,7 @@
   }
 
   // "Gộp trùng": one key written several times in the file. The app keeps the LAST copy of each key, so keeping that one changes nothing in the app.
-  async function showDedupeModal(all) {
+  async function showDedupeModal(all, dsKey) {
     const keyOf = (e) => `${e.weapon}|${e.scope}|${e.grip}|${e.muzzle}|${e.stock}|${e.gesture}`;
     const sel = new Set(all.map(keyOf));
     let ctl = null;
@@ -2069,7 +2069,7 @@
     paint();
     const choice = await showModal({
       title: 'Gộp các tổ hợp bị trùng khóa', tone: 'warn', className: 'wide',
-      body: [el('p', {}, `${all.length} tổ hợp của bộ dữ liệu "${rc.mode}" được ghi nhiều lần cùng một khóa (tổng ${extra} mục thừa). App chỉ dùng mục cuối của mỗi khóa, nên giữ mục cuối và bỏ các mục trước đó không đổi gì trong app. Dòng "nội dung khác nhau" nghĩa là các bản trùng không giống hệt nhau: bản cuối sẽ thắng.`),
+      body: [el('p', {}, `${all.length} tổ hợp của bộ dữ liệu "${dsKey}" được ghi nhiều lần cùng một khóa (tổng ${extra} mục thừa). App chỉ dùng mục cuối của mỗi khóa, nên giữ mục cuối và bỏ các mục trước đó không đổi gì trong app. Dòng "nội dung khác nhau" nghĩa là các bản trùng không giống hệt nhau: bản cuối sẽ thắng.`),
         el('label', { class: 'row audit-all' }, allBox, el('span', { class: 'font-semibold' }, 'Chọn tất cả'), counter),
         el('div', { class: 'audit-list' }, all.map(row)), el('div', { class: 'row' }, delBtn)],
       actions: [{ id: 'close', label: 'Đóng' }],
@@ -3480,7 +3480,7 @@
           el('h2', {}, `Hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`), coefTable)));
   }
 
-  async function refresh() { await load(); redraw({ smooth: true }); }
+  async function refresh() { rc.idx = null; await load(); redraw({ smooth: true }); }
 
   // the command palette can jump to an item of the cache
   window.Palette.register(() => {
