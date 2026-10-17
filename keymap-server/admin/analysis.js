@@ -1215,7 +1215,7 @@
           ...(byFilter && st.status !== 'loading' ? [el('div', { class: 'ghost-head' }, 'Không có gợi ý nào khớp bộ lọc của bảng. ', el('button', { type: 'button', class: 'btn small', onclick: () => { rc.filters = {}; rc.sort = null; redraw(); } }, icon('x'), 'Xóa bộ lọc'))] : []),
           ...(everyMissing.length || unsaved ? [el('div', { class: 'ghost-head' },
             el('span', {}, everyMissing.length ? `Còn ${everyMissing.length} tổ hợp súng này lắp được mà chưa có mục riêng${unsaved ? ` · ${unsaved} tổ hợp chưa lưu` : ''}` : `${unsaved} tổ hợp chưa lưu`),
-            el('span', { class: 'head-actions' }, saveAllButton(model)))] : []));
+          )] : []));
         return;
       }
       const aiNote = st.ai.status === 'loading' ? ' · AI đang xem…' : st.ai.status === 'ok' ? ` · AI (${st.ai.model || 'auto'}) đã xếp hạng` : st.ai.status === 'fail' ? ` · AI: ${st.ai.reason}` : '';
@@ -1241,7 +1241,7 @@
         onclick: () => st.runAi(true),
       }, icon('sparkles'), 'AI tạo lại');
       box.replaceChildren(
-        el('div', { class: 'ghost-head' }, el('span', {}, `Gợi ý thêm tổ hợp (chưa có mục riêng)${TF.countActive(rc.filters) ? ' · theo bộ lọc của bảng' : ''}${aiNote}`), el('span', { class: 'head-actions' }, addAllBtn(), regen, saveAllButton(model))),
+        el('div', { class: 'ghost-head' }, el('span', {}, `Gợi ý thêm tổ hợp (chưa có mục riêng)${TF.countActive(rc.filters) ? ' · theo bộ lọc của bảng' : ''}${aiNote}`), el('span', { class: 'head-actions' }, regen)),
         ...items,
         hidden > 0 || st.showMore ? el('div', { class: 'ghost-more' }, el('button', { type: 'button', class: 'btn small ghost', onclick: () => { st.showMore = !st.showMore; paint(); } }, st.showMore ? 'Thu gọn' : `Hiện thêm ${hidden} tổ hợp còn thiếu`)) : null,
         el('div', { class: 'ghost-manual' }, el('button', { type: 'button', class: 'btn small', onclick: () => showComboModal(ix) }, icon('plus'), 'Hoặc thêm một tổ hợp khác bằng tay…')));
@@ -1593,14 +1593,6 @@
       onclick: () => showComboModal(ix)
     }, icon('plus'), 'Thêm tổ hợp');
     const dupList = RL.duplicateGroups(ix.idx);
-    const dupBtn = el('button', {
-      type: 'button', class: `btn small${dupList.length ? '' : ' ghost'}`, disabled: !dupList.length, onclick: guard(() => showDedupeModal(dupList, ix.ds.key)),
-      title: dupList.length ? 'Có tổ hợp được ghi nhiều lần cùng khóa: giữ một mục (mục cuối, cái app đang dùng), bỏ các bản trùng' : 'Không có tổ hợp nào bị trùng khóa',
-    }, icon('layers'), `Gộp trùng${dupList.length ? ` (${dupList.length})` : ''}`);
-    const bulkDelBtn = el('button', {
-      type: 'button', class: 'btn small', onclick: guard(() => showBulkDeleteModal(ix)),
-      title: 'Chọn nhiều súng, tư thế, ống ngắm rồi xóa các mục riêng của chúng',
-    }, icon('trash'), 'Xóa nhiều…');
 
     const refFieldsBtn = el('button', {
       type: 'button',
@@ -1636,21 +1628,19 @@
     const bulkRow = el('div', { class: 'row' }, computeBtn, saveAllBtn, dropOthersBtn, aiSettingsBtn, el('div', { class: 'bulk-box' }, ...bulkBoxNodes()));
     const audit = auditOf(ix);
     const mine = audit.filter((e) => e.weapon === rc.weapon);
-    const auditBtn = el('button', {
-      type: 'button', class: `btn small ${audit.length ? '' : 'ghost'}`, onclick: guard(() => showAuditModal(ix)),
-      title: audit.length ? 'Liệt kê các mục riêng không đúng bảng phụ kiện chuẩn (cả các súng khác) và chọn xóa' : 'Mọi mục riêng đều đúng bảng phụ kiện chuẩn',
-    }, icon(audit.length ? 'alert' : 'check'), `Kiểm tra theo chuẩn${audit.length ? ` (${audit.length})` : ''}`);
     const offList = RL.disabledEntries(ix.idx);
-    const offBtn = el('button', {
-      type: 'button', class: `btn small ${offList.length ? '' : 'ghost'}`, disabled: !offList.length, onclick: guard(() => showDisabledGunsModal(offList)),
-      title: offList.length ? 'Xóa các tổ hợp của những súng đã tắt trong Tiêu chuẩn súng' : 'Không có tổ hợp nào của súng đã tắt',
-    }, icon('trash'), `Xóa súng đã tắt${offList.length ? ` (${offList.length})` : ''}`);
+    // one door for everything that removes or merges entries: by gun/posture/scope, switched-off guns, entries the standards table refuses, duplicates
+    const cleanupTotal = audit.length + offList.length + dupList.length;
+    const cleanupBtn = el('button', {
+      type: 'button', class: `btn small${cleanupTotal ? '' : ' ghost'}`, onclick: guard(() => showCleanupModal(ix, { audit, offList, dupList })),
+      title: 'Dọn dẹp các mục riêng: xóa theo súng/tư thế/ống ngắm, súng đã tắt, mục sai chuẩn phụ kiện, mục trùng khóa',
+    }, icon(cleanupTotal ? 'alert' : 'trash'), `Dọn dẹp${cleanupTotal ? ` (${cleanupTotal})` : ''}`);
     const auditNote = mine.length ? alert('warn', el('span', {}, `${RL.weaponLabel(rc.weapon)} có ${mine.length} mục riêng không đúng chuẩn phụ kiện (${[...new Set(mine.flatMap((e) => e.problems.map((p) => SLOT_VN[p.slot])))].join(', ')}). `,
       el('button', { type: 'button', class: 'btn small', onclick: guard(() => showAuditModal(ix)) }, 'Xem và xóa'))) : null;
     const disabledNote = gunDisabled ? alert('warn', el('span', {}, `Súng ${RL.weaponLabel(rc.weapon)} (${RL.WEAPONS[rc.weapon]}) đã bị TẮT KHÔNG SỬ DỤNG trong Tiêu chuẩn súng. Các chức năng Thêm tổ hợp, Tính mốc cả bảng và AI gợi ý mốc bị vô hiệu hóa cho súng này.`)) : null;
     const rule = RL.describeAttachments(rc.weapon);
     const selectors = el('div', { class: 'card' },
-      el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), offBtn, auditBtn, refFieldsBtn),
+      el('div', { class: 'row selector-row' }, field('Loại súng', catSel), field('Súng', weaponSel), field('Tư thế', postureSeg), field('Bộ dữ liệu', modeSel), el('span', { class: 'spacer' }), cleanupBtn, refFieldsBtn),
       el('div', { class: 'muted text-sm mb-2' }, 'Ống ngắm'),
       el('div', { class: 'chips' }, mainScopes.map(scopeChip)),
       el('details', { class: 'disclosure flat' }, el('summary', {}, `Ống ngắm khác (${otherScopes.length}) và phụ kiện ${RL.weaponLabel(rc.weapon)} lắp được`),
@@ -1664,7 +1654,7 @@
         el('div', { class: 'row' }, el('h2', {}, 'Tổ hợp phụ kiện'),
           el('span', { class: 'muted', title: filtered ? `Đang lọc: ${TF.describe(rc.filters, { grip: 'Tay cầm', muzzle: 'Nòng', stock: 'Báng', source: 'Nguồn', v0: 'Giá trị t=0', vEnd: 'Giá trị cuối', duration: 'Thời lượng', points: 'Mốc' })}` : undefined }, filtered ? `${visible.length}/${model.length}` : String(model.length)),
           filtered || rc.sort ? el('button', { type: 'button', class: 'btn small ghost', onclick: clearFilters }, icon('x'), `Xóa bộ lọc${filtered ? ` (${TF.countActive(rc.filters)})` : ''}`) : null,
-          dupBtn, bulkDelBtn, addComboBtn),
+          addComboBtn),
         disabledNote,
         auditNote,
         bulkRow,
@@ -1926,6 +1916,31 @@
     });
     if (choice !== 'delete' || !sel.size) return;
     await deleteAudited(all.filter((e) => sel.has(auditKey(e))));
+  }
+
+  // "Dọn dẹp": the door to every tool that removes or merges own entries. One row per tool, with how many things it would touch.
+  async function showCleanupModal(ix, { audit, offList, dupList }) {
+    let ctl = null;
+    const items = [
+      { id: 'bulk', title: 'Xóa theo súng, tư thế, ống ngắm…', desc: 'Chọn nhiều súng, tư thế và ống ngắm rồi xóa các mục riêng khớp cả ba.', n: RL.entriesWhere(ix.idx).length, unit: 'mục riêng' },
+      { id: 'off', title: 'Súng đã tắt trong Tiêu chuẩn súng', desc: 'Xóa các mục riêng của những súng đang tắt (app không dùng).', n: offList.length, unit: 'mục' },
+      { id: 'audit', title: 'Sai chuẩn phụ kiện', desc: 'Mục riêng gắn phụ kiện hoặc ống ngắm mà súng đó không có (theo bảng chuẩn).', n: audit.length, unit: 'mục' },
+      { id: 'dup', title: 'Trùng khóa', desc: 'Một tổ hợp được ghi nhiều lần: giữ mục cuối (cái app đang dùng), bỏ các bản trước.', n: dupList.length, unit: 'tổ hợp' },
+    ];
+    const rows = items.map((it) => el('div', { class: 'cleanup-row' },
+      el('div', { class: 'cleanup-text' }, el('strong', {}, it.title), el('div', { class: 'muted text-sm' }, it.desc)),
+      badge(`${it.n} ${it.unit}`, it.n && it.id !== 'bulk' ? 'warn' : 'neutral'),
+      el('button', { type: 'button', class: 'btn small', disabled: !it.n, onclick: () => ctl && ctl.close(it.id) }, 'Mở')));
+    const choice = await showModal({
+      title: 'Dọn dẹp các mục riêng', tone: 'info', className: 'wide',
+      body: [el('p', {}, 'Mọi việc dọn dẹp đều cho bạn xem và chọn trước khi xóa; bản hiện tại trên server luôn được giữ một bản trong lịch sử.'), el('div', { class: 'cleanup-list' }, rows)],
+      actions: [{ id: 'close', label: 'Đóng' }],
+      onOpen: (c) => { ctl = c; },
+    });
+    if (choice === 'bulk') await showBulkDeleteModal(ix);
+    else if (choice === 'off') await showDisabledGunsModal(offList);
+    else if (choice === 'audit') await showAuditModal(ix);
+    else if (choice === 'dup') await showDedupeModal(dupList, ix.ds.key);
   }
 
   // "Xóa nhiều…": tick guns, postures and scopes (what is open now by default); every own entry matching all three goes
@@ -3208,14 +3223,13 @@
     const fireSlot = el('div', { class: 'meta fire-line' });
     const dirtyBadgeSlot = el('span', {}, '');
 
-    // two buttons (a node can only sit in one place): one beside the title, one under the table of points; both follow canSave()
-    const makeSaveBtn = () => el('button', {
+    // the one save button of this column: under the table of points, kept in view at the bottom of the column; it follows canSave()
+    const saveBtn = el('button', {
       type: 'button',
       class: 'btn primary',
       disabled: !canSave(),
       onclick: guard(() => saveRecoil(ix, o, curve)),
     }, icon('check'), 'Lưu độ giật vào server');
-    const saveBtns = [makeSaveBtn(), makeSaveBtn()];
 
     const resetBtn = el('button', {
       type: 'button',
@@ -3271,7 +3285,7 @@
         fireSlot.replaceChildren(...[fire ? el('span', {}, `Hết băng: ${secondsText(fire.emptyMs)} s (${fire.magazine} viên × ${vn(fire.interval)} s)`) : el('span', { class: 'muted' }, 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng): các mốc dùng bước thời gian cũ.'),
           gap > 0.05 ? badge(`Thời lượng ${secondsText(st.duration)} s, lệch ${Math.round(gap * 100)}% so với băng đạn`, 'warn', { dot: true }) : null].filter(Boolean));
       }
-      for (const b of saveBtns) b.disabled = !canSave();
+      saveBtn.disabled = !canSave();
       resetBtn.disabled = !rc.dirty;
       const untouched = rc.freshBase && JSON.stringify(curve) === rc.freshBase;
       dirtyBadgeSlot.replaceChildren(rc.dirty ? badge(untouched ? 'Tổ hợp mới, chưa lưu vào server' : 'Có thay đổi chưa lưu', 'warn', { dot: true }) : badge('Đã đồng bộ', 'ok'));
@@ -3471,11 +3485,6 @@
         return el('tr', { class: g === o.gesture ? 'active' : '' }, el('td', {}, name), el('td', {}, sourceTag(rr)), el('td', { class: 'num' }, num(s2.v0)), el('td', { class: 'num' }, num(s2.vEnd)), el('td', { class: 'num' }, `${s2.duration} ms`));
       })));
 
-    const coef = RL.coefficientsFor(ix.idx, o.weapon, o.scope);
-    const used = new Set(r.parts.map((p) => p.key));
-    const coefTable = coef ? el('table', {}, el('tbody', {}, Object.entries(coef).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) =>
-      el('tr', { class: used.has(k) ? 'active' : '' }, el('td', { title: k }, RL.coefLabel(k)), el('td', { class: 'num' }, typeof v === 'number' ? Number(v.toFixed(4)).toString() : String(v)))))) : el('p', { class: 'muted' }, 'Không có bảng hệ số.');
-
     // what the app does with this combination: an own entry, or the base curve times the coefficients
     const how = r.source === 'exact' ? 'App dùng đúng mục này.' : r.source === 'computed' ? 'Chưa có mục riêng: đường cong nền (đứng, không phụ kiện) × hệ số. Lưu để tạo mục riêng.' : '';
     const parts = r.multiplier != null ? (r.parts.length ? `${r.parts.map((p) => `${p.label} ${Number(p.value.toFixed(4))}`).join(' × ')} = ${r.multiplier.toFixed(4)}` : '1 (không có hệ số áp dụng)') : '';
@@ -3488,7 +3497,7 @@
     return el('div', { class: 'card' },
       el('div', { class: 'row' },
         el('h2', {}, el('span', { class: 'sr-only' }, `${RL.weaponLabel(o.weapon)} · ${POSTURE_VN[o.gesture]} · ${RL.LABELS.SCOPES[o.scope]} · `), `Tay cầm: ${optText('GRIPS', o.grip)} · Nòng: ${optText('MUZZLES', o.muzzle)} · Báng: ${optText('STOCKS', o.stock)}`),
-        el('div', { class: 'head-actions' }, dirtyBadgeSlot, saveBtns[0], more)),
+        el('div', { class: 'head-actions' }, dirtyBadgeSlot, more)),
       el('div', { class: 'meta' }, sourceTag(r), summarySlot),
       zero ? null : fireSlot,
       r.copies > 1 ? alert('info', el('span', {}, `Có ${r.copies} mục trùng khóa (${r.distinct} nội dung khác nhau). App dùng mục xuất hiện cuối cùng.`)) : null,
@@ -3498,13 +3507,13 @@
       el('h2', {}, 'Từng mốc'),
       ptsSlot,
       el('div', { class: 'row' }, addBtn, retimeBtn, batchAddPointsBtn, retimeGunBtn, suggestBtn, tableBtn, resetBtn),
-      el('div', { class: 'row' }, saveBtns[1]),
+      el('div', { class: 'row save-row' }, saveBtn),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Tùy chọn khi sửa các mốc'),
         el('div', { class: 'disclosure-body' }, el('div', { class: 'row' }, autoBox, dirBox), el('p', { class: 'muted text-xs' }, fire ? `Thời gian các mốc chia đều trên ${secondsText(fire.emptyMs)} s (hết một băng); sửa thời gian một mốc thì các mốc sau chia đều từ mốc đó. ${stepHint()}` : stepHint()))),
       el('details', { class: 'disclosure' }, el('summary', {}, 'Cách tính và hệ số'),
         el('div', { class: 'disclosure-body' }, how ? el('p', { class: 'muted' }, how) : null, parts ? el('p', { class: 'mono' }, `Hệ số nhân: ${parts}`) : null,
           el('h2', {}, 'So sánh tư thế (cùng phụ kiện, ống ngắm)'), compare,
-          el('h2', {}, `Hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`), coefTable)));
+          el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn small', onclick: () => showAccessoryReferenceModal(ix) }, icon('layers'), `Xem các trường và hệ số của ${RL.weaponLabel(o.weapon)} / ${RL.LABELS.SCOPES[o.scope]}`)))));
   }
 
   async function refresh() { rc.idx = null; await load(); redraw({ smooth: true }); }
