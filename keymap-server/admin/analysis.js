@@ -1187,7 +1187,7 @@
   // listedKeys: the combinations already in the table (they are not suggested again). The block sits under the table, outside the part that
   // scrolls sideways, so the button is always in view. The few best candidates come first (the AI's order); "Hiện thêm" shows all the others
   // the gun can still take.
-  function ghostList(ix, listedKeys, model) {
+  function ghostList(ix, listedKeys) {
     if (RL.isGunDisabled(rc.weapon)) {
       return el('div', { class: 'ghost-list', role: 'region', 'aria-label': 'Gợi ý thêm tổ hợp' },
         el('div', { class: 'ghost-head' }, el('span', {}, 'Gợi ý thêm tổ hợp')),
@@ -1581,7 +1581,7 @@
       el('span', { class: 'font-semibold' }, `Đã chọn ${rc.ticked.size} tổ hợp`, hiddenTicked ? el('span', { class: 'muted' }, ` (${hiddenTicked} đang ẩn bởi bộ lọc)`) : null),
       el('button', { type: 'button', class: 'btn small danger-fill', onclick: guard(() => deleteAudited(model.filter((m) => rc.ticked.has(comboId(m.c))).map((m) => comboOf(m.c)), 'đã chọn')) }, icon('trash'), `Xóa ${rc.ticked.size} đã chọn`),
       el('button', { type: 'button', class: 'btn small ghost', onclick: () => { rc.ticked.clear(); redraw(); } }, 'Bỏ chọn')) : null;
-    const ghosts = ghostList(ix, new Set(combos.map((c) => comboId(c))), model);
+    const ghosts = ghostList(ix, new Set(combos.map((c) => comboId(c))));
 
     const gunDisabled = RL.isGunDisabled(rc.weapon);
 
@@ -1925,7 +1925,7 @@
       const input = el('input', { type: 'radio', name: 'gun-points', value, disabled: Boolean(disabled) });
       return { input, card: choiceCard({ input, title, desc, disabled: Boolean(disabled), checked: value === 'add' }) };
     };
-    const a = mk('add', 'Thêm mốc cho cả súng', 'Thêm mốc nối tiếp cho các mục riêng của súng này ở mọi tư thế và ống ngắm (bạn chọn phạm vi và số mốc).');
+    const a = mk('add', 'Thêm mốc cho súng', 'Thêm mốc nối tiếp cho các mục riêng của súng này ở mọi tư thế và ống ngắm (bạn chọn phạm vi và số mốc).');
     const b = mk('retime', 'Chia đều thời gian cả súng', fire ? `Chia đều thời gian của mọi mục riêng trên thời gian bắn hết băng (${secondsText(fire.emptyMs)} s); hình dạng đường cong giữ nguyên.` : 'Súng này chưa có thời gian bắn hết băng (Tiêu chuẩn súng).', !fire);
     const go = await showModal({
       title: `Mốc cho cả ${RL.weaponLabel(rc.weapon)}`, tone: 'info',
@@ -2970,7 +2970,7 @@
 
     if (choice !== 'apply') return;
     // the page may have changed while the window was open (reload, save, another gun): do not apply to stale combinations
-    if (!latest() || rc.bulk || rc.filling || rc.weapon !== weapon || RL.isGunDisabled(weapon)) { toast('Dữ liệu đã thay đổi khi hộp thoại đang mở: hãy mở lại "Thêm mốc cho súng".', true); return; }
+    if (!latest() || rc.bulk || rc.filling || rc.weapon !== weapon || RL.isGunDisabled(weapon)) { toast('Dữ liệu đã thay đổi khi hộp thoại đang mở: hãy mở lại "Mốc cho cả súng…".', true); return; }
 
     const count = Math.max(1, Math.min(20, Math.floor(Number(countInput.value) || 1)));
     const method = methodTrend.checked ? 'trend' : 'step';
@@ -3470,8 +3470,8 @@
     const gunPointsBtn = el('button', {
       type: 'button',
       class: 'btn small',
-      disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk),
-      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : 'Việc cho cả súng (mọi tư thế và ống ngắm): thêm mốc nối tiếp, hoặc chia đều thời gian trên thời gian bắn hết băng. Chưa ghi gì vào file.',
+      disabled: zero || gunDisabled || !latest() || Boolean(rc.bulk) || Boolean(rc.filling),
+      title: gunDisabled ? 'Súng này đã bị tắt trong Tiêu chuẩn súng' : zero ? 'Súng này luôn dùng đường cong 0 trong app' : !latest() ? 'Chỉ làm được khi đang xem "Mới nhất"' : 'Việc cho cả súng (mọi tư thế và ống ngắm): thêm mốc nối tiếp, hoặc chia đều thời gian trên thời gian bắn hết băng. Chưa ghi gì vào file.',
       onclick: guard(() => showGunPointsChooser(ix)),
     }, icon('layers'), 'Mốc cho cả súng…');
     const suggestBtn = el('button', {
