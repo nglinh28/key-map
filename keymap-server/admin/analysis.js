@@ -1576,7 +1576,7 @@
       } },
         el('td', { class: 'tick-cell', onclick: (e) => e.stopPropagation() }, canTick ? el('input', { type: 'checkbox', class: 'row-tick', 'data-id': comboId(c), checked: rc.ticked.has(comboId(c)), 'aria-label': `Chọn tổ hợp ${optText('GRIPS', c.grip)} · ${optText('MUZZLES', c.muzzle)} · ${optText('STOCKS', c.stock)} để xóa`,
           onchange: (e) => { if (e.target.checked) rc.ticked.add(comboId(c)); else rc.ticked.delete(comboId(c)); redraw(); refocus(`.row-tick[data-id="${comboId(c)}"]`); } }) : null),
-        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && (draft.source === 'add_points' || draft.source === 'retime') ? el('span', { class: 'tag warn', title: `${draft.source === 'retime' ? 'Đã chia đều thời gian' : 'Đã thêm mốc'}, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `AI đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `AI đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
+        el('td', { 'data-label': 'Tay cầm' }, optWithBadge('GRIPS', c.grip, coef), isNewCombo(comboOf(c), r) ? el('span', { class: 'tag warn', title: draft ? 'Đã tạo mốc, chưa lưu' : 'Tổ hợp mới, chưa lưu' }, draft ? 'chờ lưu' : 'mới') : null, draft && draft.suspect ? el('span', { class: 'tag danger', title: 'Lệch nhiều so với đường cong theo hệ số: nên xem lại' }, 'xem lại') : null, draft && (draft.source === 'add_points' || draft.source === 'retime') ? el('span', { class: 'tag warn', title: `${draft.source === 'retime' ? 'Đã chia đều thời gian' : 'Đã thêm mốc'}, chưa lưu (${draft.how})` }, draft.how) : draft && draft.review ? el('span', { class: 'tag warn', title: `${draft.source === 'server' ? 'Server' : 'AI'} đề xuất đổi ${Math.round((draft.change || 0) * 100)}% so với mục hiện tại, chưa lưu${draft.provider ? ` (${draft.provider})` : ''}.${draft.reasoning ? ` ${draft.reasoning}` : ''}` }, `${draft.source === 'server' ? 'Server' : 'AI'} đề xuất ${Math.round((draft.change || 0) * 100)}%`) : null, r.source === 'exact' && RL.comboProblems(rc.weapon, rc.scope, c).length ? el('span', { class: 'tag danger', title: RL.comboProblems(rc.weapon, rc.scope, c).map((p) => p.reason).join(' ') }, 'sai chuẩn') : null),
         el('td', { 'data-label': 'Nòng' }, optWithBadge('MUZZLES', c.muzzle, coef)),
         el('td', { 'data-label': 'Báng' }, optWithBadge('STOCKS', c.stock, coef)),
         el('td', { 'data-label': 'Nguồn' }, sourceTag(r), r.copies > 1 ? el('span', { class: 'tag', title: `${r.copies} mục trùng khóa, ${r.distinct} nội dung khác nhau; app dùng mục cuối` }, ` ×${r.copies}`) : null),
@@ -2197,7 +2197,7 @@
       const gun = d.o && typeof d.o.weapon === 'number' ? d.o.weapon : Number(key.split('|')[0]);
       if (weaponFilter !== null && gun !== weaponFilter) continue;
       const open = rc.editKey === key && rc.editCurve;
-      items.push({ key, o: d.o, curve: open ? rc.editCurve : d.curve, how: 'AI đề xuất' });
+      items.push({ key, o: d.o, curve: open ? rc.editCurve : d.curve, how: d.source === 'server' ? 'Server đề xuất' : 'AI đề xuất' });
     }
     // the open combination that already has an own entry and was edited
     if (rc.picked && rc.dirty && rc.editCurve && rc.editKey === recoilKey(rcCombo(rc.picked)) && !items.some((i) => i.key === rc.editKey)) {
@@ -2214,21 +2214,23 @@
     return pendingCombos(rc.weapon).filter((p) => p.o.weapon === rc.weapon && !rc.drafts.has(p.key) && !(rc.editKey === p.key && rc.freshBase && rc.editCurve && JSON.stringify(rc.editCurve) !== rc.freshBase));
   }
 
-  // every combination the gun can take in the scope and posture shown that has no own entry yet (its points come from the coefficients) and no draft:
-  // what "Tính mốc cả bảng" works on. It does not depend on which rows the table shows (the toggle "Hiện cả tổ hợp tính từ hệ số", the filters).
+  // every combination of the gun in the scope and posture shown: the ones the gun can take plus the ones it already has an own entry for, except the
+  // ones with an unsaved draft or being edited by hand: what "Tính mốc cả bảng" works on (the same thing "Tính mốc (server + AI)" does for ONE row).
+  // It does not depend on which rows the table shows (the toggle "Hiện cả tổ hợp tính từ hệ số", the filters). cur = the saved curve of an own entry.
   function wholeTableTargets() {
     if (RL.isGunDisabled(rc.weapon) || RL.isZeroWeapon(rc.weapon) || !rc.idx || !rc.idx.idx) return [];
     const out = [];
     for (let g = 0; g < RL.GRIPS.length; g++) {
       for (let m = 0; m < RL.MUZZLES.length; m++) {
         for (let st = 0; st < RL.STOCKS.length; st++) {
-          if (RL.comboProblems(rc.weapon, rc.scope, { grip: g, muzzle: m, stock: st }).length) continue;
           const o = { weapon: rc.weapon, scope: rc.scope, gesture: rc.gesture, grip: g, muzzle: m, stock: st };
+          const own = rc.idx.idx.map.has(`${rc.weapon}|${rc.scope}|${g}|${m}|${st}|${rc.gesture}`);
+          if (!own && RL.comboProblems(rc.weapon, rc.scope, { grip: g, muzzle: m, stock: st }).length) continue;
           const r = RL.resolve(rc.idx.idx, o);
-          if (r.source === 'exact' || r.source === 'zero') continue;
+          if (r.source === 'zero') continue;
           const key = recoilKey(o);
           if (rc.drafts.has(key) || (rc.editKey === key && rc.dirty && !(rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase))) continue;
-          out.push({ o, r, key });
+          out.push({ o, r, key, cur: r.source === 'exact' ? r.curve.map(([t, v]) => [Number(t), Number(v)]) : null });
         }
       }
     }
@@ -2279,7 +2281,7 @@
     return last || { ok: false, reason: 'Đã dừng.' };
   }
 
-  // "Tính mốc cả bảng": server and AI answer for every row of the table that has no own entry; then one window shows how different the
+  // "Tính mốc cả bảng": server and AI answer for every row of the table (rows with an own entry too); then one window shows how different the
   // answers are (against the coefficient curve and against each other) and the user chooses per row. Nothing is written: the choices become drafts.
   async function tableCompare() {
     if (rc.bulk) { rc.bulk.ac.abort(); return; } // the second click stops it
@@ -2287,14 +2289,14 @@
     if (!latest()) { toast('Chỉ tính được khi đang xem "Mới nhất".', true); return; }
     const status = await aiStatus();
     const todo = wholeTableTargets();
-    if (!todo.length) { toast('Không có tổ hợp nào cần tính: mọi tổ hợp hợp lệ của ống ngắm và tư thế này đã có mục riêng hoặc bản nháp.'); return; }
+    if (!todo.length) { toast('Không có tổ hợp nào cần tính: mọi tổ hợp của ống ngắm và tư thế này đang có bản nháp hoặc đang được sửa.'); return; }
     const threads = status.enabled ? aiThreads(status) : 6;
     const go = await showModal({
       title: `Tính mốc cho ${todo.length} tổ hợp?`, tone: 'info',
       body: [
-        el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]} (mọi tổ hợp phụ kiện hợp lệ của ống ngắm và tư thế này mà chưa có mục riêng, kể cả những dòng đang ẩn trong bảng).`),
+        el('p', {}, `Lần lượt hỏi server${status.enabled ? ' và AI' : ' (AI chưa bật)'} cho ${todo.length} tổ hợp của ${RL.weaponLabel(rc.weapon)} · ${POSTURE_VN[rc.gesture]} · ${RL.LABELS.SCOPES[rc.scope]}: ${todo.filter((t) => t.cur).length} dòng đã có mục riêng (để so với dữ liệu hiện có) và ${todo.filter((t) => !t.cur).length} dòng đang tính từ hệ số, kể cả những dòng đang ẩn trong bảng.`),
         status.enabled ? el('p', { class: 'muted' }, `Mỗi tổ hợp khoảng 10–40 giây, chạy ${threads} luồng song song: ước tính ${Math.max(1, Math.round((todo.length * 25) / threads / 60))} phút. Bấm "Dừng" bất cứ lúc nào: phần đã tính vẫn được đưa sang bước so sánh.`) : null,
-        el('p', { class: 'muted' }, 'Xong sẽ mở cửa sổ so sánh: độ khác nhau của từng tổ hợp, bạn chọn AI, server hoặc bỏ qua cho từng dòng rồi mới điền vào bảng (bản nháp, chưa lưu).'),
+        el('p', { class: 'muted' }, 'Xong sẽ mở cửa sổ so sánh: độ khác nhau của từng tổ hợp so với dữ liệu hiện có, bạn chọn AI, server hoặc giữ nguyên cho từng dòng rồi mới điền vào bảng (bản nháp, chưa lưu).'),
       ],
       actions: [{ id: 'cancel', label: 'Hủy' }, { id: 'go', label: `Bắt đầu (${todo.length})`, primary: true }],
     });
@@ -2328,7 +2330,7 @@
         if (sv && sv.ok) rc.bulk.server++;
         if (av && av.ok) rc.bulk.ai++;
         if (!(sv && sv.ok) && !(av && av.ok)) rc.bulk.failed++;
-        results.push({ key: m.key, o, label: comboLine(o), coef: RL.resolve(idxNow, o).curve.map(([t, v]) => [Number(t), Number(v)]), server: sv, ai: av });
+        results.push({ key: m.key, o, label: comboLine(o), cur: m.cur, coef: m.cur ? RL.computedFor(idxNow, o).curve.map(([t, v]) => [Number(t), Number(v)]) : RL.resolve(idxNow, o).curve.map(([t, v]) => [Number(t), Number(v)]), server: sv, ai: av });
         rc.bulk.done++;
         paintBulk();
       });
@@ -2349,17 +2351,30 @@
     if (!rc.customCombos) rc.customCombos = new Set();
     let applied = 0;
     let skipped = 0;
+    const appliedKeys = new Set();
     for (const c of chosen) {
       const t = useful.find((x) => x.key === c.key);
       // the same rules as when the run started, checked again: a row that got a draft, an own entry or a hand edit meanwhile is left alone
       const nowRow = t && rc.idx ? RL.resolve(rc.idx.idx, t.o) : null;
       const editing = t && rc.editKey === c.key && rc.dirty && !(rc.freshBase && JSON.stringify(rc.editCurve) === rc.freshBase);
-      if (!t || rc.drafts.has(c.key) || editing || !nowRow || nowRow.source === 'exact' || nowRow.source === 'zero') { skipped++; continue; }
-      const suspect = !plausible(c.curve, t.coef, { ignoreDuration: Boolean(RL.fireOf(t.o.weapon)) });
-      rc.customCombos.add(RL.comboKey(t.o));
-      rc.drafts.set(c.key, { curve: c.curve, source: c.source, suspect });
+      // an own entry must still be the one that was compared (not saved, deleted or replaced meanwhile); a new row must still have no own entry
+      const same = t && nowRow && (t.cur ? nowRow.source === 'exact' && JSON.stringify(nowRow.curve.map(([a, b]) => [Number(a), Number(b)])) === JSON.stringify(t.cur) : nowRow.source !== 'exact');
+      if (!t || rc.drafts.has(c.key) || editing || !same || nowRow.source === 'zero') { skipped++; continue; }
+      if (t.cur && JSON.stringify(c.curve) === JSON.stringify(t.cur)) { skipped++; continue; } // the same as the saved one: nothing to propose
+      if (t.cur) {
+        // an entry that exists: a proposal like the ones of "Quét tất cả" (the saved one stays until "Lưu tất cả")
+        const change = window.SuggestUi.meanDiff(c.curve, t.cur, { abs: true }) || 0;
+        rc.drafts.set(c.key, { curve: c.curve, source: c.source, review: true, o: t.o, change, reasoning: '', provider: '', flags: [] });
+      } else {
+        const suspect = !plausible(c.curve, t.coef, { ignoreDuration: Boolean(RL.fireOf(t.o.weapon)) });
+        rc.customCombos.add(RL.comboKey(t.o));
+        rc.drafts.set(c.key, { curve: c.curve, source: c.source, suspect });
+      }
+      appliedKeys.add(c.key);
       applied++;
     }
+    // the open row (if it was filled) shows the new points: the editor reloads from the draft (otherwise "Lưu tất cả" would write what the editor still holds)
+    if (rc.editKey && appliedKeys.has(rc.editKey)) { rc.editCurve = null; rc.dirty = false; rc.bad.clear(); }
     redraw();
     toast(`Đã điền ${applied} tổ hợp của ${RL.weaponLabel(rc.weapon)} vào bảng (chưa lưu)${skipped ? `, bỏ qua ${skipped} dòng đã thay đổi trong lúc tính` : ''}: bấm "Lưu tất cả" để ghi.`);
   }
@@ -3503,8 +3518,8 @@
         : !latest() ? 'Chỉ tính được khi đang xem "Mới nhất"'
         : rc.filling ? 'Đang "Tạo đủ cho cả súng": đợi xong'
         : rc.bulk ? 'Đang có một việc khác chạy'
-        : !tableCount ? 'Mọi tổ hợp hợp lệ của ống ngắm và tư thế này đã có mục riêng hoặc bản nháp: không còn gì để tính'
-        : 'Server và AI tính cho MỌI tổ hợp hợp lệ của ống ngắm và tư thế này mà chưa có mục riêng (tự động, có tiến trình), rồi một cửa sổ cho thấy độ khác nhau để bạn chọn AI, server hoặc bỏ qua từng dòng. Chưa lưu gì.',
+        : !tableCount ? 'Mọi tổ hợp của ống ngắm và tư thế này đang có bản nháp hoặc đang được sửa: đợi lưu hoặc hoàn tác rồi tính lại'
+        : 'Như "Tính mốc (server + AI)" nhưng cho MỌI tổ hợp của ống ngắm và tư thế này (kể cả dòng đã có mục riêng), tự động có tiến trình; một cửa sổ cho thấy độ khác nhau so với dữ liệu hiện có để bạn chọn AI, server hoặc giữ nguyên từng dòng. Chưa lưu gì.',
       onclick: guard(() => tableCompare()),
     }, icon(tableRun ? 'x' : 'sparkles'), el('span', { class: 'bulk-label' }, tableRun ? `Dừng (${rc.bulk.done}/${rc.bulk.total})` : `Tính mốc cả bảng${tableCount ? ` (${tableCount})` : ''}`));
 
